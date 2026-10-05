@@ -36,10 +36,30 @@ class Prefs(ctx: Context) {
         get() = sp.getString("pending_reply", "") ?: ""
         set(v) { sp.edit().putString("pending_reply", v).apply() }
 
-    /** 正在跑的 run_id：进程被杀后重开，用它确认任务是否还在执行（决定按钮显示发送还是停止）。 */
-    var activeRunId: String
-        get() = sp.getString("active_run_id", "") ?: ""
-        set(v) { sp.edit().putString("active_run_id", v).apply() }
+    /**
+     * 正在跑的 run_id：按 sessionId 存（多会话可同时跑）。
+     * 进程被杀后重开，用它逐个确认任务是否还在执行（决定按钮显示发送还是停止）。
+     * 键形如 "run:<sessionId>"。
+     */
+    fun activeRunsMap(): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        for ((k, v) in sp.all) {
+            if (k.startsWith("run:") && v is String && v.isNotEmpty()) {
+                out[k.removePrefix("run:")] = v
+            }
+        }
+        return out
+    }
+
+    fun putActiveRun(sessionId: String, runId: String) {
+        if (sessionId.isEmpty() || runId.isEmpty()) return
+        sp.edit().putString("run:" + sessionId, runId).apply()
+    }
+
+    fun removeActiveRun(sessionId: String) {
+        if (sessionId.isEmpty()) return
+        sp.edit().remove("run:" + sessionId).apply()
+    }
 
     /** 模型不支持视觉时：true=自动转文字，false=每次都问用户。 */
     var visionAutoText: Boolean
