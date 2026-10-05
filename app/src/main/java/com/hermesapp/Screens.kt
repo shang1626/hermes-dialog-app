@@ -360,10 +360,8 @@ fun Bubble(
                 if (m.images.isNotEmpty()) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         for (u in m.images) {
-                            AsyncImage(
-                                model = u,
-                                contentDescription = null,
-                                contentScale = ContentScale.Crop,
+                            LocalImageView(
+                                uri = u,
                                 modifier = Modifier.size(72.dp).clip(RoundedCornerShape(8.dp))
                             )
                         }
