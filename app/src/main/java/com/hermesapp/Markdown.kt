@@ -2,7 +2,9 @@ package com.hermesapp
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -26,6 +28,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import coil.compose.AsyncImage
+import androidx.compose.foundation.text.selection.SelectionContainer
+import android.widget.Toast
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -187,18 +191,20 @@ fun RichText(
                 is MdBlock.Attachment -> MdAttachmentCard(b.name, b.dataUrl, b.token)
                 is MdBlock.Para -> {
                     val ann = remember(b.text, c.accent) { linkAnnotated(b.text, c.accent) }
-                    ClickableText(
-                        text = ann,
-                        style = TextStyle(
-                            color = color, fontSize = fontSize,
-                            fontFamily = FontFamily.Monospace
-                        ),
-                        onClick = { off ->
-                            ann.getStringAnnotations("URL", off, off).firstOrNull()?.let {
-                                runCatching { uri.openUri(it.item) }
+                    SelectionContainer {
+                        ClickableText(
+                            text = ann,
+                            style = TextStyle(
+                                color = color, fontSize = fontSize,
+                                fontFamily = FontFamily.Monospace
+                            ),
+                            onClick = { off ->
+                                ann.getStringAnnotations("URL", off, off).firstOrNull()?.let {
+                                    runCatching { uri.openUri(it.item) }
+                                }
                             }
-                        }
-                    )
+                        )
+                    }
                 }
                 is MdBlock.Table -> MdTable(b.rows, color, fontSize)
             }
@@ -233,7 +239,8 @@ private fun MdTable(rows: List<List<String>>, color: Color, fontSize: TextUnit) 
     }
 }
 
-/** 内联图片：直接吃 data URL 的字节，点一下用系统看图/浏览器打开。 */
+/** 内联图片：点击用系统看图/浏览器打开，长按保存到相册。 */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MdImage(dataUrl: String, alt: String) {
     val ctx = LocalContext.current
@@ -243,6 +250,7 @@ private fun MdImage(dataUrl: String, alt: String) {
         Text("[图片解析失败]", color = c.dim, fontSize = 12.sp)
         return
     }
+    val name = alt.ifBlank { "image" } + extFor(decoded.mime)
     AsyncImage(
         model = decoded.bytes,
         contentDescription = alt.ifBlank { "图片" },
@@ -250,7 +258,17 @@ private fun MdImage(dataUrl: String, alt: String) {
         modifier = Modifier
             .widthIn(max = 300.dp)
             .clip(RoundedCornerShape(8.dp))
-            .clickable { openAttachment(ctx, alt.ifBlank { "image" } + extFor(decoded.mime), decoded) }
+            .combinedClickable(
+                onClick = { openAttachment(ctx, name, decoded) },
+                onLongClick = {
+                    val saved = saveImageToGallery(ctx, name, decoded)
+                    Toast.makeText(
+                        ctx,
+                        if (saved != null) "已保存到相册：Pictures/Hermes/$saved" else "保存失败",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            )
     )
 }
 

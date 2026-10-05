@@ -1,7 +1,12 @@
 package com.hermesapp
 
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.media.MediaScannerConnection
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.util.Base64
 import androidx.core.content.FileProvider
 import java.io.File
@@ -82,6 +87,43 @@ fun openAttachment(ctx: Context, name: String, data: DecodedData) {
         ctx.startActivity(intent)
     }
 }
+
+
+/**
+ * 把解码后的字节保存到系统相册（Pictures/Hermes）。
+ * API 29+ 走 MediaStore（无需存储权限）；API 26-28 写应用外部目录后扫描入册（尽力而为）。
+ * 返回保存后的可读文件名（失败返回 null）。
+ */
+fun saveImageToGallery(ctx: Context, name: String, data: DecodedData): String? = runCatching {
+    val safe = sanitizeName(name)
+    val withExt = if (safe.contains('.')) safe else safe + extFor(data.mime)
+    val display = if (withExt.contains('.')) withExt else withExt + extFor(data.mime)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, display)
+            put(MediaStore.Images.Media.MIME_TYPE, data.mime)
+            put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Hermes")
+            put(MediaStore.Images.Media.IS_PENDING, 1)
+        }
+        val resolver = ctx.contentResolver
+        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+            ?: return null
+        resolver.openOutputStream(uri)?.use { it.write(data.bytes) } ?: return null
+        values.clear()
+        values.put(MediaStore.Images.Media.IS_PENDING, 0)
+        resolver.update(uri, values, null, null)
+        display
+    } else {
+        val dir = File(
+            ctx.getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: ctx.filesDir,
+            "Hermes"
+        ).apply { mkdirs() }
+        val f = File(dir, display)
+        f.writeBytes(data.bytes)
+        MediaScannerConnection.scanFile(ctx, arrayOf(f.absolutePath), arrayOf(data.mime), null)
+        display
+    }
+}.getOrNull()
 
 
 /**
