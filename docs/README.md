@@ -15,7 +15,8 @@
 app/src/main/java/com/hermesapp/   Kotlin 源码（见 DESIGN.md）
 app/src/main/res/                  图标 / 主题 / 字符串
 dist/update/                       发布产物：APK + version.json
-build.log                          最近一次构建日志
+build.sh                           一键构建脚本（本机无 gradlew，见 BUILD.md）
+build.log                          最近一次构建日志（gitignore，不入库）
 docs/                              本目录：设计、变更、协作记录
 ```
 

@@ -11,7 +11,7 @@ cd ~/hermes-app
 ./build.sh clean      # 先 clean 再编
 ```
 
-产物：`app/build/outputs/apk/debug/app-debug.apk`，日志写进 `build.log`。
+产物：`app/build/outputs/apk/debug/app-debug.apk`，日志写进 `build.log`（该文件在 `.gitignore` 里，不入库）。
 本机实测一次全量构建约 29 秒（守护进程冷启动更久，看日志里 `BUILD SUCCESSFUL` 与 `EXIT=0`）。
 
 ## 工具链位置（build.sh 已固化，改环境变量前先看这里）
