@@ -609,20 +609,40 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
+    /**
+     * SSE 流提前断开（没收到 run.completed）时的续接：
+     * 绝不伪造用户消息——过去这里会 startRunWith(a, "继续")，把「继续」当成用户输入
+     * 写进会话（用户看到自己没发过的消息）。改为：先查同一 run 的状态，
+     * 仍在跑就续接它的事件流；已结束就从服务端拉回结果。
+     */
     private fun maybeContinue() {
         if (runFinished) return
         if (autoContinue >= 3) {
-            _retryNote.value = "已自动重试 3 次，仍未完成"
+            _retryNote.value = "已自动重连 3 次，仍未完成"
             failPending()
             return
         }
         autoContinue++
-        _retryNote.value = "任务未完成，自动续跑 " + autoContinue + "/3"
-        finishPending()
+        _retryNote.value = "连接中断，正在确认任务状态 " + autoContinue + "/3"
         val a = api ?: return
+        val rid = currentRunId
+        if (rid.isNullOrEmpty()) { failPending(); return }
         viewModelScope.launch(Dispatchers.IO) {
             delay(1200)
-            startRunWith(a, "继续")
+            if (!_busy.value || runFinished) return@launch
+            val st = try { a.getRun(rid).optString("status", "") } catch (_: Exception) { "" }
+            if (st in setOf("started", "running", "waiting_for_approval", "queued", "stopping")) {
+                _retryNote.value = ""
+                streamRun(a)   // 续接同一 run，不新增任何用户消息
+            } else {
+                _retryNote.value = ""
+                runFinished = true
+                finishPending()
+                _busy.value = false
+                prefs.activeRunId = ""
+                RunService.stop(getApplication())
+                refreshFromServer()  // 任务已结束：拉回服务端产出
+            }
         }
     }
 
