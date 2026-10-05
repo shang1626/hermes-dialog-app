@@ -17,7 +17,7 @@
 cd ~/hermes-app
 git pull shared master                 # 1. 同步
 # ...改代码...
-./gradlew assembleDebug                # 2. 本地编译必须过
+./build.sh                              # 2. 本地编译必须过（没有 gradlew！）
 git add -A
 git commit -m "v2.9 (versionCode 20): 一句话说清改了什么"
 git push shared master                 # 3. 推回共享仓库
@@ -50,7 +50,7 @@ git push shared feat/xxx
 
 ## 发布检查单
 
-- [ ] `./gradlew assembleDebug` 出 `BUILD SUCCESSFUL`
+- [ ] `./build.sh` 出 `BUILD SUCCESSFUL` / `EXIT=0`
 - [ ] `versionCode` 递增且与 `version.json` 一致
 - [ ] APK 已复制进 `dist/update/`，`version.json` 的 size / md5 与实际文件一致
 - [ ] `notes` 写清了这一版的变化

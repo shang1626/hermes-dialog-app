@@ -23,11 +23,12 @@ docs/                              本目录：设计、变更、协作记录
 
 ```bash
 cd ~/hermes-app
-./gradlew assembleDebug        # 产物 app/build/outputs/apk/debug/app-debug.apk
+./build.sh                     # 产物 app/build/outputs/apk/debug/app-debug.apk
 ```
 
-本机已配好 Android SDK / Gradle，实测一次全量构建约 29 秒（冷启动更久）。
-构建结束看 `BUILD SUCCESSFUL` 与 `EXIT=0`；`build.log` 是上一次的日志。
+注意：本工程**没有 gradle wrapper**，别用 `./gradlew`（会 command not found）。`build.sh` 用
+`~/android-tools` 下预装的 Gradle 8.9 + Android SDK 34。实测一次全量构建约 29 秒。
+构建结束看 `BUILD SUCCESSFUL` 与 `EXIT=0`；`build.log` 是上一次的日志。工具链细节见 `docs/BUILD.md`。
 
 ## 发布流程
 
