@@ -268,8 +268,8 @@ fun MainScaffold(
 ) {
     val c = LocalAppColors.current
     var tab by remember { mutableStateOf(0) }
-    // 输入框内容提到这里，切到状态/设置再回来不丢
-    var chatInput by remember { mutableStateOf("") }
+    // 输入框内容提到这里，切到状态/设置再回来不丢；草稿写盘，进程被杀重进也能恢复
+    val inputState = remember { mutableStateOf(prefs.draftInput) }
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     LaunchedEffect(prefs.profile) { vm.onProfileChanged(prefs) }
@@ -302,7 +302,10 @@ fun MainScaffold(
             )
             Box(Modifier.weight(1f)) {
                 when (tab) {
-                    0 -> ChatScreen(vm, prefs, chatInput) { chatInput = it }
+                    0 -> ChatScreen(vm, prefs, inputState) { v ->
+                        inputState.value = v
+                        prefs.draftInput = v
+                    }
                     1 -> StatusScreen(vm, prefs)
                     else -> SettingsScreen(vm, prefs, mode, onMode, onLogout)
                 }

@@ -25,4 +25,9 @@ class Prefs(ctx: Context) {
     var themeMode: String
         get() = sp.getString("theme_mode", "system") ?: "system"
         set(v) { sp.edit().putString("theme_mode", v).apply() }
+
+    /** 对话输入框草稿：进程被系统杀掉后重进也能恢复已输入内容。 */
+    var draftInput: String
+        get() = sp.getString("draft_input", "") ?: ""
+        set(v) { sp.edit().putString("draft_input", v).apply() }
 }

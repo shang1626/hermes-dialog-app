@@ -23,7 +23,14 @@ data class Msg(
     val text: String,
     var pending: Boolean = false,
     val ts: Long = 0L,
-)
+    /** 稳定唯一 id：给 LazyColumn 做 key，避免滑动时整列重组。 */
+    val id: Long = nextMsgId(),
+) {
+    companion object {
+        private val counter = java.util.concurrent.atomic.AtomicLong(0)
+        fun nextMsgId(): Long = counter.incrementAndGet()
+    }
+}
 
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = Prefs(app)
@@ -277,38 +284,76 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun formatHealth(h: JSONObject): String {
         val sb = StringBuilder()
-        sb.append("网关: ").append(h.optString("status", "?")).append("\n")
-        val cpu = h.optDouble("cpu_percent", -1.0)
-        if (cpu >= 0) {
-            sb.append("CPU: ").append(String.format("%.1f", cpu)).append("%  ")
-            sb.append(h.optInt("cpu_count", 0)).append(" 核\n")
+
+        fun sec(title: String) {
+            sb.append("\n【").append(title).append("】\n")
         }
+        fun line(label: String, v: String?) {
+            if (!v.isNullOrEmpty()) sb.append(label).append("：").append(v).append("\n")
+        }
+
+        sb.append("网关状态: ").append(if (h.optString("status") == "ok") "正常" else h.optString("status", "?"))
+        line("  进程 PID", h.optInt("pid", 0).takeIf { it > 0 }?.toString())
+
+        sec("主机")
+        line("操作系统", h.optString("platform", ""))
+        line("Python", h.optString("python", ""))
+
+        sec("CPU")
+        val cpuModel = h.optString("cpu_model", "")
+        if (cpuModel.isNotEmpty()) line("型号", cpuModel)
+        val cpu = h.optDouble("cpu_percent", -1.0)
+        if (cpu >= 0) line("使用率", String.format("%.1f%%  （%d 核）", cpu, h.optInt("cpu_count", 0)))
+        val freq = h.optInt("cpu_freq_mhz", 0)
+        if (freq > 0) line("主频", freq.toString() + " MHz")
+
+        sec("内存")
         val mem = h.optDouble("memory_percent", -1.0)
         if (mem >= 0) {
-            sb.append("内存: ").append(String.format("%.1f", mem)).append("%  ")
-            sb.append(h.optInt("memory_used_mb", 0)).append("/")
-            sb.append(h.optInt("memory_total_mb", 0)).append(" MB\n")
+            line("使用率", String.format("%.1f%%", mem))
+            line("已用/总量", h.optInt("memory_used_mb", 0).toString() + " MB / " +
+                h.optInt("memory_total_mb", 0).toString() + " MB")
         }
+        val pmem = h.optInt("proc_memory_mb", 0)
+        if (pmem > 0) line("网关进程占用", pmem.toString() + " MB")
+
+        sec("磁盘")
         val disk = h.optDouble("disk_percent", -1.0)
-        if (disk >= 0) sb.append("磁盘: ").append(String.format("%.1f", disk)).append("%\n")
+        if (disk >= 0) {
+            val total = h.optDouble("disk_total_gb", -1.0)
+            val used = h.optDouble("disk_used_gb", -1.0)
+            val free = h.optDouble("disk_free_gb", -1.0)
+            if (total >= 0) {
+                line("总大小", String.format("%.1f GB", total))
+                line("已用", String.format("%.1f GB", used))
+                line("可用", String.format("%.1f GB", free))
+            }
+            line("使用率", String.format("%.1f%%", disk))
+        }
+
+        sec("负载与运行")
         val la = h.optJSONArray("load_avg")
         if (la != null && la.length() >= 3) {
-            sb.append("负载: ").append(la.optDouble(0, 0.0)).append(" / ")
-            sb.append(la.optDouble(1, 0.0)).append(" / ").append(la.optDouble(2, 0.0)).append("\n")
+            line("1/5/15 分钟负载", String.format("%.2f / %.2f / %.2f",
+                la.optDouble(0, 0.0), la.optDouble(1, 0.0), la.optDouble(2, 0.0)))
         }
         val up = h.optLong("uptime_seconds", -1)
-        if (up >= 0) {
-            sb.append("运行: ").append(up / 3600).append(" 小时 ")
-            sb.append((up % 3600) / 60).append(" 分\n")
-        }
-        sb.append("活跃任务: ").append(h.optInt("active_runs", 0)).append("\n")
+        if (up >= 0) line("已运行", (up / 86400).toString() + " 天 " + ((up % 86400) / 3600).toString() + " 小时 " + ((up % 3600) / 60).toString() + " 分")
+
+        sec("API 与任务")
+        val model = h.optString("model", "")
+        line("当前模型", model.ifEmpty { "未知" })
         val mt = h.optJSONObject("metrics_today")
         if (mt != null) {
-            sb.append("今日请求: ").append(mt.optInt("requests", 0))
-            sb.append("  消息: ").append(mt.optInt("messages", 0)).append("\n")
+            line("今日请求", mt.optInt("requests", 0).toString())
+            line("今日消息", mt.optInt("messages", 0).toString())
         }
+        line("活跃任务", h.optInt("active_runs", 0).toString())
+        line("子任务", h.optInt("active_delegations", 0).toString())
+        line("队列深度", h.optInt("process_queue_depth", 0).toString())
         val hb = h.optString("last_heartbeat", "")
-        if (hb.isNotEmpty()) sb.append("心跳: ").append(TimeFmt.isoToBj(hb)).append("（北京）")
+        if (hb.isNotEmpty()) line("最后心跳", TimeFmt.isoToBj(hb) + "（北京）")
+
         return sb.toString().trim()
     }
 
