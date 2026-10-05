@@ -27,6 +27,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Fullscreen
+import androidx.compose.material.icons.outlined.Photo
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -213,17 +216,19 @@ fun ChatInputBar(
                 Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    "🖼",
-                    fontSize = 13.sp,
-                    color = c.dim,
-                    modifier = Modifier.clickable { onPickImages() }.padding(horizontal = 4.dp)
+                // 无彩色 emoji，用单色描边图标（跟随主题前景色）
+                Icon(
+                    Icons.Outlined.Photo,
+                    contentDescription = "发送图片",
+                    tint = c.dim,
+                    modifier = Modifier.size(20.dp).clickable { onPickImages() }.padding(horizontal = 2.dp)
                 )
-                Text(
-                    "⛶",
-                    fontSize = 13.sp,
-                    color = c.dim,
-                    modifier = Modifier.clickable { onFullscreen() }.padding(horizontal = 4.dp)
+                Spacer(Modifier.width(6.dp))
+                Icon(
+                    Icons.Outlined.Fullscreen,
+                    contentDescription = "全屏编辑",
+                    tint = c.dim,
+                    modifier = Modifier.size(20.dp).clickable { onFullscreen() }.padding(horizontal = 2.dp)
                 )
             }
         }
@@ -324,7 +329,7 @@ fun Bubble(m: Msg) {
                     RichText(
                         text = if (m.pending && m.text.isEmpty()) "…" else m.text,
                         color = if (m.pending) c.dim else if (isUser) c.userText else c.text,
-                        fontSize = 14.sp,
+                        fontSize = 16.sp,
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -438,6 +443,9 @@ fun SettingsScreen(
     val dtext by vm.downloadText.collectAsState()
     var url by remember { mutableStateOf(prefs.serverUrl) }
     var keepAlive by remember { mutableStateOf(prefs.keepAlive) }
+    var showClear by remember { mutableStateOf(false) }
+    val cacheText by vm.cacheText.collectAsState()
+    LaunchedEffect(Unit) { vm.refreshCache() }
     val vc = remember {
         runCatching {
             ctx.packageManager.getPackageInfo(ctx.packageName, 0).longVersionCode.toInt()
@@ -491,11 +499,45 @@ fun SettingsScreen(
             Switch(checked = keepAlive, onCheckedChange = { keepAlive = it; vm.setKeepAlive(it) })
         }
         Spacer(Modifier.height(24.dp))
+        HorizontalDivider(color = c.card)
+        Spacer(Modifier.height(12.dp))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("清理缓存", color = c.text, fontSize = 13.sp)
+                Text(
+                    "当前占用 " + cacheText + "（待发图片 / 安装包 / 图片缓存）",
+                    color = c.dim, fontSize = 11.sp
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            OutlinedButton(
+                onClick = { showClear = true },
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                shape = RoundedCornerShape(8.dp),
+            ) { Text("清理", color = c.accent, fontSize = 12.sp) }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text("只清临时文件，不动聊天记录与设置", color = c.dim, fontSize = 11.sp)
+        Spacer(Modifier.height(24.dp))
         OutlinedButton(
             onClick = { prefs.loggedIn = false; onLogout() }, modifier = Modifier.fillMaxWidth()
         ) { Text("退出登录", color = c.bad) }
         Spacer(Modifier.height(10.dp))
         Text("退出后可重新选择身份", color = c.dim, fontSize = 11.sp)
+    }
+
+    if (showClear) {
+        AlertDialog(
+            onDismissRequest = { showClear = false },
+            title = { Text("清理缓存") },
+            text = { Text("将清空待发图片、已下载安装包、图片缓存，共 " + cacheText + "。\n聊天记录与设置不受影响。", fontSize = 13.sp) },
+            confirmButton = {
+                TextButton(onClick = { vm.clearCache(); showClear = false }) { Text("清理") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClear = false }) { Text("取消") }
+            }
+        )
     }
 
     val info = pending

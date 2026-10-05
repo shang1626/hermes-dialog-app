@@ -698,6 +698,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         Notifier.notifyMessage(app, "Hermes 回复", body)
     }
 
+    /** 缓存占用文案（待发图片 + 安装包 + 图片缓存），供设置页显示。 */
+    private val _cacheText = MutableStateFlow("")
+    val cacheText = _cacheText.asStateFlow()
+
+    fun refreshCache() {
+        val app = getApplication<Application>()
+        _cacheText.value = fmtSize(CacheUtil.total(app))
+    }
+
+    /** 清理临时缓存；会话记录与草稿不动。 */
+    fun clearCache() {
+        val app = getApplication<Application>()
+        CacheUtil.clear(app)
+        refreshCache()
+    }
+
     /** 设置页切换「后台运行」时调用：关掉立即停掉前台服务，常驻通知随之消失。 */
     fun setKeepAlive(on: Boolean) {
         prefs.keepAlive = on
