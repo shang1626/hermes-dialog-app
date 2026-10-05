@@ -168,6 +168,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val _pendingUpdate = MutableStateFlow<UpdateInfo?>(null)
     val pendingUpdate = _pendingUpdate.asStateFlow()
 
+    /** 服务端存在比本机更新的版本时为 true：抽屉里「设置」右上角显示绿点。 */
+    private val _updateBadge = MutableStateFlow(false)
+    val updateBadge = _updateBadge.asStateFlow()
+
     /** -1 未下载；0..100 下载中百分比。 */
     private val _downloadPct = MutableStateFlow(-1)
     val downloadPct = _downloadPct.asStateFlow()
@@ -189,6 +193,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private var api: HermesApi? = null
     private var pingStarted = false
+
+    /** 本机版本号：静默检查更新时用来比较（免去每次从界面传进来）。 */
+    private val myVersionCode: Int = runCatching {
+        val app = getApplication<Application>()
+        val pi = app.packageManager.getPackageInfo(app.packageName, 0)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            pi.longVersionCode.toInt()
+        } else {
+            @Suppress("DEPRECATION") pi.versionCode
+        }
+    }.getOrDefault(1)
 
     init {
         // 通知栏直接回复：先取落盘的（App 被杀过），再收运行中的广播
@@ -371,6 +386,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         fetchCapabilities()
         resumeActiveRun()
         drainPendingReply()
+        checkUpdateSilently()
+    }
+
+    /**
+     * 静默检查更新：只更新「设置」角标，不弹框（启动 / 切身份时调用）。
+     * 用户主动点「检查更新」仍走 checkUpdate()，那时才弹确认框。
+     */
+    fun checkUpdateSilently() {
+        val a = api ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val info = a.checkUpdate() ?: return@launch
+                _updateBadge.value = info.versionCode > myVersionCode
+            } catch (_: Exception) {
+            }
+        }
     }
 
     /**
@@ -1094,9 +1125,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 if (info.versionCode <= currentVersionCode) {
                     _updateNote.value = "已是最新版本 " + info.versionName
+                    _updateBadge.value = false
                     return@launch
                 }
                 _updateNote.value = ""
+                _updateBadge.value = true
                 _pendingUpdate.value = info
             } catch (e: Exception) {
                 _updateNote.value = "检查失败：" + (e.message ?: "?")
