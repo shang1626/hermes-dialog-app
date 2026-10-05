@@ -513,6 +513,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         pingStarted = true
         viewModelScope.launch(Dispatchers.IO) {
             var fails = 0
+            var tick = 0
             while (true) {
                 val ok = api?.ping() ?: false
                 if (ok) {
@@ -523,6 +524,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     fails++
                     if (fails >= 2) _online.value = false
                 }
+                // 每 30 秒静默查一次更新：发新版后角标自动亮起，不必等下次启动。
+                tick++
+                if (tick % 6 == 0) checkUpdateSilently()
                 delay(5000)
             }
         }
