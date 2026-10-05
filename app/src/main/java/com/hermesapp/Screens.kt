@@ -630,9 +630,22 @@ fun SettingsScreen(
             }, modifier = Modifier.fillMaxWidth()
         ) { Text("保存", color = c.accent) }
         Spacer(Modifier.height(24.dp))
-        OutlinedButton(
-            onClick = { vm.checkUpdate(vc, ctx) }, modifier = Modifier.fillMaxWidth()
-        ) { Text("检查更新", color = c.accent) }
+        val hasUpdate by vm.updateBadge.collectAsState()
+        Box(Modifier.fillMaxWidth()) {
+            OutlinedButton(
+                onClick = { vm.checkUpdate(vc, ctx) }, modifier = Modifier.fillMaxWidth()
+            ) { Text("检查更新", color = c.accent) }
+            // 有新版本时：按钮右上角（边框内）一个小绿点，与抽屉「设置」角标联动
+            if (hasUpdate) {
+                Box(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 6.dp, end = 8.dp)
+                        .size(7.dp)
+                        .background(c.ok, CircleShape)
+                )
+            }
+        }
         if (updateNote.isNotEmpty()) {
             Spacer(Modifier.height(8.dp))
             Text(updateNote, color = c.dim, fontSize = 12.sp)
