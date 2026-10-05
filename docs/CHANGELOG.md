@@ -1,5 +1,12 @@
 # 变更记录
 
+## 2.10 — versionCode 21
+新增文件上传：输入栏加「文件」按钮（系统文件选择器，任意类型、可多选，最多 10 个）。
+图片上传逻辑泛化成通用附件上传，按真实扩展名给 MIME（不再硬填 image/jpeg）。
+单附件上限 10MB→50MB，最多 5→10 个。待发区非图片显示文件卡片，气泡里回显附件名。
+（Screens.kt、ChatViewModel.kt；服务端白名单扩到 31 种、上下行上限统一 50MB，
+/v1/runs 支持非图片文件落盘到工作区并在消息附路径——服务端补丁见 hermes-patches）
+
 ## 2.9 — versionCode 20
 支持接收文件与图片：服务端把回复里的 `MEDIA:` 标签内联成 data URL 后随消息下发，
 App 新增内联图片渲染 + 附件卡片（点击落盘到 `filesDir/attachments/`，再经 FileProvider

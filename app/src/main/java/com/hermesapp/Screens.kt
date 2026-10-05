@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AttachFile
 import androidx.compose.material.icons.outlined.Fullscreen
 import androidx.compose.material.icons.outlined.Photo
 import androidx.compose.foundation.verticalScroll
@@ -73,14 +74,21 @@ fun ChatScreen(
 
     // 相册/图片选择器（系统 Photo Picker，无需存储权限）
     val picker = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickMultipleVisualMedia(5)
+        ActivityResultContracts.PickMultipleVisualMedia(10)
     ) { uris ->
         for (u in uris) vm.addImage(ctx, u)
     }
 
+    // 任意文件选择器（系统 Documents UI，可多选，无需存储权限）
+    val filePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        for (u in uris) vm.addFile(ctx, u)
+    }
+
     Column(Modifier.fillMaxSize()) {
         MessageList(vm, Modifier.weight(1f))
-        // 待发送图片：缩略图横排，每张右上角 × 可单删
+        // 待发送附件：图片显缩略图、其他显文件卡片，右上角 × 可单删
         if (pend.isNotEmpty() || note.isNotEmpty()) {
             Column(Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 10.dp, vertical = 6.dp)) {
                 if (note.isNotEmpty()) {
@@ -90,12 +98,26 @@ fun ChatScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     for (p in pend) {
                         Box(Modifier.size(56.dp)) {
-                            AsyncImage(
-                                model = p.uri,
-                                contentDescription = null,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(8.dp))
-                            )
+                            if (p.isImage) {
+                                AsyncImage(
+                                    model = p.uri,
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(8.dp))
+                                )
+                            } else {
+                                // 非图片：显示文件名 + 类型角标的卡片
+                                Box(
+                                    Modifier.fillMaxSize().clip(RoundedCornerShape(8.dp))
+                                        .background(c.panel)
+                                ) {
+                                    Text(
+                                        p.file.name.takeLast(14),
+                                        color = c.dim, fontSize = 10.sp,
+                                        modifier = Modifier.align(Alignment.Center).padding(horizontal = 3.dp)
+                                    )
+                                }
+                            }
                             Text(
                                 "×", color = Color.White, fontSize = 12.sp,
                                 modifier = Modifier
@@ -115,6 +137,7 @@ fun ChatScreen(
             onInput = onInput,
             onFullscreen = { fullscreen = true },
             onPickImages = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+            onPickFiles = { filePicker.launch(arrayOf("*/*")) },
         )
     }
 
@@ -196,6 +219,7 @@ fun ChatInputBar(
     onInput: (String) -> Unit,
     onFullscreen: () -> Unit,
     onPickImages: () -> Unit,
+    onPickFiles: () -> Unit,
 ) {
     val c = LocalAppColors.current
     val busy by vm.busy.collectAsState()
@@ -222,6 +246,13 @@ fun ChatInputBar(
                     contentDescription = "发送图片",
                     tint = c.dim,
                     modifier = Modifier.size(20.dp).clickable { onPickImages() }.padding(horizontal = 2.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Icon(
+                    Icons.Outlined.AttachFile,
+                    contentDescription = "发送文件",
+                    tint = c.dim,
+                    modifier = Modifier.size(20.dp).clickable { onPickFiles() }.padding(horizontal = 2.dp)
                 )
                 Spacer(Modifier.width(6.dp))
                 Icon(
@@ -320,6 +351,23 @@ fun Bubble(m: Msg) {
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier.size(72.dp).clip(RoundedCornerShape(8.dp))
                             )
+                        }
+                    }
+                    if (m.text.isNotBlank() || m.files.isNotEmpty()) Spacer(Modifier.height(6.dp))
+                }
+                // 用户发的非图片附件：气泡内文件卡片回显
+                if (m.files.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        for (fn in m.files) {
+                            Row(
+                                Modifier.clip(RoundedCornerShape(6.dp)).background(c.panel)
+                                    .padding(horizontal = 8.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("📎", fontSize = 13.sp)
+                                Spacer(Modifier.width(5.dp))
+                                Text(fn, color = c.dim, fontSize = 13.sp)
+                            }
                         }
                     }
                     if (m.text.isNotBlank()) Spacer(Modifier.height(6.dp))
