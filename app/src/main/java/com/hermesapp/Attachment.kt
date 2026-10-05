@@ -82,3 +82,19 @@ fun openAttachment(ctx: Context, name: String, data: DecodedData) {
         ctx.startActivity(intent)
     }
 }
+
+
+/**
+ * 网关托管媒体的下载入口：ChatViewModel 登录后把带鉴权的取文件函数挂到这里，
+ * Markdown 附件卡片点开时调用（大文件不再塞进消息体，按需下载）。
+ */
+object MediaFetch {
+    /** 取不到（未登录）时为 null。 */
+    @Volatile var handler: ((String) -> ByteArray?)? = null
+
+    fun download(token: String): ByteArray? = try {
+        handler?.invoke(token)
+    } catch (_: Exception) {
+        null
+    }
+}

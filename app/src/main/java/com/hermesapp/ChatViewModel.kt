@@ -35,6 +35,8 @@ data class Msg(
     val usage: Usage? = null,
     /** 审批卡片：服务端在等一个 choice 回执；空表示无待审批。 */
     val approval: ApprovalCard? = null,
+    /** 澄清卡片：服务端在等我问你选项的回执。 */
+    val clarify: ClarifyCard? = null,
     /** 子任务进度（delegate_task 派出的子代理），按开始顺序排列。 */
     val subagents: List<SubagentLine> = emptyList(),
     /** 稳定唯一 id：给 LazyColumn 做 key，避免滑动时整列重组。 */
@@ -52,6 +54,15 @@ data class ApprovalCard(
     val command: String,
     val description: String,
     val choices: List<String>,
+    val resolved: String = "",
+)
+
+/** 澄清卡片：服务端 clarify.request 事件下发（我问你「选 A 还是 B」），点选项回执。 */
+data class ClarifyCard(
+    val clarifyId: String,
+    val question: String,
+    val choices: List<String>,
+    val multiSelect: Boolean = false,
     val resolved: String = "",
 )
 
@@ -320,6 +331,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val key = if (p.profile == "default") Keys.DEFAULT_KEY else Keys.FRIEND_KEY
         val prefix = if (p.profile == "default") "" else "/p/friend"
         api = HermesApi(p.serverUrl, key, prefix)
+        // 网关托管媒体：把带鉴权的取文件函数挂给 Markdown 附件卡片
+        val a0 = api
+        MediaFetch.handler = { token -> a0?.downloadMedia(token) }
         bootstrapSessions(p.sessionId)
         pingLoop()
         refreshStatus()
@@ -678,6 +692,39 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 澄清请求：挂到当前助手气泡上，等用户选选项回执。 */
+    private fun attachClarify(ev: com.hermesapp.net.SseEvent) {
+        val cid = ev.data.optString("clarify_id", "")
+        val q = ev.data.optString("question", "")
+        val chs = mutableListOf<String>()
+        ev.data.optJSONArray("choices")?.let { a ->
+            for (i in 0 until a.length()) chs.add(a.optString(i))
+        }
+        if (cid.isEmpty() || q.isEmpty()) return
+        val card = ClarifyCard(cid, q, chs, ev.data.optBoolean("multi_select", false))
+        val list = _messages.value.toMutableList()
+        val i = list.indexOfLast { it.role == "assistant" && it.pending }
+        if (i >= 0) list[i] = list[i].copy(clarify = card)
+        else list.add(Msg("assistant", "", pending = true, ts = stamp(), clarify = card))
+        setMsgs(list)
+    }
+
+    /** 用户点了澄清选项：回执给服务端，并把卡片置为已选。 */
+    fun respondClarify(msgId: Long, choice: String) {
+        val a = api ?: return
+        val rid = currentRunId ?: return
+        val list = _messages.value.toMutableList()
+        val i = list.indexOfFirst { it.id == msgId }
+        if (i < 0) return
+        val card = list[i].clarify ?: return
+        if (card.resolved.isNotEmpty()) return
+        list[i] = list[i].copy(clarify = card.copy(resolved = choice))
+        setMsgs(list)
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { a.respondClarify(rid, card.clarifyId, choice) }
+        }
+    }
+
     /** 审批请求：挂到当前助手气泡上，等用户点按钮回执。 */
     private fun attachApproval(ev: com.hermesapp.net.SseEvent) {
         val rid = ev.data.optString("request_id", "")
@@ -790,6 +837,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         if (line.isNotEmpty()) appendTrace(line)
                     }
                     "approval.request" -> attachApproval(ev)
+                    "clarify.request" -> attachClarify(ev)
                     "subagent.start" -> upsertSubagent(ev, running = true)
                     "subagent.complete" -> upsertSubagent(ev, running = false)
                     "run.completed" -> {
