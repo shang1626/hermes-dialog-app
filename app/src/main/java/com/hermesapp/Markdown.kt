@@ -31,7 +31,12 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import coil.compose.AsyncImage
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
 import android.net.Uri
 import android.widget.Toast
 import androidx.compose.ui.text.AnnotatedString
@@ -288,8 +293,8 @@ fun LocalImageView(uri: String, modifier: Modifier = Modifier) {
 }
 
 /**
- * 可缩放图片：缩略图点击 → 全屏 Dialog（点任意处关闭），缩略图/全屏长按 → 保存到相册。
- * model 可以是 ByteArray（内联图）或 Uri 字符串（本地图）；decoded 为 null 时只放大、不保存。
+ * 可缩放图片：缩略图点击 → 全屏 Dialog；全屏支持双指缩放/拖动，底部「保存到相册」按钮保存。
+ * model 可以是 ByteArray（内联图）或 Uri 字符串（本地图）；decoded 为 null 时无保存按钮。
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -316,13 +321,16 @@ private fun ZoomableImage(
         model = model,
         contentDescription = alt.ifBlank { "图片" },
         contentScale = thumbScale,
-        modifier = thumbModifier.combinedClickable(
-            onClick = { zoom = true },
-            onLongClick = { save() }
-        )
+        modifier = thumbModifier.clickable { zoom = true }
     )
     if (zoom) {
-        // 全屏查看：点任意处关闭，长按保存到相册（无需外部应用）
+        // 全屏查看：双指缩放 + 拖动，底部按钮保存/关闭（点空白不再误关，方便缩放）
+        var scale by remember { mutableStateOf(1f) }
+        var offset by remember { mutableStateOf(Offset.Zero) }
+        val state = rememberTransformableState { zoomChange, panChange, _ ->
+            scale = (scale * zoomChange).coerceIn(1f, 6f)
+            offset = if (scale <= 1f) Offset.Zero else offset + panChange
+        }
         Dialog(
             onDismissRequest = { zoom = false },
             properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -330,21 +338,45 @@ private fun ZoomableImage(
             Box(
                 Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.95f))
-                    .combinedClickable(
-                        onClick = { zoom = false },
-                        onLongClick = { save() }
-                    ),
+                    .background(Color.Black.copy(alpha = 0.95f)),
                 contentAlignment = Alignment.Center
             ) {
                 AsyncImage(
                     model = model,
                     contentDescription = alt.ifBlank { "图片" },
                     contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxWidth().padding(12.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp)
+                        .graphicsLayer(
+                            scaleX = scale, scaleY = scale,
+                            translationX = offset.x, translationY = offset.y
+                        )
+                        .transformable(state)
                 )
+                // 顶部操作条：不再依赖长按，按钮一目了然
+                Row(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (decoded != null) {
+                        OutlinedButton(
+                            onClick = { save() },
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                            shape = RoundedCornerShape(8.dp),
+                        ) { Text("保存到相册", color = Color.White, fontSize = 13.sp) }
+                    }
+                    OutlinedButton(
+                        onClick = { zoom = false },
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                        shape = RoundedCornerShape(8.dp),
+                    ) { Text("关闭", color = Color.White, fontSize = 13.sp) }
+                }
                 Text(
-                    if (decoded != null) "点任意处关闭 · 长按保存到相册" else "点任意处关闭",
+                    "双指缩放 · 拖动查看",
                     color = Color.White.copy(alpha = 0.7f),
                     fontSize = 12.sp,
                     modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 28.dp)
