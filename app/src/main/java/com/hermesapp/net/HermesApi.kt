@@ -54,6 +54,10 @@ class HermesApi(
     fun getRun(runId: String): JSONObject =
         sync(base("/v1/runs/" + runId).get().build())
 
+    /** 拉取服务端某会话的消息列表（重开 App 时补回后台任务产出）。 */
+    fun sessionMessages(sessionId: String): JSONObject =
+        sync(base("/api/sessions/" + sessionId + "/messages").get().build())
+
     fun stopRun(runId: String) {
         runCatching {
             client.newCall(base("/v1/runs/" + runId + "/stop").post("{}".toRequestBody(jsonType)).build())

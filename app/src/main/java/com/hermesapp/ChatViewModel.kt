@@ -139,6 +139,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         list[i] = list[i].copy(archived = archived)
         _sessions.value = list
         store.saveIndex(list)
+        if (id == _currentId.value && archived) selectNextOrEmpty()
     }
 
     fun deleteSession(id: String) {
@@ -146,16 +147,24 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val list = _sessions.value.filter { it.id != id }.toMutableList()
         _sessions.value = list
         store.saveIndex(list)
-        if (id == _currentId.value) {
-            val next = list.firstOrNull { !it.archived }
-            if (next != null) {
-                switchSession(next.id)
-            } else {
-                _currentId.value = ""
-                _messages.value = emptyList()
-                newConversation()
-            }
+        if (id == _currentId.value) selectNextOrEmpty()
+    }
+
+    /** 当前会话被删/归档后：优先切到下一个未归档会话；没有则清空进入空态（输入即新建）。 */
+    private fun selectNextOrEmpty() {
+        saveJob?.cancel()
+        val next = _sessions.value.firstOrNull { !it.archived }
+        if (next != null) {
+            _currentId.value = next.id
+            prefs.sessionId = next.id
+            _messages.value = store.loadMessages(next.id)
+        } else {
+            _currentId.value = ""
+            prefs.sessionId = null
+            _messages.value = emptyList()
         }
+        _retryNote.value = ""
+        autoContinue = 0
     }
 
     private fun touchSession(firstUserText: String?) {
@@ -178,13 +187,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (store.loadIndex().isEmpty()) {
             val migrated = store.migrateLegacy(profileSessionId ?: "")
             if (migrated == null) {
-                val id = profileSessionId ?: UUID.randomUUID().toString()
-                val meta = SessionMeta(id, "新对话", stamp(), false)
-                store.saveIndex(listOf(meta))
-                _currentId.value = id
-                prefs.sessionId = id
+                // 无历史会话：进入空态，首次输入再建会话
+                _currentId.value = ""
+                prefs.sessionId = null
                 _messages.value = emptyList()
-                _sessions.value = listOf(meta)
+                _sessions.value = emptyList()
                 return
             }
             _currentId.value = migrated.id
@@ -210,7 +217,40 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         bootstrapSessions(p.sessionId)
         pingLoop()
         refreshStatus()
+        refreshFromServer()
     }
+
+    /** 重开 App 时从服务端拉当前会话消息：后台跑完的任务产出据此补回。 */
+    fun refreshFromServer() {
+        val a = api ?: return
+        val id = _currentId.value
+        if (id.isEmpty() || _busy.value) return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val resp = a.sessionMessages(id)
+                val arr = resp.optJSONArray("data") ?: return@launch
+                val list = mutableListOf<Msg>()
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val role = o.optString("role", "assistant")
+                    if (role != "user" && role != "assistant") continue
+                    val content = o.optString("content", "")
+                    if (content.isEmpty()) continue
+                    list.add(Msg(role, content, pending = false, ts = parseTs(o.optString("timestamp", ""))))
+                }
+                if (list.isNotEmpty()) {
+                    _messages.value = list
+                    store.saveMessages(id, list, maxHistory)
+                }
+            } catch (_: Exception) {
+                // 服务端无此会话或网络异常：保留本地内容
+            }
+        }
+    }
+
+    private fun parseTs(s: String): Long = runCatching {
+        java.time.OffsetDateTime.parse(s).toInstant().toEpochMilli()
+    }.getOrDefault(0L)
 
     private fun pingLoop() {
         if (pingStarted) return
@@ -277,6 +317,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun send(text: String) {
         val a = api ?: return
         if (text.isBlank() || _busy.value) return
+        // 空态（无选中会话）：直接输入即新建对话
+        if (_currentId.value.isEmpty()) {
+            val id = UUID.randomUUID().toString()
+            _currentId.value = id
+            prefs.sessionId = id
+            _sessions.value = _sessions.value + SessionMeta(id, "新对话", stamp(), false)
+            store.saveIndex(_sessions.value)
+        }
         val wasEmpty = _messages.value.none { it.role == "user" }
         setMsgs(_messages.value + Msg("user", text, ts = stamp()))
         touchSession(if (wasEmpty) text else null)
