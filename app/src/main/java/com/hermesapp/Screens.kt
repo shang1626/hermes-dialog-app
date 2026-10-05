@@ -1,5 +1,15 @@
 package com.hermesapp
 
+import android.app.Activity
+import android.content.Context
+import android.graphics.drawable.GradientDrawable
+import android.text.Editable
+import android.text.InputType
+import android.text.TextWatcher
+import android.view.Gravity
+import android.view.inputmethod.InputMethodManager
+import android.widget.EditText
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -17,47 +27,76 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import android.graphics.drawable.GradientDrawable
-import android.text.Editable
-import android.text.InputType
-import android.text.TextWatcher
-import android.view.Gravity
-import android.widget.EditText
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
 
+/**
+ * 对话页。输入状态用 MutableState<String> 持有：
+ * 打字只让 ChatInputBar 重组，消息列表（MessageList）完全不动 —— 消除输入卡顿。
+ */
 @Composable
 fun ChatScreen(
     vm: ChatViewModel,
     prefs: Prefs,
-    input: String,
+    inputState: MutableState<String>,
     onInput: (String) -> Unit,
 ) {
+    var fullscreen by remember { mutableStateOf(false) }
+
+    Column(Modifier.fillMaxSize()) {
+        MessageList(vm, Modifier.weight(1f))
+        ChatInputBar(
+            vm = vm,
+            inputState = inputState,
+            onInput = onInput,
+            onFullscreen = { fullscreen = true },
+        )
+    }
+
+    if (fullscreen) {
+        FullScreenInput(
+            initial = inputState.value,
+            onCancel = { fullscreen = false },
+            onDone = { v -> onInput(v); fullscreen = false },
+        )
+    }
+}
+
+/** 消息列表独立成 composable：打字时它不参与重组，长对话滑动也顺。 */
+@Composable
+fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
     val c = LocalAppColors.current
     val msgs by vm.messages.collectAsState()
-    val busy by vm.busy.collectAsState()
     val note by vm.retryNote.collectAsState()
-    var fullscreen by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val focus = LocalFocusManager.current
+    val ctx = LocalContext.current
+    val view = LocalView.current
 
     // 末尾放一个 1dp 占位项，永远滚到它 = 永远贴底（正文增长也能跟上）
-    LaunchedEffect(msgs.size, msgs.lastOrNull()?.text, msgs.lastOrNull()?.pending) {
+    LaunchedEffect(msgs.size, msgs.lastOrNull()?.id, msgs.lastOrNull()?.text, msgs.lastOrNull()?.pending) {
         if (msgs.isNotEmpty()) listState.animateScrollToItem(msgs.size)
     }
 
     Column(
-        Modifier.fillMaxSize().pointerInput(Unit) {
-            detectTapGestures(onTap = { focus.clearFocus() })
+        modifier.fillMaxWidth().pointerInput(Unit) {
+            detectTapGestures(onTap = {
+                // 点消息区/空白处：清焦点并立即收起软键盘
+                focus.clearFocus()
+                (ctx as? Activity)?.currentFocus?.clearFocus()
+                val imm = ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+                imm?.hideSoftInputFromWindow(view.windowToken, 0)
+            })
         }
     ) {
         if (note.isNotEmpty()) {
@@ -70,57 +109,60 @@ fun ChatScreen(
             verticalArrangement = Arrangement.spacedBy(8.dp),
             contentPadding = PaddingValues(vertical = 10.dp)
         ) {
-            items(msgs) { m -> Bubble(m) }
+            items(msgs, key = { it.id }) { m -> Bubble(m) }
             item { Spacer(Modifier.height(1.dp)) }
         }
-        Row(
-            Modifier.fillMaxWidth().background(c.panel).padding(8.dp),
-            verticalAlignment = Alignment.Bottom
-        ) {
-            Box(Modifier.weight(1f)) {
-                NativeChatInput(
-                    value = input,
-                    onValueChange = onInput,
-                    hintText = "发消息…",
-                    modifier = Modifier.fillMaxWidth()
-                )
-                // 输入框内右下角的小全屏按钮，无边框
-                Text(
-                    "⛶",
-                    fontSize = 14.sp,
-                    color = c.dim,
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(end = 10.dp, bottom = 8.dp)
-                        .clickable { fullscreen = true }
-                )
-            }
-            Spacer(Modifier.width(6.dp))
-            if (busy) {
-                OutlinedButton(
-                    onClick = { vm.stop() },
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                    shape = RoundedCornerShape(8.dp),
-                ) { Text("停止", color = c.bad, fontSize = 13.sp) }
-            } else {
-                OutlinedButton(
-                    onClick = {
-                        val t = input.trim()
-                        if (t.isNotEmpty()) { vm.send(t); onInput("") }
-                    },
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                    shape = RoundedCornerShape(8.dp),
-                ) { Text("发送", color = c.accent, fontSize = 13.sp) }
-            }
-        }
     }
+}
 
-    if (fullscreen) {
-        FullScreenInput(
-            initial = input,
-            onCancel = { fullscreen = false },
-            onDone = { v -> onInput(v); fullscreen = false },
-        )
+@Composable
+fun ChatInputBar(
+    vm: ChatViewModel,
+    inputState: MutableState<String>,
+    onInput: (String) -> Unit,
+    onFullscreen: () -> Unit,
+) {
+    val c = LocalAppColors.current
+    val busy by vm.busy.collectAsState()
+    val input = inputState.value
+    Row(
+        Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(Modifier.weight(1f)) {
+            NativeChatInput(
+                value = input,
+                onValueChange = onInput,
+                hintText = "发消息…",
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                "⛶",
+                fontSize = 14.sp,
+                color = c.dim,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 10.dp, bottom = 6.dp)
+                    .clickable { onFullscreen() }
+            )
+        }
+        Spacer(Modifier.width(6.dp))
+        if (busy) {
+            OutlinedButton(
+                onClick = { vm.stop() },
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                shape = RoundedCornerShape(8.dp),
+            ) { Text("停止", color = c.bad, fontSize = 13.sp) }
+        } else {
+            OutlinedButton(
+                onClick = {
+                    val t = input.trim()
+                    if (t.isNotEmpty()) { vm.send(t); onInput("") }
+                },
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                shape = RoundedCornerShape(8.dp),
+            ) { Text("发送", color = c.accent, fontSize = 13.sp) }
+        }
     }
 }
 
@@ -132,6 +174,8 @@ fun FullScreenInput(
 ) {
     val c = LocalAppColors.current
     var v by remember { mutableStateOf(initial) }
+    // 侧滑/返回键：关全屏输入回到对话界面（不再直接退出软件）
+    BackHandler { onCancel() }
     Surface(color = c.bg, modifier = Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -322,7 +366,7 @@ fun sizeText(b: Long): String = when {
  * 原生 EditText 输入框。
  * Compose TextField 在部分输入法下会丢失「快捷输入符号」（全角标点/符号候选）的提交
  * （issuetracker 373743376 一类问题，1.6.x 仍复现）。改用 Android 原生 EditText 通过
- * AndroidView 承载，输入法走系统原生 InputConnection，符号提交 100% 可靠。
+ * AndroidView 承载，输入法走系统原生 InputConnection，符号提交可靠。
  */
 @Composable
 fun NativeChatInput(
@@ -351,7 +395,7 @@ fun NativeChatInput(
                 inputType = InputType.TYPE_CLASS_TEXT or
                     InputType.TYPE_TEXT_FLAG_MULTI_LINE or
                     InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-                setPadding(30, 24, 30, 24)
+                setPadding(30, 16, 30, 16)
                 addTextChangedListener(object : TextWatcher {
                     override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                     override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
