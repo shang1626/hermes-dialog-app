@@ -172,6 +172,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val _updateBadge = MutableStateFlow(false)
     val updateBadge = _updateBadge.asStateFlow()
 
+    /** 正在跑任务的会话 id 集合：会话列表里给它们显示「执行中」标识。 */
+    private val _runningIds = MutableStateFlow<Set<String>>(emptySet())
+    val runningIds = _runningIds.asStateFlow()
+
     /** -1 未下载；0..100 下载中百分比。 */
     private val _downloadPct = MutableStateFlow(-1)
     val downloadPct = _downloadPct.asStateFlow()
@@ -472,12 +476,28 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 // 守卫：请求发出后用户可能已切走会话（或该会话已在跑任务）。
                 if (_currentId.value != id || r.busy.value) return@launch
-                // 服务端没有该会话/返回空时不覆盖本地，避免把正在看的对话清空。
-                if (list.isNotEmpty()) {
-                    r.messages.value = list
-                    r.loaded = true
-                    store.saveMessages(id, list, maxHistory)
+                if (list.isEmpty()) return@launch
+                // 合并而不是覆盖：本地消息正文里带内联图片（data URL），而服务端存的是
+                // 原始 MEDIA: 路径——直接覆盖会把图片弄丢（用户报「更新后图片不见了」）。
+                // 规则：本地该条已有内容就保留本地（更完整、含图）；本地是空占位而服务端
+                // 有内容才用服务端；本地没有的尾部（后台任务产出）按服务端补上。
+                val local = r.messages.value
+                val merged = mutableListOf<Msg>()
+                val n = maxOf(local.size, list.size)
+                for (i in 0 until n) {
+                    val l = local.getOrNull(i)
+                    val s = list.getOrNull(i)
+                    when {
+                        l == null -> if (s != null) merged.add(s)
+                        s == null -> merged.add(l)
+                        l.pending && l.text.isEmpty() && l.trace.isEmpty() && s.text.isNotEmpty() ->
+                            merged.add(l.copy(text = s.text, pending = false))
+                        else -> merged.add(l)
+                    }
                 }
+                r.messages.value = merged
+                r.loaded = true
+                store.saveMessages(id, merged, maxHistory)
             } catch (_: Exception) {
                 // 服务端无此会话或网络异常：保留本地内容
             }
@@ -1069,8 +1089,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 只要有任意会话在跑任务就保持前台服务；全部结束才停（通知随之消失）。 */
     private fun updateRunService() {
-        val any = runtimes.values.any { it.busy.value }
-        if (any) {
+        val running = runtimes.filterValues { it.busy.value }.keys.toSet()
+        _runningIds.value = running
+        if (running.isNotEmpty()) {
             if (prefs.keepAlive) RunService.start(getApplication())
         } else {
             RunService.stop(getApplication())

@@ -11,6 +11,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.ClickableText
 import androidx.compose.material3.Text
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -250,18 +252,27 @@ private fun MdTable(rows: List<List<String>>, color: Color, fontSize: TextUnit) 
     }
 }
 
-/** 内联图片：点击用系统看图/浏览器打开，长按保存到相册。 */
+/** 内联图片：点击 App 内放大查看（不再甩给外部软件），长按保存到相册。 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MdImage(dataUrl: String, alt: String) {
     val ctx = LocalContext.current
     val c = LocalAppColors.current
     val decoded = remember(dataUrl) { decodeDataUrl(dataUrl) }
+    var zoom by remember { mutableStateOf(false) }
     if (decoded == null) {
         Text("[图片解析失败]", color = c.dim, fontSize = 12.sp)
         return
     }
     val name = alt.ifBlank { "image" } + extFor(decoded.mime)
+    fun save() {
+        val saved = saveImageToGallery(ctx, name, decoded)
+        Toast.makeText(
+            ctx,
+            if (saved != null) "已保存到相册：Pictures/Hermes/$saved" else "保存失败",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
     AsyncImage(
         model = decoded.bytes,
         contentDescription = alt.ifBlank { "图片" },
@@ -270,17 +281,41 @@ private fun MdImage(dataUrl: String, alt: String) {
             .widthIn(max = 300.dp)
             .clip(RoundedCornerShape(8.dp))
             .combinedClickable(
-                onClick = { openAttachment(ctx, name, decoded) },
-                onLongClick = {
-                    val saved = saveImageToGallery(ctx, name, decoded)
-                    Toast.makeText(
-                        ctx,
-                        if (saved != null) "已保存到相册：Pictures/Hermes/$saved" else "保存失败",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
+                onClick = { zoom = true },
+                onLongClick = { save() }
             )
     )
+    if (zoom) {
+        // 全屏查看：点任意处关闭，长按保存到相册（无需外部应用）
+        Dialog(
+            onDismissRequest = { zoom = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.95f))
+                    .combinedClickable(
+                        onClick = { zoom = false },
+                        onLongClick = { save() }
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                AsyncImage(
+                    model = decoded.bytes,
+                    contentDescription = alt.ifBlank { "图片" },
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxWidth().padding(12.dp)
+                )
+                Text(
+                    "点任意处关闭 · 长按保存到相册",
+                    color = Color.White.copy(alpha = 0.7f),
+                    fontSize = 12.sp,
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 28.dp)
+                )
+            }
+        }
+    }
 }
 
 /** 非图片附件卡片：点一下落盘再拉起系统应用打开（HTML 走浏览器）。 */
