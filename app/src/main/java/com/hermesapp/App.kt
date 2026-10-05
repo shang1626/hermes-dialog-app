@@ -27,7 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.TextFieldValue
+
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -269,13 +269,14 @@ fun MainScaffold(
     val c = LocalAppColors.current
     var tab by remember { mutableStateOf(0) }
     // 输入框内容提到这里，切到状态/设置再回来不丢
-    var chatInput by remember { mutableStateOf(TextFieldValue("")) }
+    var chatInput by remember { mutableStateOf("") }
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     LaunchedEffect(prefs.profile) { vm.onProfileChanged(prefs) }
 
-    // 返回键/侧滑返回：先回对话页；已在对话页则交给系统退出
-    BackHandler(enabled = tab != 0) { tab = 0 }
+    // 返回键/侧滑返回：抽屉开着先收抽屉（不再直接退出软件）；否则先回对话页；已在对话页则交给系统退出
+    BackHandler(enabled = drawer.isOpen) { scope.launch { drawer.close() } }
+    BackHandler(enabled = !drawer.isOpen && tab != 0) { tab = 0 }
 
     ModalNavigationDrawer(
         drawerState = drawer,

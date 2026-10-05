@@ -23,17 +23,24 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.graphics.drawable.GradientDrawable
+import android.text.Editable
+import android.text.InputType
+import android.text.TextWatcher
+import android.view.Gravity
+import android.widget.EditText
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
 
 @Composable
 fun ChatScreen(
     vm: ChatViewModel,
     prefs: Prefs,
-    input: TextFieldValue,
-    onInput: (TextFieldValue) -> Unit,
+    input: String,
+    onInput: (String) -> Unit,
 ) {
     val c = LocalAppColors.current
     val msgs by vm.messages.collectAsState()
@@ -71,17 +78,11 @@ fun ChatScreen(
             verticalAlignment = Alignment.Bottom
         ) {
             Box(Modifier.weight(1f)) {
-                OutlinedTextField(
+                NativeChatInput(
                     value = input,
                     onValueChange = onInput,
-                    placeholder = { Text("发消息…", color = c.dim) },
-                    modifier = Modifier.fillMaxWidth(),
-                    maxLines = 5,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Text,
-                        imeAction = ImeAction.Default
-                    ),
-                    colors = fieldColors(c)
+                    hintText = "发消息…",
+                    modifier = Modifier.fillMaxWidth()
                 )
                 // 输入框内右下角的小全屏按钮，无边框
                 Text(
@@ -104,8 +105,8 @@ fun ChatScreen(
             } else {
                 OutlinedButton(
                     onClick = {
-                        val t = input.text.trim()
-                        if (t.isNotEmpty()) { vm.send(t); onInput(TextFieldValue("")) }
+                        val t = input.trim()
+                        if (t.isNotEmpty()) { vm.send(t); onInput("") }
                     },
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                     shape = RoundedCornerShape(8.dp),
@@ -125,9 +126,9 @@ fun ChatScreen(
 
 @Composable
 fun FullScreenInput(
-    initial: TextFieldValue,
+    initial: String,
     onCancel: () -> Unit,
-    onDone: (TextFieldValue) -> Unit,
+    onDone: (String) -> Unit,
 ) {
     val c = LocalAppColors.current
     var v by remember { mutableStateOf(initial) }
@@ -149,16 +150,11 @@ fun FullScreenInput(
                 ) { Text("完成", fontSize = 12.sp, color = c.accent) }
             }
             Spacer(Modifier.height(10.dp))
-            OutlinedTextField(
+            NativeChatInput(
                 value = v,
                 onValueChange = { v = it },
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                placeholder = { Text("在此输入…", color = c.dim) },
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Text,
-                    imeAction = ImeAction.Default
-                ),
-                colors = fieldColors(c)
+                hintText = "在此输入…",
+                modifier = Modifier.weight(1f).fillMaxWidth()
             )
         }
     }
@@ -246,7 +242,6 @@ fun SettingsScreen(
     val pct by vm.downloadPct.collectAsState()
     val dtext by vm.downloadText.collectAsState()
     var url by remember { mutableStateOf(prefs.serverUrl) }
-    var profile by remember { mutableStateOf(prefs.profile) }
     val vc = remember {
         runCatching {
             ctx.packageManager.getPackageInfo(ctx.packageName, 0).longVersionCode.toInt()
@@ -258,18 +253,10 @@ fun SettingsScreen(
         OutlinedTextField(value = url, onValueChange = { url = it },
             modifier = Modifier.fillMaxWidth(), colors = fieldColors(c),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done))
-        Spacer(Modifier.height(14.dp))
-        Text("对话身份", color = c.dim, fontSize = 12.sp)
-        Spacer(Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            ProfileBtn("friend", Modifier.weight(1f)) { profile = "friend" }
-            ProfileBtn("default", Modifier.weight(1f)) { profile = "default" }
-        }
         Spacer(Modifier.height(18.dp))
         OutlinedButton(
             onClick = {
                 prefs.serverUrl = url
-                prefs.profile = profile
                 vm.onProfileChanged(prefs)
             }, modifier = Modifier.fillMaxWidth()
         ) { Text("保存", color = c.accent) }
@@ -329,4 +316,57 @@ fun sizeText(b: Long): String = when {
     b >= 1024L -> String.format("%.0f KB", b / 1024.0)
     b > 0 -> b.toString() + " B"
     else -> "未知"
+}
+
+/**
+ * 原生 EditText 输入框。
+ * Compose TextField 在部分输入法下会丢失「快捷输入符号」（全角标点/符号候选）的提交
+ * （issuetracker 373743376 一类问题，1.6.x 仍复现）。改用 Android 原生 EditText 通过
+ * AndroidView 承载，输入法走系统原生 InputConnection，符号提交 100% 可靠。
+ */
+@Composable
+fun NativeChatInput(
+    value: String,
+    onValueChange: (String) -> Unit,
+    hintText: String,
+    modifier: Modifier = Modifier,
+) {
+    val c = LocalAppColors.current
+    AndroidView(
+        modifier = modifier,
+        factory = { context ->
+            EditText(context).apply {
+                background = GradientDrawable().apply {
+                    setColor(android.graphics.Color.TRANSPARENT)
+                    setStroke(2, c.dim.toArgb())
+                    cornerRadius = 24f
+                }
+                hint = hintText
+                setHintTextColor(c.dim.toArgb())
+                setTextColor(c.text.toArgb())
+                textSize = 15f
+                isSingleLine = false
+                maxLines = 5
+                gravity = Gravity.TOP or Gravity.START
+                inputType = InputType.TYPE_CLASS_TEXT or
+                    InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                    InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                setPadding(30, 24, 30, 24)
+                addTextChangedListener(object : TextWatcher {
+                    override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                    override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                    override fun afterTextChanged(s: Editable?) {
+                        onValueChange(s?.toString() ?: "")
+                    }
+                })
+            }
+        },
+        update = { et ->
+            val cur = et.text?.toString() ?: ""
+            if (cur != value) {
+                et.setText(value)
+                et.setSelection(value.length)
+            }
+        },
+    )
 }
