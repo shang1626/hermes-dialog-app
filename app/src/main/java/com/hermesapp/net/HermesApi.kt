@@ -45,11 +45,33 @@ class HermesApi(
         }
     }
 
-    fun startRun(input: String, sessionId: String?): JSONObject {
+    fun startRun(input: String, sessionId: String?, images: List<String> = emptyList()): JSONObject {
         val body = JSONObject().put("input", input)
         if (!sessionId.isNullOrEmpty()) body.put("session_id", sessionId)
+        if (images.isNotEmpty()) {
+            val arr = org.json.JSONArray()
+            for (id in images) arr.put(id)
+            body.put("images", arr)
+        }
         return sync(base("/v1/runs").post(body.toString().toRequestBody(jsonType)).build())
     }
+
+    /** 上传一张图片到 artifact 通道，返回 artifact_id（一次性、绑定本 profile 密钥作用域）。 */
+    fun uploadImage(bytes: ByteArray, filename: String, mime: String): String {
+        val mt = (mime.ifBlank { "image/jpeg" }).toMediaType()
+        val req = base("/v1/artifacts/upload")
+            .header("X-Artifact-Filename", filename)
+            .post(bytes.toRequestBody(mt))
+            .build()
+        client.newCall(req).execute().use { resp ->
+            val text = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) throw IOException("HTTP " + resp.code + ": " + text.take(200))
+            return JSONObject(text).optString("artifact_id", "")
+        }
+    }
+
+    /** 服务端能力探测：features.supports_vision 决定图片走原生还是先转文字。 */
+    fun capabilities(): JSONObject = sync(base("/v1/capabilities").get().build())
 
     fun getRun(runId: String): JSONObject =
         sync(base("/v1/runs/" + runId).get().build())
