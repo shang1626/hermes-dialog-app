@@ -1,5 +1,11 @@
 # 变更记录
 
+## 2.9 — versionCode 20
+支持接收文件与图片：服务端把回复里的 `MEDIA:` 标签内联成 data URL 后随消息下发，
+App 新增内联图片渲染 + 附件卡片（点击落盘到 `filesDir/attachments/`，再经 FileProvider
+拉起系统应用打开，HTML 走浏览器）。非图片文件（html/pdf/zip/md 等）不再只显示成一行路径文本。
+（Markdown.kt 新增 MdBlock.Image / MdBlock.Attachment；新增 Attachment.kt）
+
 按 versionCode 递增。发布时同步更新 `dist/update/version.json` 的 notes 字段。
 （versionCode 12 / 14 未产生提交，编号有跳档属正常。）
 

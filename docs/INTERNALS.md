@@ -101,6 +101,28 @@ App 私有目录 `filesDir`，纯 JSON，不碰服务端库：
 磁盘（total/used/free/percent）、运行（load_avg/uptime）、API 与任务（model/metrics_today/active_runs/active_delegations/process_queue_depth/last_heartbeat）。
 字段名变更要同步改 `buildStatus()` 的 `optXxx` 取值。状态页每 5 秒自动刷新。
 
+## 接收文件 / 图片（v2.9，改这块必读）
+
+服务端（Hermes 网关）在 `run.completed` 的 `output` 字段里，会把回复中的 `MEDIA:<路径>` 标签
+替换成内联 data URL（图片 `![image](data:image/...)`，其他文件 `[📎 名](data:<mime>;...)`）——
+**App 侧不需要也不能下载服务端路径**（Hermes 自带 `/v1/artifacts/download/{id}` 是一次性的，第二次 404）。
+
+客户端处理链：
+
+1. `parseMdBlocks()` 按行识别：独占一行的图片 / 附件链接 → `MdBlock.Image` / `MdBlock.Attachment`
+2. `decodeDataUrl()` 解出 mime + 字节（`Attachment.kt`）
+3. 图片：`AsyncImage(model = 字节数组)` 内联渲染，点击 `openAttachment()`
+4. 附件：渲染成卡片（📎 文件名 · 大小 · 点击打开），点击落盘 `filesDir/attachments/` 后
+   FileProvider（authority `com.hermesapp.fileprovider`，`res/xml/file_paths.xml` 已声明 `attachments/`）
+   + `ACTION_VIEW` 拉起系统应用
+
+服务端两处补丁（**升级 Hermes 会丢，需重打**，脚本在 `~/hermes-patches/apply_media_file_patch.py`）：
+
+- `gateway/platforms/api_server.py`：`_resolve_media_to_data_urls()` 支持非图片扩展名（`_MEDIA_FILE_MIME`），
+  上限 5MB → 12MB
+- `gateway/platforms/api_server_runs.py`：`/v1/runs` 的 `_finish(..., output=...)` 也过一遍解析
+  （原来只有 chat-completions 那两条路走解析，App 用的 SSE 通道漏了）
+
 ## 全局踩坑清单
 
 - **不要伪造用户消息**：任何断线/重试逻辑都不许往会话里塞用户输入（v2.7 教训）
