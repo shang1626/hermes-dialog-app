@@ -10,15 +10,22 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.hermesapp.net.HermesApi
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import okhttp3.Call
 import org.json.JSONObject
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 data class Msg(
     val role: String,
@@ -100,27 +107,53 @@ data class StatusItem(val label: String, val value: String)
 /** 状态页的一个分组：标题 + 若干行。 */
 data class StatusSection(val title: String, val items: List<StatusItem>)
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = Prefs(app)
     private var store = SessionStore(app, prefs.profile)
 
-    private val _messages = MutableStateFlow<List<Msg>>(emptyList())
-    val messages = _messages.asStateFlow()
+    /**
+     * 一个会话的运行态。多会话并行：每个会话各自持有消息、忙闲、当前 run，
+     * 切换会话只换「正在看的」id，后台会话的流照常接收、写进它自己的缓冲。
+     */
+    private class SessionRuntime(val id: String) {
+        val messages = MutableStateFlow<List<Msg>>(emptyList())
+        val busy = MutableStateFlow(false)
+        val retryNote = MutableStateFlow("")
+        var runId: String = ""
+        var call: Call? = null
+        var lastSeq: Int = -1
+        var autoContinue: Int = 0
+        var finished: Boolean = false
+        var startedAt: Long = 0L
+        var loaded: Boolean = false
+        var saveJob: Job? = null
+    }
 
-    private val _sessions = MutableStateFlow<List<SessionMeta>>(emptyList())
-    val sessions = _sessions.asStateFlow()
+    private val runtimes = ConcurrentHashMap<String, SessionRuntime>()
+    private fun rt(id: String): SessionRuntime = runtimes.computeIfAbsent(id) { SessionRuntime(it) }
 
     private val _currentId = MutableStateFlow("")
     val currentId = _currentId.asStateFlow()
 
+    /** 当前会话的消息/忙闲/重连提示：随 _currentId 切换，后台会话互不影响。 */
+    val messages: StateFlow<List<Msg>> = _currentId
+        .flatMapLatest { id -> if (id.isEmpty()) flowOf(emptyList<Msg>()) else rt(id).messages }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    val busy: StateFlow<Boolean> = _currentId
+        .flatMapLatest { id -> if (id.isEmpty()) flowOf(false) else rt(id).busy }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    val retryNote: StateFlow<String> = _currentId
+        .flatMapLatest { id -> if (id.isEmpty()) flowOf("") else rt(id).retryNote }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "")
+
+    private val _sessions = MutableStateFlow<List<SessionMeta>>(emptyList())
+    val sessions = _sessions.asStateFlow()
+
     private val _online = MutableStateFlow(false)
     val online = _online.asStateFlow()
-
-    private val _busy = MutableStateFlow(false)
-    val busy = _busy.asStateFlow()
-
-    private val _retryNote = MutableStateFlow("")
-    val retryNote = _retryNote.asStateFlow()
 
     private val _statusSections = MutableStateFlow<List<StatusSection>>(emptyList())
     val statusSections = _statusSections.asStateFlow()
@@ -155,15 +188,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     val imageNote = _imageNote.asStateFlow()
 
     private var api: HermesApi? = null
-    private var currentCall: Call? = null
-    private var currentRunId: String? = null
-    private var lastSeq = -1
-    private var autoContinue = 0
-    private var runFinished = false
     private var pingStarted = false
-    private var saveJob: Job? = null
-    /** 本轮开始时间：用来算「每秒出多少 token」。 */
-    private var runStartedAt = 0L
 
     init {
         // 通知栏直接回复：先取落盘的（App 被杀过），再收运行中的广播
@@ -173,16 +198,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 取出通知栏回复并作为用户消息发出（连接没建好或正忙时留着，下次再取）。 */
+    /** 取出通知栏回复并作为用户消息发出（连接没建好或该会话正忙时留着，下次再取）。 */
     private fun drainPendingReply() {
         val raw = prefs.pendingReply
         if (raw.isEmpty()) return
         val sid = raw.substringBefore('\u0000')
         val text = raw.substringAfter('\u0000')
         if (text.isBlank()) { prefs.pendingReply = ""; return }
-        if (api == null || _busy.value) return
+        if (api == null) return
+        val target = if (sid.isNotEmpty()) sid else _currentId.value
+        if (target.isEmpty()) return
+        if (rt(target).busy.value) return
         prefs.pendingReply = ""
-        if (sid.isNotEmpty() && sid != _currentId.value) switchSession(sid)
+        if (target != _currentId.value) switchSession(target)
         send(text)
     }
 
@@ -192,57 +220,62 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun stamp(): Long = System.currentTimeMillis()
 
-    private fun setMsgs(list: List<Msg>) {
-        _messages.value = list
-        scheduleSave()
+    private fun setMsgs(r: SessionRuntime, list: List<Msg>) {
+        r.messages.value = list
+        scheduleSave(r)
     }
 
-    private fun scheduleSave() {
-        saveJob?.cancel()
-        saveJob = viewModelScope.launch(Dispatchers.IO) {
+    private fun scheduleSave(r: SessionRuntime) {
+        r.saveJob?.cancel()
+        r.saveJob = viewModelScope.launch(Dispatchers.IO) {
             delay(400)
-            saveNow()
+            saveRuntime(r)
         }
     }
 
-    private fun saveNow() {
+    private fun saveRuntime(r: SessionRuntime) {
+        store.saveMessages(r.id, r.messages.value, maxHistory)
+    }
+
+    /** 保存当前会话的消息与索引（切换/新建前调用）。 */
+    private fun saveCurrent() {
         val id = _currentId.value
-        if (id.isEmpty()) return
-        store.saveMessages(id, _messages.value, maxHistory)
+        if (id.isNotEmpty()) runtimes[id]?.let { saveRuntime(it) }
         store.saveIndex(_sessions.value)
+    }
+
+    private fun ensureLoaded(id: String) {
+        val r = rt(id)
+        if (!r.loaded) {
+            r.messages.value = store.loadMessages(id)
+            r.loaded = true
+        }
     }
 
     private fun refreshSessions() {
         _sessions.value = store.loadIndex().sortedByDescending { it.updatedAt }
     }
 
-    /** 切到某个会话（网关 session_id 同步指过去）。 */
+    /** 切到某个会话（网关 session_id 同步指过去）。不再停止任何正在跑的任务。 */
     fun switchSession(id: String) {
         if (id == _currentId.value) return
-        if (_busy.value) stop()
-        saveJob?.cancel()
-        saveNow()
+        saveCurrent()
         _currentId.value = id
         prefs.sessionId = id
-        _retryNote.value = ""
-        autoContinue = 0
-        _messages.value = store.loadMessages(id)
+        ensureLoaded(id)
         refreshSessions()
     }
 
     fun newConversation() {
-        if (_busy.value) stop()
-        saveJob?.cancel()
-        saveNow()
+        saveCurrent()
         val id = UUID.randomUUID().toString()
         val meta = SessionMeta(id, "新对话", stamp(), false)
         _sessions.value = _sessions.value + meta
         store.saveIndex(_sessions.value)
         _currentId.value = id
         prefs.sessionId = id
-        _retryNote.value = ""
-        autoContinue = 0
-        _messages.value = emptyList()
+        rt(id).loaded = true
+        refreshSessions()
     }
 
     fun archiveSession(id: String, archived: Boolean) {
@@ -256,7 +289,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun deleteSession(id: String) {
+        // 若该会话有正在跑的任务，先停掉（服务端一并停），再删本地记录。
+        stopSession(id)
         store.deleteMessages(id)
+        runtimes.remove(id)
         val list = _sessions.value.filter { it.id != id }.toMutableList()
         _sessions.value = list
         store.saveIndex(list)
@@ -265,19 +301,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 当前会话被删/归档后：优先切到下一个未归档会话；没有则清空进入空态（输入即新建）。 */
     private fun selectNextOrEmpty() {
-        saveJob?.cancel()
         val next = _sessions.value.firstOrNull { !it.archived }
         if (next != null) {
             _currentId.value = next.id
             prefs.sessionId = next.id
-            _messages.value = store.loadMessages(next.id)
+            ensureLoaded(next.id)
         } else {
             _currentId.value = ""
             prefs.sessionId = null
-            _messages.value = emptyList()
         }
-        _retryNote.value = ""
-        autoContinue = 0
     }
 
     private fun touchSession(firstUserText: String?) {
@@ -303,26 +335,24 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // 无历史会话：进入空态，首次输入再建会话
                 _currentId.value = ""
                 prefs.sessionId = null
-                _messages.value = emptyList()
                 _sessions.value = emptyList()
                 return
             }
             _currentId.value = migrated.id
             prefs.sessionId = migrated.id
-            _messages.value = store.loadMessages(migrated.id)
             _sessions.value = listOf(migrated)
+            ensureLoaded(migrated.id)
             return
         }
         val list = store.loadIndex().sortedByDescending { it.updatedAt }
         // 优先恢复上次停留的会话（prefs.sessionId）；找不到才回退到最近更新的未归档会话。
-        // 原来忽略 profileSessionId，重开 App 总跳到「最近更新」的会话，用户感知为「切换后内容不对」。
         val preferred = profileSessionId?.takeIf { it.isNotEmpty() }
             ?.let { pid -> list.firstOrNull { it.id == pid && !it.archived } }
         val target = preferred ?: list.firstOrNull { !it.archived } ?: list.first()
         _currentId.value = target.id
         prefs.sessionId = target.id
-        _messages.value = store.loadMessages(target.id)
         _sessions.value = list
+        ensureLoaded(target.id)
     }
 
     // ---------- 连接 ----------
@@ -344,31 +374,34 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 重开 App 时恢复「正在跑的任务」状态：
-     * 本地存了 activeRunId 就查一次 /v1/runs/{id}——还在跑就把按钮恢复成「停止」并继续接流，
-     * 已结束则清掉标记并重新从服务端拉会话内容（后台跑完的产出据此补回）。
+     * 重开 App 时恢复「正在跑的任务」：本地按会话存了 run_id，逐个查状态——
+     * 还在跑的就恢复「停止」按钮并继续接流（多会话可同时恢复），已结束的清标记。
      */
     fun resumeActiveRun() {
         val a = api ?: return
-        val rid = prefs.activeRunId
-        if (rid.isEmpty() || _busy.value) return
-        viewModelScope.launch(Dispatchers.IO) {
-            val st = try {
-                a.getRun(rid).optString("status", "")
-            } catch (_: Exception) {
-                ""
-            }
-            val running = st in setOf("started", "running", "waiting_for_approval", "queued")
-            if (running) {
-                currentRunId = rid
-                runFinished = false
-                lastSeq = -1
-                _busy.value = true
-                RunService.start(getApplication())
-                streamRun(a)
-            } else {
-                prefs.activeRunId = ""
-                refreshFromServer()
+        val map = prefs.activeRunsMap()
+        if (map.isEmpty()) return
+        for ((sid, rid) in map) {
+            viewModelScope.launch(Dispatchers.IO) {
+                val st = try {
+                    a.getRun(rid).optString("status", "")
+                } catch (_: Exception) {
+                    ""
+                }
+                val running = st in setOf("started", "running", "waiting_for_approval", "queued")
+                if (running) {
+                    val r = rt(sid)
+                    ensureLoaded(sid)
+                    r.runId = rid
+                    r.finished = false
+                    r.lastSeq = -1
+                    r.busy.value = true
+                    updateRunService()
+                    streamRun(a, sid)
+                } else {
+                    prefs.removeActiveRun(sid)
+                    if (sid == _currentId.value) refreshFromServer()
+                }
             }
         }
     }
@@ -390,7 +423,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshFromServer() {
         val a = api ?: return
         val id = _currentId.value
-        if (id.isEmpty() || _busy.value) return
+        if (id.isEmpty()) return
+        val r = rt(id)
+        if (r.busy.value) return
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val resp = a.sessionMessages(id)
@@ -404,12 +439,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     if (content.isEmpty()) continue
                     list.add(Msg(role, content, pending = false, ts = parseTs(o.optString("timestamp", ""))))
                 }
-                // 守卫：请求发出后用户可能已切走会话（或已在跑新任务）。此时绝不能把
-                // 旧会话的服务端内容写进 _messages —— 否则用户看到的就是「切换后内容不对」。
-                if (_currentId.value != id || _busy.value) return@launch
+                // 守卫：请求发出后用户可能已切走会话（或该会话已在跑任务）。
+                if (_currentId.value != id || r.busy.value) return@launch
                 // 服务端没有该会话/返回空时不覆盖本地，避免把正在看的对话清空。
                 if (list.isNotEmpty()) {
-                    _messages.value = list
+                    r.messages.value = list
+                    r.loaded = true
                     store.saveMessages(id, list, maxHistory)
                 }
             } catch (_: Exception) {
@@ -536,7 +571,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun send(text: String) {
         val a = api ?: return
         val imgs = _pendingImages.value
-        if ((text.isBlank() && imgs.isEmpty()) || _busy.value) return
+        if (text.isBlank() && imgs.isEmpty()) return
         // 空态（无选中会话）：直接输入即新建对话
         if (_currentId.value.isEmpty()) {
             val id = UUID.randomUUID().toString()
@@ -544,10 +579,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             prefs.sessionId = id
             _sessions.value = _sessions.value + SessionMeta(id, "新对话", stamp(), false)
             store.saveIndex(_sessions.value)
+            rt(id).loaded = true
         }
-        val wasEmpty = _messages.value.none { it.role == "user" }
+        val sid = _currentId.value
+        val r = rt(sid)
+        if (r.busy.value) return   // 同一会话正在跑才拦；其它会话照发
+        ensureLoaded(sid)
+        val wasEmpty = r.messages.value.none { it.role == "user" }
         setMsgs(
-            _messages.value + Msg(
+            r,
+            r.messages.value + Msg(
                 "user", text, ts = stamp(),
                 images = imgs.filter { it.isImage }.map { it.uri },
                 files = imgs.filter { !it.isImage }.map { it.file.name },
@@ -555,8 +596,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         )
         touchSession(if (wasEmpty) text else null)
         _pendingImages.value = emptyList()
-        autoContinue = 0
-        startRunWith(a, text, imgs.map { it.file })
+        startRunWith(a, sid, text, imgs.map { it.file })
     }
 
     /** 把选中的图片拷进 App 沙盒，加入待发列表。 */
@@ -672,13 +712,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         else -> "application/octet-stream"
     }
 
-    private fun startRunWith(a: HermesApi, text: String, files: List<File> = emptyList()) {
-        setMsgs(_messages.value + Msg("assistant", "", pending = true, ts = stamp()))
-        _busy.value = true
-        runFinished = false
-        lastSeq = -1
-        runStartedAt = System.currentTimeMillis()
-        if (prefs.keepAlive) RunService.start(getApplication())
+    private fun startRunWith(a: HermesApi, sid: String, text: String, files: List<File> = emptyList()) {
+        val r = rt(sid)
+        setMsgs(r, r.messages.value + Msg("assistant", "", pending = true, ts = stamp()))
+        r.busy.value = true
+        r.finished = false
+        r.lastSeq = -1
+        r.autoContinue = 0
+        r.startedAt = System.currentTimeMillis()
+        updateRunService()
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val ids = mutableListOf<String>()
@@ -687,21 +729,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     ids.add(a.uploadImage(f.readBytes(), f.name, mimeOf(f)))
                 }
                 _imageNote.value = ""
-                val run = a.startRun(text, _currentId.value, ids)
-                currentRunId = run.optString("run_id", run.optString("id", ""))
-                prefs.activeRunId = currentRunId ?: ""
-                runStartedAt = System.currentTimeMillis()
-                streamRun(a)
+                val run = a.startRun(text, sid, ids)
+                r.runId = run.optString("run_id", run.optString("id", ""))
+                r.startedAt = System.currentTimeMillis()
+                prefs.putActiveRun(sid, r.runId)
+                streamRun(a, sid)
             } catch (e: Exception) {
                 _imageNote.value = ""
-                appendDelta("\n[请求失败] " + (e.message ?: "?"))
-                failPending()
+                appendDelta(r, "\n[请求失败] " + (e.message ?: "?"))
+                failPending(sid)
             }
         }
     }
 
-    /** 澄清请求：挂到当前助手气泡上，等用户选选项回执。 */
-    private fun attachClarify(ev: com.hermesapp.net.SseEvent) {
+    /** 澄清请求：挂到该会话当前助手气泡上，等用户选选项回执。 */
+    private fun attachClarify(r: SessionRuntime, ev: com.hermesapp.net.SseEvent) {
         val cid = ev.data.optString("clarify_id", "")
         val q = ev.data.optString("question", "")
         val chs = mutableListOf<String>()
@@ -710,31 +752,33 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
         if (cid.isEmpty() || q.isEmpty()) return
         val card = ClarifyCard(cid, q, chs, ev.data.optBoolean("multi_select", false))
-        val list = _messages.value.toMutableList()
+        val list = r.messages.value.toMutableList()
         val i = list.indexOfLast { it.role == "assistant" && it.pending }
         if (i >= 0) list[i] = list[i].copy(clarify = card)
         else list.add(Msg("assistant", "", pending = true, ts = stamp(), clarify = card))
-        setMsgs(list)
+        setMsgs(r, list)
     }
 
     /** 用户点了澄清选项：回执给服务端，并把卡片置为已选。 */
     fun respondClarify(msgId: Long, choice: String) {
         val a = api ?: return
-        val rid = currentRunId ?: return
-        val list = _messages.value.toMutableList()
+        val r = rt(_currentId.value)
+        val rid = r.runId
+        if (rid.isEmpty()) return
+        val list = r.messages.value.toMutableList()
         val i = list.indexOfFirst { it.id == msgId }
         if (i < 0) return
         val card = list[i].clarify ?: return
         if (card.resolved.isNotEmpty()) return
         list[i] = list[i].copy(clarify = card.copy(resolved = choice))
-        setMsgs(list)
+        setMsgs(r, list)
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { a.respondClarify(rid, card.clarifyId, choice) }
         }
     }
 
-    /** 审批请求：挂到当前助手气泡上，等用户点按钮回执。 */
-    private fun attachApproval(ev: com.hermesapp.net.SseEvent) {
+    /** 审批请求：挂到该会话当前助手气泡上，等用户点按钮回执。 */
+    private fun attachApproval(r: SessionRuntime, ev: com.hermesapp.net.SseEvent) {
         val rid = ev.data.optString("request_id", "")
         val cmd = ev.data.optString("command", "")
         val desc = ev.data.optString("description", "")
@@ -744,31 +788,33 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
         if (rid.isEmpty() || chs.isEmpty()) return
         val card = ApprovalCard(rid, cmd, desc, chs)
-        val list = _messages.value.toMutableList()
+        val list = r.messages.value.toMutableList()
         val i = list.indexOfLast { it.role == "assistant" && it.pending }
         if (i >= 0) list[i] = list[i].copy(approval = card)
         else list.add(Msg("assistant", "", pending = true, ts = stamp(), approval = card))
-        setMsgs(list)
+        setMsgs(r, list)
     }
 
     /** 用户点了审批按钮：回执给服务端，并把卡片置为已选。 */
     fun respondApproval(msgId: Long, choice: String) {
         val a = api ?: return
-        val rid = currentRunId ?: return
-        val list = _messages.value.toMutableList()
+        val r = rt(_currentId.value)
+        val rid = r.runId
+        if (rid.isEmpty()) return
+        val list = r.messages.value.toMutableList()
         val i = list.indexOfFirst { it.id == msgId }
         if (i < 0) return
         val card = list[i].approval ?: return
         if (card.resolved.isNotEmpty()) return
         list[i] = list[i].copy(approval = card.copy(resolved = choice))
-        setMsgs(list)
+        setMsgs(r, list)
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { a.respondApproval(rid, card.requestId, choice) }
         }
     }
 
-    /** 轮末 token 用量：挂到最后一条助手消息上。 */
-    private fun attachUsage(ev: com.hermesapp.net.SseEvent) {
+    /** 轮末 token 用量：挂到该会话最后一条助手消息上。 */
+    private fun attachUsage(r: SessionRuntime, ev: com.hermesapp.net.SseEvent) {
         val u = ev.data.optJSONObject("usage") ?: return
         val usage = Usage(
             input = u.optInt("input_tokens", 0),
@@ -776,17 +822,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             total = u.optInt("total_tokens", 0),
             cacheRead = u.optInt("cache_read_tokens", 0),
             cacheWrite = u.optInt("cache_write_tokens", 0),
-            durationMs = if (runStartedAt > 0) System.currentTimeMillis() - runStartedAt else 0L,
+            durationMs = if (r.startedAt > 0) System.currentTimeMillis() - r.startedAt else 0L,
         )
         if (usage.total <= 0 && usage.input <= 0 && usage.output <= 0) return
-        val list = _messages.value.toMutableList()
+        val list = r.messages.value.toMutableList()
         val i = list.indexOfLast { it.role == "assistant" }
         if (i >= 0) list[i] = list[i].copy(usage = usage)
-        setMsgs(list)
+        setMsgs(r, list)
     }
 
     /** 子任务开始/结束：按 subagent_id 或 goal 归并成一行进度。 */
-    private fun upsertSubagent(ev: com.hermesapp.net.SseEvent, running: Boolean) {
+    private fun upsertSubagent(r: SessionRuntime, ev: com.hermesapp.net.SseEvent, running: Boolean) {
         val id = ev.data.optString("subagent_id", "").ifEmpty { ev.data.optString("delegation_id", "") }
         val goal = ev.data.optString("goal", "")
         val summary = ev.data.optString("summary", "")
@@ -798,7 +844,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             statusRaw.isNotEmpty() -> statusRaw
             else -> "completed"
         }
-        val list = _messages.value.toMutableList()
+        val list = r.messages.value.toMutableList()
         val mi = list.indexOfLast { it.role == "assistant" && it.pending }
         if (mi < 0) return
         val old = list[mi].subagents
@@ -806,7 +852,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val line = SubagentLine(key, goal.ifEmpty { old.getOrNull(idx)?.goal ?: "" }, status, summary)
         val next = if (idx >= 0) old.toMutableList().also { it[idx] = line } else old + line
         list[mi] = list[mi].copy(subagents = next)
-        setMsgs(list)
+        setMsgs(r, list)
     }
 
     private fun toolLine(ev: com.hermesapp.net.SseEvent, failed: Boolean): String {
@@ -824,167 +870,190 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         return sb.toString()
     }
 
-    private fun streamRun(a: HermesApi) {
-        val rid = currentRunId ?: return
-        currentCall = a.streamEvents(
+    private fun streamRun(a: HermesApi, sid: String) {
+        val r = rt(sid)
+        val rid = r.runId
+        if (rid.isEmpty()) return
+        r.call = a.streamEvents(
             runId = rid,
-            lastSeq = lastSeq,
+            lastSeq = r.lastSeq,
             onEvent = { ev ->
-                if (ev.id != null) lastSeq = ev.id
+                if (ev.id != null) r.lastSeq = ev.id
                 val name = ev.event ?: ev.data.optString("event", "")
                 when (name) {
-                    "message.delta" -> appendDelta(ev.data.optString("delta", ""))
+                    "message.delta" -> appendDelta(r, ev.data.optString("delta", ""))
                     "message.interim" -> {}
                     "tool.started" -> {}
                     "tool.completed" -> {
                         val line = toolLine(ev, ev.data.optBoolean("error", false))
-                        if (line.isNotEmpty()) appendTrace(line)
+                        if (line.isNotEmpty()) appendTrace(r, line)
                     }
                     "tool.failed" -> {
                         val line = toolLine(ev, true)
-                        if (line.isNotEmpty()) appendTrace(line)
+                        if (line.isNotEmpty()) appendTrace(r, line)
                     }
-                    "approval.request" -> attachApproval(ev)
-                    "clarify.request" -> attachClarify(ev)
-                    "subagent.start" -> upsertSubagent(ev, running = true)
-                    "subagent.complete" -> upsertSubagent(ev, running = false)
+                    "approval.request" -> attachApproval(r, ev)
+                    "clarify.request" -> attachClarify(r, ev)
+                    "subagent.start" -> upsertSubagent(r, ev, running = true)
+                    "subagent.complete" -> upsertSubagent(r, ev, running = false)
                     "run.completed" -> {
-                        runFinished = true
+                        r.finished = true
                         val out = ev.data.optString("output", "")
-                        if (out.isNotEmpty()) setPendingText(out) else finishPending()
-                        attachUsage(ev)
-                        doneOk()
-                        notifyIfBackground(out)
+                        if (out.isNotEmpty()) setPendingText(r, out) else finishPending(r)
+                        attachUsage(r, ev)
+                        doneOk(sid)
+                        notifyIfBackground(sid, out)
                     }
                     "run.failed" -> {
-                        runFinished = true
-                        appendDelta("\n[失败] " + ev.data.optString("error", "未知错误"))
-                        finishPending()
-                        maybeContinue()
+                        r.finished = true
+                        appendDelta(r, "\n[失败] " + ev.data.optString("error", "未知错误"))
+                        finishPending(r)
+                        maybeContinue(sid)
                     }
                     "run.cancelled", "run.interrupted" -> {
-                        runFinished = true
-                        appendDelta("\n[已中断]")
-                        doneOk()
+                        r.finished = true
+                        appendDelta(r, "\n[已中断]")
+                        doneOk(sid)
                     }
                 }
             },
-            onClosed = { if (_busy.value && !runFinished) maybeContinue() },
+            onClosed = { if (r.busy.value && !r.finished) maybeContinue(sid) },
             onError = { e ->
-                if (!runFinished) appendDelta("\n[连接断开] " + (e.message ?: "?"))
-                if (_busy.value && !runFinished) maybeContinue()
+                if (!r.finished) appendDelta(r, "\n[连接断开] " + (e.message ?: "?"))
+                if (r.busy.value && !r.finished) maybeContinue(sid)
             }
         )
     }
 
     /**
      * SSE 流提前断开（没收到 run.completed）时的续接：
-     * 绝不伪造用户消息——过去这里会 startRunWith(a, "继续")，把「继续」当成用户输入
-     * 写进会话（用户看到自己没发过的消息）。改为：先查同一 run 的状态，
-     * 仍在跑就续接它的事件流；已结束就从服务端拉回结果。
+     * 绝不伪造用户消息——只查同一 run 的状态，仍在跑就续接它的事件流；
+     * 已结束就从服务端拉回结果。仅作用于该 run 所属的会话。
      */
-    private fun maybeContinue() {
-        if (runFinished) return
-        if (autoContinue >= 3) {
-            _retryNote.value = "已自动重连 3 次，仍未完成"
-            failPending()
+    private fun maybeContinue(sid: String) {
+        val r = rt(sid)
+        if (r.finished) return
+        if (r.autoContinue >= 3) {
+            r.retryNote.value = "已自动重连 3 次，仍未完成"
+            failPending(sid)
             return
         }
-        autoContinue++
-        _retryNote.value = "连接中断，正在确认任务状态 " + autoContinue + "/3"
+        r.autoContinue++
+        r.retryNote.value = "连接中断，正在确认任务状态 " + r.autoContinue + "/3"
         val a = api ?: return
-        val rid = currentRunId
-        if (rid.isNullOrEmpty()) { failPending(); return }
+        val rid = r.runId
+        if (rid.isEmpty()) { failPending(sid); return }
         viewModelScope.launch(Dispatchers.IO) {
             delay(1200)
-            if (!_busy.value || runFinished) return@launch
+            if (!r.busy.value || r.finished) return@launch
             val st = try { a.getRun(rid).optString("status", "") } catch (_: Exception) { "" }
             if (st in setOf("started", "running", "waiting_for_approval", "queued", "stopping")) {
-                _retryNote.value = ""
-                streamRun(a)   // 续接同一 run，不新增任何用户消息
+                r.retryNote.value = ""
+                streamRun(a, sid)   // 续接同一 run，不新增任何用户消息
             } else {
-                _retryNote.value = ""
-                runFinished = true
-                finishPending()
-                _busy.value = false
-                prefs.activeRunId = ""
-                RunService.stop(getApplication())
-                refreshFromServer()  // 任务已结束：拉回服务端产出
+                r.retryNote.value = ""
+                r.finished = true
+                finishPending(r)
+                r.busy.value = false
+                prefs.removeActiveRun(sid)
+                updateRunService()
+                if (sid == _currentId.value) refreshFromServer()  // 任务已结束：拉回服务端产出
             }
         }
     }
 
-    fun stop() {
-        val a = api ?: return
-        val rid = currentRunId ?: return
-        runFinished = true
-        viewModelScope.launch(Dispatchers.IO) { a.stopRun(rid) }
-        currentCall?.cancel()
-        appendDelta("\n[已请求停止]")
-        finishPending()
-        _busy.value = false
-        prefs.activeRunId = ""
-        RunService.stop(getApplication())
+    /** 停止「当前会话」正在跑的任务。 */
+    fun stop() = stopSession(_currentId.value)
+
+    private fun stopSession(sid: String) {
+        if (sid.isEmpty()) return
+        val r = rt(sid)
+        if (!r.busy.value && r.runId.isEmpty()) return
+        val a = api
+        val rid = r.runId
+        r.finished = true
+        if (a != null && rid.isNotEmpty()) viewModelScope.launch(Dispatchers.IO) { a.stopRun(rid) }
+        r.call?.cancel()
+        appendDelta(r, "\n[已请求停止]")
+        finishPending(r)
+        r.busy.value = false
+        r.runId = ""
+        prefs.removeActiveRun(sid)
+        updateRunService()
     }
 
-    /** 工具轨迹追加到当前 assistant 消息的 trace（界面默认折叠，不进正文）。 */
-    private fun appendTrace(d: String) {
+    /** 工具轨迹追加到该会话当前 assistant 消息的 trace（界面默认折叠，不进正文）。 */
+    private fun appendTrace(r: SessionRuntime, d: String) {
         if (d.isEmpty()) return
-        val list = _messages.value.toMutableList()
+        val list = r.messages.value.toMutableList()
         val i = list.indexOfLast { it.role == "assistant" && it.pending }
         if (i >= 0) list[i] = list[i].copy(trace = list[i].trace + d)
         else list.add(Msg("assistant", "", pending = true, ts = stamp(), trace = d))
-        setMsgs(list)
+        setMsgs(r, list)
     }
 
-    private fun appendDelta(d: String) {
+    private fun appendDelta(r: SessionRuntime, d: String) {
         if (d.isEmpty()) return
-        val list = _messages.value.toMutableList()
+        val list = r.messages.value.toMutableList()
         val i = list.indexOfLast { it.role == "assistant" && it.pending }
         if (i >= 0) list[i] = list[i].copy(text = list[i].text + d)
         else list.add(Msg("assistant", d, pending = true, ts = stamp()))
-        setMsgs(list)
+        setMsgs(r, list)
     }
 
-    private fun setPendingText(t: String) {
-        val list = _messages.value.toMutableList()
+    private fun setPendingText(r: SessionRuntime, t: String) {
+        val list = r.messages.value.toMutableList()
         val i = list.indexOfLast { it.role == "assistant" && it.pending }
         if (i >= 0) list[i] = list[i].copy(text = t, pending = false)
-        setMsgs(list)
+        setMsgs(r, list)
     }
 
-    private fun finishPending() {
-        val list = _messages.value.toMutableList()
+    private fun finishPending(r: SessionRuntime) {
+        val list = r.messages.value.toMutableList()
         val i = list.indexOfLast { it.role == "assistant" && it.pending }
         if (i >= 0) list[i] = list[i].copy(pending = false)
-        setMsgs(list)
+        setMsgs(r, list)
     }
 
-    private fun failPending() {
-        finishPending()
-        _busy.value = false
-        prefs.activeRunId = ""
-        RunService.stop(getApplication())
+    private fun failPending(sid: String) {
+        val r = rt(sid)
+        finishPending(r)
+        r.busy.value = false
+        r.runId = ""
+        prefs.removeActiveRun(sid)
+        updateRunService()
     }
 
-    private fun doneOk() {
-        autoContinue = 0
-        _retryNote.value = ""
-        finishPending()
-        _busy.value = false
-        prefs.activeRunId = ""
-        RunService.stop(getApplication())
-        drainPendingReply()
+    private fun doneOk(sid: String) {
+        val r = rt(sid)
+        r.autoContinue = 0
+        r.retryNote.value = ""
+        finishPending(r)
+        r.busy.value = false
+        r.runId = ""
+        prefs.removeActiveRun(sid)
+        updateRunService()
+        if (sid == _currentId.value) drainPendingReply()
+    }
+
+    /** 只要有任意会话在跑任务就保持前台服务；全部结束才停（通知随之消失）。 */
+    private fun updateRunService() {
+        val any = runtimes.values.any { it.busy.value }
+        if (any) {
+            if (prefs.keepAlive) RunService.start(getApplication())
+        } else {
+            RunService.stop(getApplication())
+        }
     }
 
     /** App 不在前台时，任务完成弹系统通知（提示音+震动）。前台则静默，界面自己会更新。 */
-    private fun notifyIfBackground(output: String) {
+    private fun notifyIfBackground(sid: String, output: String) {
         if (AppForeground.isForeground || !prefs.keepAlive) return
         val app = getApplication<Application>()
         val body = output.replace(Regex("\\s+"), " ").trim().let {
             if (it.isEmpty()) "任务已完成" else if (it.length > 120) it.take(120) + "…" else it
         }
-        Notifier.notifyMessage(app, "Hermes 回复", body, _currentId.value)
+        Notifier.notifyMessage(app, "Hermes 回复", body, sid)
     }
 
     /** 缓存占用文案（待发图片 + 安装包 + 图片缓存），供设置页显示。 */
@@ -1006,7 +1075,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 设置页切换「后台运行」时调用：关掉立即停掉前台服务，常驻通知随之消失。 */
     fun setKeepAlive(on: Boolean) {
         prefs.keepAlive = on
-        if (!on) RunService.stop(getApplication())
+        if (!on) RunService.stop(getApplication()) else updateRunService()
     }
 
     // ---------- 自更新 ----------
