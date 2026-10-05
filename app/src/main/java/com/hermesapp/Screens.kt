@@ -206,7 +206,7 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
             verticalArrangement = Arrangement.spacedBy(8.dp),
             contentPadding = PaddingValues(vertical = 10.dp)
         ) {
-            items(msgs, key = { it.id }) { m -> Bubble(m, vm::respondApproval) }
+            items(msgs, key = { it.id }) { m -> Bubble(m, vm::respondApproval, vm::respondClarify) }
             item { Spacer(Modifier.height(1.dp)) }
         }
     }
@@ -327,7 +327,7 @@ fun FullScreenInput(
 }
 
 @Composable
-fun Bubble(m: Msg, onApproval: (Long, String) -> Unit = { _, _ -> }) {
+fun Bubble(m: Msg, onApproval: (Long, String) -> Unit = { _, _ -> }, onClarify: (Long, String) -> Unit = { _, _ -> }) {
     val c = LocalAppColors.current
     val isUser = m.role == "user"
     var traceOpen by remember { mutableStateOf(false) }
@@ -405,6 +405,37 @@ fun Bubble(m: Msg, onApproval: (Long, String) -> Unit = { _, _ -> }) {
                                     ) { Text(choiceLabel(ch), color = c.accent, fontSize = 12.sp) }
                                 }
                             }
+                        }
+                    }
+                    if (m.text.isNotBlank() || m.subagents.isNotEmpty() || m.usage != null) {
+                        Spacer(Modifier.height(6.dp))
+                    }
+                }
+                // 澄清卡片：我问你「选 A 还是 B」，点选项直接回执
+                val cl = m.clarify
+                if (cl != null) {
+                    Column(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                            .background(c.card).padding(10.dp)
+                    ) {
+                        Text("需要你选一下", color = c.warn, fontSize = 13.sp)
+                        Spacer(Modifier.height(4.dp))
+                        Text(cl.question, color = c.text, fontSize = 12.sp)
+                        Spacer(Modifier.height(8.dp))
+                        if (cl.resolved.isNotEmpty()) {
+                            Text("已选择：" + cl.resolved, color = c.dim, fontSize = 12.sp)
+                        } else if (cl.choices.isNotEmpty()) {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                for (ch in cl.choices) {
+                                    OutlinedButton(
+                                        onClick = { onClarify(m.id, ch) },
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                        shape = RoundedCornerShape(8.dp),
+                                    ) { Text(ch, color = c.accent, fontSize = 12.sp) }
+                                }
+                            }
+                        } else {
+                            Text("请在下方输入框回复", color = c.dim, fontSize = 12.sp)
                         }
                     }
                     if (m.text.isNotBlank() || m.subagents.isNotEmpty() || m.usage != null) {

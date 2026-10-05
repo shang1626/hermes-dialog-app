@@ -70,6 +70,26 @@ class HermesApi(
         }
     }
 
+    /** 澄清回执：POST /v1/runs/{id}/clarify，response 是用户选的选项（或自由文本）。 */
+    fun respondClarify(runId: String, clarifyId: String, response: String) {
+        runCatching {
+            val body = JSONObject().put("clarify_id", clarifyId).put("response", response)
+            client.newCall(
+                base("/v1/runs/" + runId + "/clarify").post(body.toString().toRequestBody(jsonType)).build()
+            ).execute().use { it.body?.string() }
+        }
+    }
+
+    /** 按需下载网关托管的媒体文件（大附件走这条路，不塞进消息体）。 */
+    fun downloadMedia(token: String): ByteArray {
+        val req = base("/v1/media/" + token).get().build()
+        client.newCall(req).execute().use { resp ->
+            val text = if (resp.isSuccessful) "" else resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) throw IOException("HTTP " + resp.code + ": " + text.take(200))
+            return resp.body?.bytes() ?: ByteArray(0)
+        }
+    }
+
     /** 服务端能力探测：features.supports_vision 决定图片走原生还是先转文字。 */
     fun capabilities(): JSONObject = sync(base("/v1/capabilities").get().build())
 

@@ -10,7 +10,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.ClickableText
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,8 +49,14 @@ sealed class MdBlock {
     /** 内联图片：服务端把 MEDIA: 图片转成 data URL 后送到这里。 */
     data class Image(val alt: String, val dataUrl: String) : MdBlock()
 
-    /** 非图片附件：服务端把 MEDIA: 文件转成 [📎 名](data:...) 链接。 */
-    data class Attachment(val name: String, val dataUrl: String) : MdBlock()
+    /** 非图片附件：服务端把 MEDIA: 文件转成 [📎 名](data:...) 或 [📎 名](hermes-media://token) 链接。 */
+    data class Attachment(
+        val name: String,
+        /** 小文件内联：非空时直接解码。 */
+        val dataUrl: String = "",
+        /** 大文件网关托管：非空时按需带鉴权下载。 */
+        val token: String = "",
+    ) : MdBlock()
 }
 
 private val URL_RE = Regex("https?://[^\\s<>()\\[\\]{}\"'\\uFF0C\\u3002\\u3001\\uFF09\\u3011]+")
@@ -52,7 +65,7 @@ private val URL_RE = Regex("https?://[^\\s<>()\\[\\]{}\"'\\uFF0C\\u3002\\u3001\\
 private val MD_IMG_LINE_RE = Regex("^!\\[([^\\]]*)\\]\\((data:image/[^)]+)\\)$")
 
 /** 独占一行的附件链接：[📎 文件名](data:...) */
-private val MD_ATT_LINE_RE = Regex("^\\[\\uD83D\\uDCCE ([^\\]]+)\\]\\((data:[^)]+)\\)$")
+private val MD_ATT_LINE_RE = Regex("^\\[\\uD83D\\uDCCE ([^\\]]+)\\]\\(((?:data:|hermes-media://)[^)]+)\\)$")
 
 /** 去掉内联强调标记：双星号加粗、反引号代码——手机窄屏上留着反而难看。 */
 private fun cleanInline(s: String): String =
@@ -92,7 +105,17 @@ fun parseMdBlocks(src: String): List<MdBlock> {
             val att = MD_ATT_LINE_RE.matchEntire(s)
             when {
                 img != null -> { flushPending(); out.add(MdBlock.Image(img.groupValues[1], img.groupValues[2])) }
-                att != null -> { flushPending(); out.add(MdBlock.Attachment(att.groupValues[1], att.groupValues[2])) }
+                att != null -> {
+                    flushPending()
+                    val name = att.groupValues[1]
+                    val target = att.groupValues[2]
+                    // 大文件走网关托管：只带 token，点开时再按需下载
+                    if (target.startsWith("hermes-media://")) {
+                        out.add(MdBlock.Attachment(name, token = target.removePrefix("hermes-media://")))
+                    } else {
+                        out.add(MdBlock.Attachment(name, dataUrl = target))
+                    }
+                }
                 else -> pending.append(line).append("\n")
             }
         }
@@ -161,7 +184,7 @@ fun RichText(
             if (idx > 0) Spacer(Modifier.height(6.dp))
             when (b) {
                 is MdBlock.Image -> MdImage(b.dataUrl, b.alt)
-                is MdBlock.Attachment -> MdAttachmentCard(b.name, b.dataUrl)
+                is MdBlock.Attachment -> MdAttachmentCard(b.name, b.dataUrl, b.token)
                 is MdBlock.Para -> {
                     val ann = remember(b.text, c.accent) { linkAnnotated(b.text, c.accent) }
                     ClickableText(
@@ -233,17 +256,41 @@ private fun MdImage(dataUrl: String, alt: String) {
 
 /** 非图片附件卡片：点一下落盘再拉起系统应用打开（HTML 走浏览器）。 */
 @Composable
-private fun MdAttachmentCard(name: String, dataUrl: String) {
+private fun MdAttachmentCard(name: String, dataUrl: String, token: String) {
     val ctx = LocalContext.current
     val c = LocalAppColors.current
-    val decoded = remember(dataUrl) { decodeDataUrl(dataUrl) }
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    // 内联 data URL：直接解出字节；网关托管：点开时才按需下载
+    val decoded = remember(dataUrl) { if (dataUrl.isNotEmpty()) decodeDataUrl(dataUrl) else null }
+    val sub = when {
+        busy -> "下载中…"
+        decoded != null -> fmtSize(decoded.bytes.size) + " · 点击打开"
+        token.isNotEmpty() -> "网关托管 · 点击下载打开"
+        else -> "解析失败"
+    }
     Row(
         Modifier
             .widthIn(max = 300.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(c.card)
             .border(0.5.dp, c.dim, RoundedCornerShape(8.dp))
-            .clickable { if (decoded != null) openAttachment(ctx, name, decoded) }
+            .clickable {
+                if (busy) return@clickable
+                when {
+                    decoded != null -> openAttachment(ctx, name, decoded)
+                    token.isNotEmpty() -> {
+                        busy = true
+                        scope.launch {
+                            val bytes = withContext(Dispatchers.IO) { MediaFetch.download(token) }
+                            busy = false
+                            if (bytes != null && bytes.isNotEmpty()) {
+                                openAttachment(ctx, name, DecodedData(guessMime(name), bytes))
+                            }
+                        }
+                    }
+                }
+            }
             .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -251,10 +298,26 @@ private fun MdAttachmentCard(name: String, dataUrl: String) {
         Spacer(Modifier.width(8.dp))
         Column(Modifier.weight(1f, fill = false)) {
             Text(name, color = c.text, fontSize = 13.sp, maxLines = 2)
-            Text(
-                if (decoded == null) "解析失败" else fmtSize(decoded.bytes.size) + " · 点击打开",
-                color = c.dim, fontSize = 11.sp
-            )
+            Text(sub, color = c.dim, fontSize = 11.sp)
         }
     }
+}
+
+/** 按扩展名猜 MIME（网关托管的附件返回时用它给系统应用定位）。 */
+fun guessMime(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
+    "html", "htm" -> "text/html"
+    "svg" -> "image/svg+xml"
+    "png" -> "image/png"
+    "jpg", "jpeg" -> "image/jpeg"
+    "gif" -> "image/gif"
+    "webp" -> "image/webp"
+    "pdf" -> "application/pdf"
+    "json" -> "application/json"
+    "csv" -> "text/csv"
+    "zip" -> "application/zip"
+    "md" -> "text/markdown"
+    "txt", "log" -> "text/plain"
+    "mp3" -> "audio/mpeg"
+    "mp4" -> "video/mp4"
+    else -> "application/octet-stream"
 }
