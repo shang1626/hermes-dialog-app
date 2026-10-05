@@ -31,6 +31,12 @@ data class Msg(
     val files: List<String> = emptyList(),
     /** 过程轨迹（工具调用等）。与正文分开存，界面上默认折叠，不占屏幕。 */
     val trace: String = "",
+    /** 本轮 token 用量（run.completed 的 usage），仅助手消息有。 */
+    val usage: Usage? = null,
+    /** 审批卡片：服务端在等一个 choice 回执；空表示无待审批。 */
+    val approval: ApprovalCard? = null,
+    /** 子任务进度（delegate_task 派出的子代理），按开始顺序排列。 */
+    val subagents: List<SubagentLine> = emptyList(),
     /** 稳定唯一 id：给 LazyColumn 做 key，避免滑动时整列重组。 */
     val id: Long = nextMsgId(),
 ) {
@@ -39,6 +45,34 @@ data class Msg(
         fun nextMsgId(): Long = counter.incrementAndGet()
     }
 }
+
+/** 审批卡片：服务端 approval.request 事件下发，用户选一个 choice 回执后置 resolved。 */
+data class ApprovalCard(
+    val requestId: String,
+    val command: String,
+    val description: String,
+    val choices: List<String>,
+    val resolved: String = "",
+)
+
+/** 一轮对话的 token 用量（run.completed 的 usage 字段）。 */
+data class Usage(
+    val input: Int,
+    val output: Int,
+    val total: Int,
+    val cacheRead: Int,
+    val cacheWrite: Int,
+    /** 本轮耗时（毫秒），用来算每秒出多少 token；0 表示没测到。 */
+    val durationMs: Long = 0L,
+)
+
+/** 一条子任务进度（subagent.start / subagent.complete）。 */
+data class SubagentLine(
+    val id: String,
+    val goal: String,
+    val status: String,
+    val summary: String = "",
+)
 
 /** 待发送的附件：uri 用于展示（图片缩略图），file 是拷进沙盒后的真实文件。 */
 data class PendingImage(
@@ -117,6 +151,29 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private var runFinished = false
     private var pingStarted = false
     private var saveJob: Job? = null
+    /** 本轮开始时间：用来算「每秒出多少 token」。 */
+    private var runStartedAt = 0L
+
+    init {
+        // 通知栏直接回复：先取落盘的（App 被杀过），再收运行中的广播
+        drainPendingReply()
+        viewModelScope.launch {
+            com.hermesapp.PendingReply.flow.collect { drainPendingReply() }
+        }
+    }
+
+    /** 取出通知栏回复并作为用户消息发出（连接没建好或正忙时留着，下次再取）。 */
+    private fun drainPendingReply() {
+        val raw = prefs.pendingReply
+        if (raw.isEmpty()) return
+        val sid = raw.substringBefore('\u0000')
+        val text = raw.substringAfter('\u0000')
+        if (text.isBlank()) { prefs.pendingReply = ""; return }
+        if (api == null || _busy.value) return
+        prefs.pendingReply = ""
+        if (sid.isNotEmpty() && sid != _currentId.value) switchSession(sid)
+        send(text)
+    }
 
     // ---------- 会话与本地持久化 ----------
 
@@ -265,6 +322,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         refreshFromServer()
         fetchCapabilities()
         resumeActiveRun()
+        drainPendingReply()
     }
 
     /**
@@ -589,6 +647,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         _busy.value = true
         runFinished = false
         lastSeq = -1
+        runStartedAt = System.currentTimeMillis()
         if (prefs.keepAlive) RunService.start(getApplication())
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -601,6 +660,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val run = a.startRun(text, _currentId.value, ids)
                 currentRunId = run.optString("run_id", run.optString("id", ""))
                 prefs.activeRunId = currentRunId ?: ""
+                runStartedAt = System.currentTimeMillis()
                 streamRun(a)
             } catch (e: Exception) {
                 _imageNote.value = ""
@@ -608,6 +668,82 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 failPending()
             }
         }
+    }
+
+    /** 审批请求：挂到当前助手气泡上，等用户点按钮回执。 */
+    private fun attachApproval(ev: com.hermesapp.net.SseEvent) {
+        val rid = ev.data.optString("request_id", "")
+        val cmd = ev.data.optString("command", "")
+        val desc = ev.data.optString("description", "")
+        val chs = mutableListOf<String>()
+        ev.data.optJSONArray("choices")?.let { a ->
+            for (i in 0 until a.length()) chs.add(a.optString(i))
+        }
+        if (rid.isEmpty() || chs.isEmpty()) return
+        val card = ApprovalCard(rid, cmd, desc, chs)
+        val list = _messages.value.toMutableList()
+        val i = list.indexOfLast { it.role == "assistant" && it.pending }
+        if (i >= 0) list[i] = list[i].copy(approval = card)
+        else list.add(Msg("assistant", "", pending = true, ts = stamp(), approval = card))
+        setMsgs(list)
+    }
+
+    /** 用户点了审批按钮：回执给服务端，并把卡片置为已选。 */
+    fun respondApproval(msgId: Long, choice: String) {
+        val a = api ?: return
+        val rid = currentRunId ?: return
+        val list = _messages.value.toMutableList()
+        val i = list.indexOfFirst { it.id == msgId }
+        if (i < 0) return
+        val card = list[i].approval ?: return
+        if (card.resolved.isNotEmpty()) return
+        list[i] = list[i].copy(approval = card.copy(resolved = choice))
+        setMsgs(list)
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { a.respondApproval(rid, card.requestId, choice) }
+        }
+    }
+
+    /** 轮末 token 用量：挂到最后一条助手消息上。 */
+    private fun attachUsage(ev: com.hermesapp.net.SseEvent) {
+        val u = ev.data.optJSONObject("usage") ?: return
+        val usage = Usage(
+            input = u.optInt("input_tokens", 0),
+            output = u.optInt("output_tokens", 0),
+            total = u.optInt("total_tokens", 0),
+            cacheRead = u.optInt("cache_read_tokens", 0),
+            cacheWrite = u.optInt("cache_write_tokens", 0),
+            durationMs = if (runStartedAt > 0) System.currentTimeMillis() - runStartedAt else 0L,
+        )
+        if (usage.total <= 0 && usage.input <= 0 && usage.output <= 0) return
+        val list = _messages.value.toMutableList()
+        val i = list.indexOfLast { it.role == "assistant" }
+        if (i >= 0) list[i] = list[i].copy(usage = usage)
+        setMsgs(list)
+    }
+
+    /** 子任务开始/结束：按 subagent_id 或 goal 归并成一行进度。 */
+    private fun upsertSubagent(ev: com.hermesapp.net.SseEvent, running: Boolean) {
+        val id = ev.data.optString("subagent_id", "").ifEmpty { ev.data.optString("delegation_id", "") }
+        val goal = ev.data.optString("goal", "")
+        val summary = ev.data.optString("summary", "")
+        val statusRaw = ev.data.optString("status", "")
+        val key = id.ifEmpty { goal }
+        if (key.isEmpty()) return
+        val status = when {
+            running -> "running"
+            statusRaw.isNotEmpty() -> statusRaw
+            else -> "completed"
+        }
+        val list = _messages.value.toMutableList()
+        val mi = list.indexOfLast { it.role == "assistant" && it.pending }
+        if (mi < 0) return
+        val old = list[mi].subagents
+        val idx = old.indexOfFirst { it.id == key }
+        val line = SubagentLine(key, goal.ifEmpty { old.getOrNull(idx)?.goal ?: "" }, status, summary)
+        val next = if (idx >= 0) old.toMutableList().also { it[idx] = line } else old + line
+        list[mi] = list[mi].copy(subagents = next)
+        setMsgs(list)
     }
 
     private fun toolLine(ev: com.hermesapp.net.SseEvent, failed: Boolean): String {
@@ -645,10 +781,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         val line = toolLine(ev, true)
                         if (line.isNotEmpty()) appendTrace(line)
                     }
+                    "approval.request" -> attachApproval(ev)
+                    "subagent.start" -> upsertSubagent(ev, running = true)
+                    "subagent.complete" -> upsertSubagent(ev, running = false)
                     "run.completed" -> {
                         runFinished = true
                         val out = ev.data.optString("output", "")
                         if (out.isNotEmpty()) setPendingText(out) else finishPending()
+                        attachUsage(ev)
                         doneOk()
                         notifyIfBackground(out)
                     }
@@ -770,6 +910,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         _busy.value = false
         prefs.activeRunId = ""
         RunService.stop(getApplication())
+        drainPendingReply()
     }
 
     /** App 不在前台时，任务完成弹系统通知（提示音+震动）。前台则静默，界面自己会更新。 */
@@ -779,7 +920,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val body = output.replace(Regex("\\s+"), " ").trim().let {
             if (it.isEmpty()) "任务已完成" else if (it.length > 120) it.take(120) + "…" else it
         }
-        Notifier.notifyMessage(app, "Hermes 回复", body)
+        Notifier.notifyMessage(app, "Hermes 回复", body, _currentId.value)
     }
 
     /** 缓存占用文案（待发图片 + 安装包 + 图片缓存），供设置页显示。 */

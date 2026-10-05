@@ -39,5 +39,12 @@
             android:name=".RunService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+        <receiver
+            android:name=".ReplyReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.hermesapp.REPLY" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

@@ -95,6 +95,17 @@ class HermesApi(
         }
     }
 
+    /** 审批回执：POST /v1/runs/{id}/approval，choice ∈ once/session/always/deny。 */
+    fun respondApproval(runId: String, requestId: String, choice: String) {
+        runCatching {
+            val body = JSONObject().put("choice", choice)
+            if (requestId.isNotEmpty()) body.put("request_id", requestId)
+            client.newCall(
+                base("/v1/runs/" + runId + "/approval").post(body.toString().toRequestBody(jsonType)).build()
+            ).execute().use { it.body?.string() }
+        }
+    }
+
     fun sysinfo(): JSONObject = sync(base("/health/sysinfo").get().build())
 
     fun healthDetailed(): JSONObject = sync(base("/health/detailed").get().build())

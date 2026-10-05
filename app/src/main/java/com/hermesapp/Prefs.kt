@@ -31,6 +31,11 @@ class Prefs(ctx: Context) {
         get() = sp.getString("draft_input", "") ?: ""
         set(v) { sp.edit().putString("draft_input", v).apply() }
 
+    /** 通知栏直接回复暂存："sessionId\u0000文本"；App 起来后由 ChatViewModel 取走发送。 */
+    var pendingReply: String
+        get() = sp.getString("pending_reply", "") ?: ""
+        set(v) { sp.edit().putString("pending_reply", v).apply() }
+
     /** 正在跑的 run_id：进程被杀后重开，用它确认任务是否还在执行（决定按钮显示发送还是停止）。 */
     var activeRunId: String
         get() = sp.getString("active_run_id", "") ?: ""

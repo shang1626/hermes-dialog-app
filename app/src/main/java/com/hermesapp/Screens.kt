@@ -206,7 +206,7 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
             verticalArrangement = Arrangement.spacedBy(8.dp),
             contentPadding = PaddingValues(vertical = 10.dp)
         ) {
-            items(msgs, key = { it.id }) { m -> Bubble(m) }
+            items(msgs, key = { it.id }) { m -> Bubble(m, vm::respondApproval) }
             item { Spacer(Modifier.height(1.dp)) }
         }
     }
@@ -327,7 +327,7 @@ fun FullScreenInput(
 }
 
 @Composable
-fun Bubble(m: Msg) {
+fun Bubble(m: Msg, onApproval: (Long, String) -> Unit = { _, _ -> }) {
     val c = LocalAppColors.current
     val isUser = m.role == "user"
     var traceOpen by remember { mutableStateOf(false) }
@@ -372,6 +372,61 @@ fun Bubble(m: Msg) {
                     }
                     if (m.text.isNotBlank()) Spacer(Modifier.height(6.dp))
                 }
+                // 审批卡片：服务端在等一个选择，点了就回执
+                val ap = m.approval
+                if (ap != null) {
+                    Column(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                            .background(c.card).padding(10.dp)
+                    ) {
+                        Text("需要你确认", color = c.warn, fontSize = 13.sp)
+                        if (ap.description.isNotEmpty()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(ap.description, color = c.text, fontSize = 12.sp)
+                        }
+                        if (ap.command.isNotEmpty()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                ap.command, color = c.dim, fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace, maxLines = 6,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        if (ap.resolved.isNotEmpty()) {
+                            Text("已选择：" + choiceLabel(ap.resolved), color = c.dim, fontSize = 12.sp)
+                        } else {
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                for (ch in ap.choices) {
+                                    OutlinedButton(
+                                        onClick = { onApproval(m.id, ch) },
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                        shape = RoundedCornerShape(8.dp),
+                                    ) { Text(choiceLabel(ch), color = c.accent, fontSize = 12.sp) }
+                                }
+                            }
+                        }
+                    }
+                    if (m.text.isNotBlank() || m.subagents.isNotEmpty() || m.usage != null) {
+                        Spacer(Modifier.height(6.dp))
+                    }
+                }
+                // 子任务进度：delegate_task 派出的子代理，一行一条
+                if (m.subagents.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("子任务（" + m.subagents.size + "）", color = c.dim, fontSize = 11.sp)
+                        for (s in m.subagents) {
+                            val mark = if (s.status == "running") "▶" else "✓"
+                            val col = if (s.status == "running") c.accent else c.dim
+                            Text(
+                                mark + " " + (if (s.goal.isNotEmpty()) s.goal else s.id),
+                                color = col, fontSize = 12.sp,
+                                maxLines = 2, overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                    if (m.text.isNotBlank() || m.usage != null) Spacer(Modifier.height(6.dp))
+                }
                 if (m.text.isNotEmpty() || (m.pending && m.trace.isEmpty())) {
                     // 正文走 Markdown 渲染：管道表格画成网格，URL 可点开浏览器；其余按等宽原文
                     RichText(
@@ -397,6 +452,20 @@ fun Bubble(m: Msg) {
                             )
                         }
                     }
+                }
+                // token 用量与速度：服务端轮末下发，App 自己按耗时算每秒出多少字
+                m.usage?.let { u ->
+                    Spacer(Modifier.height(4.dp))
+                    val speed = if (u.durationMs > 0) {
+                        String.format("%.1f", u.output * 1000.0 / u.durationMs)
+                    } else ""
+                    val parts = mutableListOf<String>()
+                    parts.add("入 " + u.input)
+                    if (u.cacheRead > 0) parts.add("缓存 " + u.cacheRead)
+                    parts.add("出 " + u.output)
+                    parts.add("共 " + u.total)
+                    if (speed.isNotEmpty()) parts.add(speed + " tok/s")
+                    Text(parts.joinToString(" · "), color = c.dim, fontSize = 10.sp)
                 }
                 if (m.ts > 0) {
                     Spacer(Modifier.height(4.dp))
@@ -610,6 +679,15 @@ fun SettingsScreen(
             }
         )
     }
+}
+
+/** 审批选项的中文标签（服务端下发的是英文 choice 键）。 */
+fun choiceLabel(ch: String): String = when (ch) {
+    "once" -> "允许一次"
+    "session" -> "本次会话允许"
+    "always" -> "始终允许"
+    "deny" -> "拒绝"
+    else -> ch
 }
 
 fun sizeText(b: Long): String = when {
