@@ -27,6 +27,8 @@ data class Msg(
     val ts: Long = 0L,
     /** 本条消息附带的本地图片路径（用户发的图用于气泡回显缩略图）。 */
     val images: List<String> = emptyList(),
+    /** 本条消息附带的非图片附件名（气泡里回显成文件卡片）。 */
+    val files: List<String> = emptyList(),
     /** 过程轨迹（工具调用等）。与正文分开存，界面上默认折叠，不占屏幕。 */
     val trace: String = "",
     /** 稳定唯一 id：给 LazyColumn 做 key，避免滑动时整列重组。 */
@@ -38,8 +40,14 @@ data class Msg(
     }
 }
 
-/** 待发送的图片：uri 用于展示，file 是拷进沙盒后的真实文件。 */
-data class PendingImage(val id: Long, val uri: String, val file: java.io.File)
+/** 待发送的附件：uri 用于展示（图片缩略图），file 是拷进沙盒后的真实文件。 */
+data class PendingImage(
+    val id: Long,
+    val uri: String,
+    val file: java.io.File,
+    /** 是否图片：决定待发区显示缩略图还是文件卡片。 */
+    val isImage: Boolean = true,
+)
 
 /** 状态页的一行：标签 + 值。value 为空则该行不显示。 */
 data class StatusItem(val label: String, val value: String)
@@ -450,7 +458,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             store.saveIndex(_sessions.value)
         }
         val wasEmpty = _messages.value.none { it.role == "user" }
-        setMsgs(_messages.value + Msg("user", text, ts = stamp(), images = imgs.map { it.uri }))
+        setMsgs(
+            _messages.value + Msg(
+                "user", text, ts = stamp(),
+                images = imgs.filter { it.isImage }.map { it.uri },
+                files = imgs.filter { !it.isImage }.map { it.file.name },
+            )
+        )
         touchSession(if (wasEmpty) text else null)
         _pendingImages.value = emptyList()
         autoContinue = 0
@@ -463,8 +477,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val (name, size) = queryNameSize(app, uri)
-                if (size > 10L * 1024 * 1024) {
-                    _imageNote.value = "图片超过 10MB：" + name
+                if (size > 50L * 1024 * 1024) {
+                    _imageNote.value = "图片超过 50MB：" + name
                     return@launch
                 }
                 val dir = File(app.filesDir, "outbox").apply { mkdirs() }
@@ -478,15 +492,50 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     _imageNote.value = "读取图片失败"
                     return@launch
                 }
-                if (_pendingImages.value.size >= 5) {
-                    _imageNote.value = "最多 5 张"
+                if (_pendingImages.value.size >= 10) {
+                    _imageNote.value = "最多 10 个附件"
                     dst.delete()
                     return@launch
                 }
                 _imageNote.value = ""
-                _pendingImages.value = _pendingImages.value + PendingImage(Msg.nextMsgId(), uri.toString(), dst)
+                _pendingImages.value = _pendingImages.value + PendingImage(Msg.nextMsgId(), uri.toString(), dst, isImage = true)
             } catch (e: Exception) {
                 _imageNote.value = "读取图片失败：" + (e.message ?: "?")
+            }
+        }
+    }
+
+    /** 把任意文件拷进 App 沙盒，加入待发列表（非图片走文件卡片展示）。 */
+    fun addFile(ctx: Context, uri: Uri) {
+        val app = getApplication<Application>()
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val (name, size) = queryNameSize(app, uri)
+                if (size > 50L * 1024 * 1024) {
+                    _imageNote.value = "文件超过 50MB：" + name
+                    return@launch
+                }
+                val dir = File(app.filesDir, "outbox").apply { mkdirs() }
+                val ext = name.substringAfterLast('.', "").lowercase().let {
+                    if (it.length in 1..5) it else "bin"
+                }
+                val dst = File(dir, "file_${System.currentTimeMillis()}_${(0..9999).random()}.$ext")
+                app.contentResolver.openInputStream(uri)?.use { input ->
+                    dst.outputStream().use { out -> input.copyTo(out) }
+                } ?: run {
+                    _imageNote.value = "读取文件失败"
+                    return@launch
+                }
+                if (_pendingImages.value.size >= 10) {
+                    _imageNote.value = "最多 10 个附件"
+                    dst.delete()
+                    return@launch
+                }
+                val isImg = ext in setOf("png", "jpg", "jpeg", "gif", "webp", "bmp")
+                _imageNote.value = ""
+                _pendingImages.value = _pendingImages.value + PendingImage(Msg.nextMsgId(), uri.toString(), dst, isImage = isImg)
+            } catch (e: Exception) {
+                _imageNote.value = "读取文件失败：" + (e.message ?: "?")
             }
         }
     }
@@ -513,11 +562,26 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         return name to size
     }
 
+    // 按真实扩展名给 MIME：图片走 image 类，其余按常见类型给，未知一律 octet-stream。
     private fun mimeOf(file: File): String = when (file.extension.lowercase()) {
         "png" -> "image/png"
+        "jpg", "jpeg" -> "image/jpeg"
         "gif" -> "image/gif"
         "webp" -> "image/webp"
-        else -> "image/jpeg"
+        "bmp" -> "image/bmp"
+        "svg" -> "image/svg+xml"
+        "html", "htm" -> "text/html"
+        "txt", "log" -> "text/plain"
+        "md" -> "text/markdown"
+        "json" -> "application/json"
+        "csv" -> "text/csv"
+        "xml" -> "application/xml"
+        "pdf" -> "application/pdf"
+        "zip" -> "application/zip"
+        "apk" -> "application/vnd.android.package-archive"
+        "mp3" -> "audio/mpeg"
+        "mp4" -> "video/mp4"
+        else -> "application/octet-stream"
     }
 
     private fun startRunWith(a: HermesApi, text: String, files: List<File> = emptyList()) {
@@ -530,7 +594,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val ids = mutableListOf<String>()
                 for ((i, f) in files.withIndex()) {
-                    _imageNote.value = "上传图片 ${i + 1}/${files.size}…"
+                    _imageNote.value = "上传附件 ${i + 1}/${files.size}…"
                     ids.add(a.uploadImage(f.readBytes(), f.name, mimeOf(f)))
                 }
                 _imageNote.value = ""
