@@ -40,4 +40,13 @@ class Prefs(ctx: Context) {
     var visionAutoText: Boolean
         get() = sp.getBoolean("vision_auto_text", true)
         set(v) { sp.edit().putBoolean("vision_auto_text", v).apply() }
+
+    /**
+     * 后台运行（任务期间起前台服务保持 SSE 连接）。
+     * 开启时必有一条最小化常驻通知（Android 强制）；关闭则不起服务、彻底无通知，
+     * 任务仍在服务端跑，重开 App 会重新拉取结果。
+     */
+    var keepAlive: Boolean
+        get() = sp.getBoolean("keep_alive", true)
+        set(v) { sp.edit().putBoolean("keep_alive", v).apply() }
 }

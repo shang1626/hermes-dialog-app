@@ -320,14 +320,13 @@ fun Bubble(m: Msg) {
                     if (m.text.isNotBlank()) Spacer(Modifier.height(6.dp))
                 }
                 if (m.text.isNotEmpty() || (m.pending && m.trace.isEmpty())) {
-                    SelectionContainer {
-                        Text(
-                            text = if (m.pending && m.text.isEmpty()) "…" else m.text,
-                            color = if (m.pending) c.dim else if (isUser) c.userText else c.text,
-                            fontSize = 14.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
+                    // 正文走 Markdown 渲染：管道表格画成网格，URL 可点开浏览器；其余按等宽原文
+                    RichText(
+                        text = if (m.pending && m.text.isEmpty()) "…" else m.text,
+                        color = if (m.pending) c.dim else if (isUser) c.userText else c.text,
+                        fontSize = 14.sp,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
                 // 过程轨迹（工具调用等）：默认折叠一行，点开才展开，不占屏幕
                 if (m.trace.isNotEmpty()) {
@@ -438,6 +437,7 @@ fun SettingsScreen(
     val pct by vm.downloadPct.collectAsState()
     val dtext by vm.downloadText.collectAsState()
     var url by remember { mutableStateOf(prefs.serverUrl) }
+    var keepAlive by remember { mutableStateOf(prefs.keepAlive) }
     val vc = remember {
         runCatching {
             ctx.packageManager.getPackageInfo(ctx.packageName, 0).longVersionCode.toInt()
@@ -475,6 +475,21 @@ fun SettingsScreen(
         }
         Spacer(Modifier.height(6.dp))
         Text("当前版本 " + vc, color = c.dim, fontSize = 11.sp)
+        Spacer(Modifier.height(20.dp))
+        HorizontalDivider(color = c.card)
+        Spacer(Modifier.height(12.dp))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("后台运行", color = c.text, fontSize = 13.sp)
+                Text(
+                    if (keepAlive) "任务期间保持连接，通知栏会有一条最小化常驻条目（Android 强制）"
+                    else "不起前台服务，无任何常驻通知；任务仍在服务端跑，重开自动拉回结果",
+                    color = c.dim, fontSize = 11.sp
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Switch(checked = keepAlive, onCheckedChange = { keepAlive = it; vm.setKeepAlive(it) })
+        }
         Spacer(Modifier.height(24.dp))
         OutlinedButton(
             onClick = { prefs.loggedIn = false; onLogout() }, modifier = Modifier.fillMaxWidth()
@@ -535,14 +550,8 @@ fun NativeChatInput(
         modifier = modifier,
         factory = { context ->
             EditText(context).apply {
-                background = GradientDrawable().apply {
-                    setColor(android.graphics.Color.TRANSPARENT)
-                    setStroke(2, c.dim.toArgb())
-                    cornerRadius = 24f
-                }
                 hint = hintText
-                setHintTextColor(c.dim.toArgb())
-                setTextColor(c.text.toArgb())
+                applyNativeInputColors(this, c)
                 textSize = 15f
                 isSingleLine = false
                 this.minLines = minLines
@@ -570,6 +579,8 @@ fun NativeChatInput(
             }
         },
         update = { et ->
+            // 主题可能已切换：颜色每次 update 都按当前配色重刷，否则白天模式会留夜间白字
+            applyNativeInputColors(et, c)
             val cur = et.text?.toString() ?: ""
             if (cur != value) {
                 et.setText(value)
@@ -577,4 +588,15 @@ fun NativeChatInput(
             }
         },
     )
+}
+
+/** 原生 EditText 的描边/文字/提示颜色统一按当前配色刷新（主题切换后必须重刷）。 */
+private fun applyNativeInputColors(et: EditText, c: AppColors) {
+    et.background = GradientDrawable().apply {
+        setColor(android.graphics.Color.TRANSPARENT)
+        setStroke(2, c.dim.toArgb())
+        cornerRadius = 24f
+    }
+    et.setHintTextColor(c.dim.toArgb())
+    et.setTextColor(c.text.toArgb())
 }

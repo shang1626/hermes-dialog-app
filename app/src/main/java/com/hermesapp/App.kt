@@ -106,7 +106,8 @@ class MainActivity : ComponentActivity() {
         val bg = (if (isDarkMode(prefs.themeMode, this)) DarkColors else LightColors).bg.toArgb()
         window.statusBarColor = bg
         window.navigationBarColor = bg
-        if (android.os.Build.VERSION.SDK_INT >= 33) {
+        // 只在开启「后台运行」时申请通知权限：关掉后不起前台服务，通知自然不会出现
+        if (prefs.keepAlive && android.os.Build.VERSION.SDK_INT >= 33) {
             runCatching { notifPerm.launch(android.Manifest.permission.POST_NOTIFICATIONS) }
         }
         Notifier.ensureChannel(this)
