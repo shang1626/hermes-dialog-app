@@ -32,6 +32,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import coil.compose.AsyncImage
 import androidx.compose.foundation.text.selection.SelectionContainer
+import android.net.Uri
 import android.widget.Toast
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -252,21 +253,59 @@ private fun MdTable(rows: List<List<String>>, color: Color, fontSize: TextUnit) 
     }
 }
 
-/** 内联图片：点击 App 内放大查看（不再甩给外部软件），长按保存到相册。 */
-@OptIn(ExperimentalFoundationApi::class)
+/** 内联图片（正文里的 data URL）：点击 App 内放大查看，长按保存到相册。 */
 @Composable
 private fun MdImage(dataUrl: String, alt: String) {
-    val ctx = LocalContext.current
-    val c = LocalAppColors.current
     val decoded = remember(dataUrl) { decodeDataUrl(dataUrl) }
-    var zoom by remember { mutableStateOf(false) }
     if (decoded == null) {
-        Text("[图片解析失败]", color = c.dim, fontSize = 12.sp)
+        Text("[图片解析失败]", color = LocalAppColors.current.dim, fontSize = 12.sp)
         return
     }
-    val name = alt.ifBlank { "image" } + extFor(decoded.mime)
+    ZoomableImage(
+        model = decoded.bytes,
+        decoded = decoded,
+        alt = alt,
+        thumbScale = ContentScale.Fit,
+        thumbModifier = Modifier.widthIn(max = 300.dp).clip(RoundedCornerShape(8.dp)),
+    )
+}
+
+/**
+ * 用户气泡里的本地图片（content:// 或 file:// Uri）：点击 App 内放大查看，长按保存到相册。
+ * 读不到字节时仍能放大（用 Uri 直接渲染），只是不能保存。
+ */
+@Composable
+fun LocalImageView(uri: String, modifier: Modifier = Modifier) {
+    val ctx = LocalContext.current
+    val decoded = remember(uri) { uriToDecoded(ctx, Uri.parse(uri)) }
+    ZoomableImage(
+        model = if (decoded != null) decoded.bytes else uri,
+        decoded = decoded,
+        alt = "image",
+        thumbScale = ContentScale.Crop,
+        thumbModifier = modifier,
+    )
+}
+
+/**
+ * 可缩放图片：缩略图点击 → 全屏 Dialog（点任意处关闭），缩略图/全屏长按 → 保存到相册。
+ * model 可以是 ByteArray（内联图）或 Uri 字符串（本地图）；decoded 为 null 时只放大、不保存。
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ZoomableImage(
+    model: Any?,
+    decoded: DecodedData?,
+    alt: String,
+    thumbScale: ContentScale,
+    thumbModifier: Modifier,
+) {
+    val ctx = LocalContext.current
+    var zoom by remember { mutableStateOf(false) }
+    val name = alt.ifBlank { "image" } + extFor(decoded?.mime ?: "image/png")
     fun save() {
-        val saved = saveImageToGallery(ctx, name, decoded)
+        val d = decoded ?: return
+        val saved = saveImageToGallery(ctx, name, d)
         Toast.makeText(
             ctx,
             if (saved != null) "已保存到相册：Pictures/Hermes/$saved" else "保存失败",
@@ -274,16 +313,13 @@ private fun MdImage(dataUrl: String, alt: String) {
         ).show()
     }
     AsyncImage(
-        model = decoded.bytes,
+        model = model,
         contentDescription = alt.ifBlank { "图片" },
-        contentScale = ContentScale.Fit,
-        modifier = Modifier
-            .widthIn(max = 300.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .combinedClickable(
-                onClick = { zoom = true },
-                onLongClick = { save() }
-            )
+        contentScale = thumbScale,
+        modifier = thumbModifier.combinedClickable(
+            onClick = { zoom = true },
+            onLongClick = { save() }
+        )
     )
     if (zoom) {
         // 全屏查看：点任意处关闭，长按保存到相册（无需外部应用）
@@ -302,13 +338,13 @@ private fun MdImage(dataUrl: String, alt: String) {
                 contentAlignment = Alignment.Center
             ) {
                 AsyncImage(
-                    model = decoded.bytes,
+                    model = model,
                     contentDescription = alt.ifBlank { "图片" },
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxWidth().padding(12.dp)
                 )
                 Text(
-                    "点任意处关闭 · 长按保存到相册",
+                    if (decoded != null) "点任意处关闭 · 长按保存到相册" else "点任意处关闭",
                     color = Color.White.copy(alpha = 0.7f),
                     fontSize = 12.sp,
                     modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 28.dp)

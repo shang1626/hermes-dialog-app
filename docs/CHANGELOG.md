@@ -1,5 +1,12 @@
 # 变更记录
 
+## 2.18 — versionCode 29
+修「用户自己发的图片点不开」：用户气泡里的图片原来只是 AsyncImage 缩略图，没有手势。
+- 抽出一个可缩放图片组件（缩略图点击 → App 内全屏查看，点任意处关闭；长按 → 保存到相册），
+  正文内联图与用户本地图共用。
+- 用户本地图（content:// / file://）读字节后同样支持全屏与保存；读不到字节时仍能放大。
+（Screens.kt、Markdown.kt、Attachment.kt）
+
 ## 2.17 — versionCode 28
 三个问题：
 - 更新后图片不见：重开 App 时 refreshFromServer 用服务端消息覆盖本地，服务端存的是原始

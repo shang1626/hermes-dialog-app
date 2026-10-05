@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.media.MediaScannerConnection
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
@@ -123,6 +124,17 @@ fun saveImageToGallery(ctx: Context, name: String, data: DecodedData): String? =
         MediaScannerConnection.scanFile(ctx, arrayOf(f.absolutePath), arrayOf(data.mime), null)
         display
     }
+}.getOrNull()
+
+
+/**
+ * 从 content:// 或 file:// Uri 读字节 + MIME：用户气泡里的本地图片要能放大/存相册。
+ * 读不到返回 null。
+ */
+fun uriToDecoded(ctx: Context, uri: Uri): DecodedData? = runCatching {
+    val mime = ctx.contentResolver.getType(uri) ?: guessMime(uri.lastPathSegment ?: "")
+    val bytes = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return null
+    if (bytes.isEmpty()) null else DecodedData(mime, bytes)
 }.getOrNull()
 
 
