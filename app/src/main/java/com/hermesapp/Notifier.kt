@@ -40,7 +40,7 @@ object Notifier {
         mgr.createNotificationChannel(ch)
     }
 
-    fun notifyMessage(ctx: Context, title: String, text: String) {
+    fun notifyMessage(ctx: Context, title: String, text: String, sessionId: String = "") {
         ensureChannel(ctx)
         val tap = PendingIntent.getActivity(
             ctx, 0,
@@ -49,6 +49,21 @@ object Notifier {
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        // 通知栏直接回复：展开通知就是输入框，打完直接发，不用点进 App
+        val replyIntent = Intent(ctx, ReplyReceiver::class.java).apply {
+            action = ACTION_REPLY
+            putExtra(EXTRA_SESSION_ID, sessionId)
+        }
+        val replyPi = PendingIntent.getBroadcast(
+            ctx, 1, replyIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+        )
+        val input = androidx.core.app.RemoteInput.Builder(KEY_TEXT_REPLY)
+            .setLabel("回复…")
+            .build()
+        val action = NotificationCompat.Action.Builder(
+            android.R.drawable.ic_menu_send, "回复", replyPi
+        ).addRemoteInput(input).build()
         val n = NotificationCompat.Builder(ctx, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentTitle(title)
@@ -56,9 +71,35 @@ object Notifier {
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setAutoCancel(true)
             .setContentIntent(tap)
+            .addAction(action)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
         // 无授权时静默失败，绝不因通知崩溃
         runCatching { NotificationManagerCompat.from(ctx).notify(NOTIF_ID, n) }
+    }
+
+    const val KEY_TEXT_REPLY = "hermes_reply_text"
+    const val ACTION_REPLY = "com.hermesapp.REPLY"
+    const val EXTRA_SESSION_ID = "hermes_reply_session"
+}
+
+/** 通知栏回复的暂存区：广播收到后写盘并唤醒 App 内的收集者。 */
+object PendingReply {
+    private val _flow = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 4)
+    val flow: kotlinx.coroutines.flow.SharedFlow<Unit> = _flow
+    fun poke() { _flow.tryEmit(Unit) }
+}
+
+/** 接收通知栏里打的那句话：落盘（App 可能已被杀），再叫醒界面去发。 */
+class ReplyReceiver : android.content.BroadcastReceiver() {
+    override fun onReceive(ctx: Context, intent: Intent) {
+        if (intent.action != Notifier.ACTION_REPLY) return
+        val text = androidx.core.app.RemoteInput.getResultsFromIntent(intent)
+            ?.getCharSequence(Notifier.KEY_TEXT_REPLY)?.toString()?.trim().orEmpty()
+        if (text.isEmpty()) return
+        val sid = intent.getStringExtra(Notifier.EXTRA_SESSION_ID).orEmpty()
+        Prefs(ctx).pendingReply = sid + "\u0000" + text
+        runCatching { NotificationManagerCompat.from(ctx).cancel(Notifier.NOTIF_ID) }
+        PendingReply.poke()
     }
 }

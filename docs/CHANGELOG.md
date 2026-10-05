@@ -1,5 +1,14 @@
 # 变更记录
 
+## 2.11 — versionCode 22
+对话体验增强四项：
+- 审批卡片：服务端 `approval.request` 事件渲染成可点按钮（允许一次/本会话/始终/拒绝），
+  点击回执 `POST /v1/runs/{id}/approval`，不再只在聊天里发文字问。
+- token 用量与速度：轮末 usage 显示「入/缓存/出/共 + tok/s」（App 按耗时自算）。
+- 子任务进度：`subagent.start/complete` 归并成一行条进度。
+- 通知栏直接回复：通知自带输入框，打完直接发（RemoteInput + ReplyReceiver + 落盘暂存）。
+（ChatViewModel.kt、Screens.kt、Notifier.kt、net/HermesApi.kt、Prefs.kt、AndroidManifest.xml）
+
 ## 2.10 — versionCode 21
 新增文件上传：输入栏加「文件」按钮（系统文件选择器，任意类型、可多选，最多 10 个）。
 图片上传逻辑泛化成通用附件上传，按真实扩展名给 MIME（不再硬填 image/jpeg）。
