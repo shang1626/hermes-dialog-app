@@ -1,5 +1,12 @@
 # 变更记录
 
+## 2.13 — versionCode 24
+修「掉线了还显示在线」：
+- 在线探针改用独立 OkHttpClient（callTimeout 6s / read 5s）。原来复用 SSE 那个 readTimeout=0 的
+  无限长 client，CF 隧道半开时 /health 永久挂起，pingLoop 卡死、状态冻结在「在线」。
+- 探测间隔 10s→5s；连续 2 次失败才翻「离线」（防抖），一次成功立刻回「在线」。
+（ChatViewModel.kt、net/HermesApi.kt）
+
 ## 2.12 — versionCode 23
 修「切换对话内容不对」+ 图片上传限制对齐：
 - 重开 App 恢复上次停留的会话（原来忽略 sessionId，总是跳到最近更新的那个）。
