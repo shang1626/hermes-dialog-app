@@ -29,6 +29,20 @@ class HermesApi(
         .retryOnConnectionFailure(true)
         .build()
 
+    /**
+     * 在线探针专用 client：带硬性总超时。
+     * 不能复用上面的 [client]——它 readTimeout=0（无限长，SSE 流式对话必须），
+     * 隧道半开（连接不断也不回包）时 /health 会永久挂起，pingLoop 卡死在那一行，
+     * 在线状态冻结在最后一次结果（表现为「掉线了还显示在线」）。
+     */
+    private val probeClient = OkHttpClient.Builder()
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(5, TimeUnit.SECONDS)
+        .writeTimeout(5, TimeUnit.SECONDS)
+        .callTimeout(6, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(false)
+        .build()
+
     private val jsonType = "application/json; charset=utf-8".toMediaType()
 
     private fun full(path: String) = baseUrl.trimEnd('/') + prefix + path
@@ -131,7 +145,7 @@ class HermesApi(
     fun healthDetailed(): JSONObject = sync(base("/health/detailed").get().build())
 
     fun ping(): Boolean = runCatching {
-        client.newCall(base("/health").get().build()).execute().use { it.isSuccessful }
+        probeClient.newCall(base("/health").get().build()).execute().use { it.isSuccessful }
     }.getOrDefault(false)
 
     fun checkUpdate(): UpdateInfo? {

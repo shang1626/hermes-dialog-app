@@ -426,10 +426,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (pingStarted) return
         pingStarted = true
         viewModelScope.launch(Dispatchers.IO) {
+            var fails = 0
             while (true) {
                 val ok = api?.ping() ?: false
-                _online.value = ok
-                delay(10000)
+                if (ok) {
+                    fails = 0
+                    _online.value = true   // 恢复立刻生效
+                } else {
+                    // 连续 2 次失败才翻「离线」，避免单次抖动闪红。
+                    fails++
+                    if (fails >= 2) _online.value = false
+                }
+                delay(5000)
             }
         }
     }
