@@ -43,6 +43,24 @@ class HermesApi(
         .retryOnConnectionFailure(false)
         .build()
 
+    /**
+     * SSE 事件流专用 client：读取超时设成硬阈值，用来识别「隧道假死」。
+     *
+     * 为什么不能用 [client]：它 readTimeout=0，隧道半死（连接在、不回包）时
+     * 那条流会永久挂着，界面表现是「发出去一直转圈、没有反应」，且永远不触发重连。
+     *
+     * 为什么阈值安全：服务端在两次事件之间每 10 秒必发一个 `: keepalive` 注释帧
+     * （gateway/platforms/api_server.py: CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 10），
+     * 无论任务跑多久都有字节回来。取 30 秒 = 3 个心跳周期，正常空闲绝不误杀；
+     * 真假死时 30 秒抛 SocketTimeoutException，交给上层走重连。
+     */
+    private val streamClient = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .build()
+
     private val jsonType = "application/json; charset=utf-8".toMediaType()
 
     private fun full(path: String) = baseUrl.trimEnd('/') + prefix + path
@@ -201,7 +219,8 @@ class HermesApi(
             .header("Accept", "text/event-stream")
             .get()
         if (lastSeq >= 0) b.header("Last-Event-ID", lastSeq.toString())
-        val call = client.newCall(b.build())
+        // 走 streamClient（readTimeout=30s）：隧道假死时能抛超时断开，交给上层重连。
+        val call = streamClient.newCall(b.build())
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) = onError(e)
             override fun onResponse(call: Call, response: Response) {
