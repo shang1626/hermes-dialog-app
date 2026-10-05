@@ -13,6 +13,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -382,6 +383,7 @@ fun DrawerPanel(
     val c = LocalAppColors.current
     val sessions by vm.sessions.collectAsState()
     val currentId by vm.currentId.collectAsState()
+    val updateBadge by vm.updateBadge.collectAsState()
     var showArchived by remember { mutableStateOf(false) }
 
     ModalDrawerSheet(
@@ -407,7 +409,7 @@ fun DrawerPanel(
             // 页面切换（对话通过点会话/标题进入，不单列按钮）
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 NavChip("状态", tab == 1, Modifier.weight(1f)) { onTab(1) }
-                NavChip("设置", tab == 2, Modifier.weight(1f)) { onTab(2) }
+                NavChip("设置", tab == 2, Modifier.weight(1f), badge = updateBadge) { onTab(2) }
             }
             Spacer(Modifier.height(12.dp))
             HorizontalDivider(color = c.card)
@@ -466,7 +468,13 @@ fun DrawerPanel(
 }
 
 @Composable
-fun NavChip(label: String, selected: Boolean, m: Modifier, onClick: () -> Unit) {
+fun NavChip(
+    label: String,
+    selected: Boolean,
+    m: Modifier,
+    badge: Boolean = false,
+    onClick: () -> Unit,
+) {
     val c = LocalAppColors.current
     OutlinedButton(
         onClick = onClick,
@@ -476,7 +484,21 @@ fun NavChip(label: String, selected: Boolean, m: Modifier, onClick: () -> Unit) 
             containerColor = if (selected) c.card else Color.Transparent
         ),
         shape = RoundedCornerShape(8.dp),
-    ) { Text(label, color = if (selected) c.accent else c.dim, fontSize = 13.sp) }
+    ) {
+        Box {
+            Text(label, color = if (selected) c.accent else c.dim, fontSize = 13.sp)
+            // 有新版本时：按钮右上角（边框内）一个小绿点
+            if (badge) {
+                Box(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = 6.dp, y = (-5).dp)
+                        .size(7.dp)
+                        .background(c.ok, CircleShape)
+                )
+            }
+        }
+    }
 }
 
 @Composable

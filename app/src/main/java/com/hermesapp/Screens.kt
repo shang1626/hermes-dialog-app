@@ -179,6 +179,8 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
     val focus = LocalFocusManager.current
     val ctx = LocalContext.current
     val view = LocalView.current
+    // 变化即重建各气泡的 SelectionContainer：用来取消文本选中（点空白/点正文时 +1）。
+    var selReset by remember { mutableStateOf(0) }
 
     // 末尾放一个 1dp 占位项，永远滚到它 = 永远贴底（正文增长也能跟上）
     LaunchedEffect(msgs.size, msgs.lastOrNull()?.id, msgs.lastOrNull()?.text, msgs.lastOrNull()?.pending) {
@@ -188,7 +190,8 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
     Column(
         modifier.fillMaxWidth().pointerInput(Unit) {
             detectTapGestures(onTap = {
-                // 点消息区/空白处：清焦点并立即收起软键盘
+                // 点消息区/空白处：取消文本选中 + 清焦点并立即收起软键盘
+                selReset++
                 focus.clearFocus()
                 (ctx as? Activity)?.currentFocus?.clearFocus()
                 val imm = ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
@@ -206,7 +209,13 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
             verticalArrangement = Arrangement.spacedBy(8.dp),
             contentPadding = PaddingValues(vertical = 10.dp)
         ) {
-            items(msgs, key = { it.id }) { m -> Bubble(m, vm::respondApproval, vm::respondClarify) }
+            items(msgs, key = { it.id }) { m ->
+                Bubble(
+                    m, vm::respondApproval, vm::respondClarify,
+                    selectionReset = selReset,
+                    onClearSelection = { selReset++ },
+                )
+            }
             item { Spacer(Modifier.height(1.dp)) }
         }
     }
@@ -327,7 +336,13 @@ fun FullScreenInput(
 }
 
 @Composable
-fun Bubble(m: Msg, onApproval: (Long, String) -> Unit = { _, _ -> }, onClarify: (Long, String) -> Unit = { _, _ -> }) {
+fun Bubble(
+    m: Msg,
+    onApproval: (Long, String) -> Unit = { _, _ -> },
+    onClarify: (Long, String) -> Unit = { _, _ -> },
+    selectionReset: Int = 0,
+    onClearSelection: () -> Unit = {},
+) {
     val c = LocalAppColors.current
     val isUser = m.role == "user"
     var traceOpen by remember { mutableStateOf(false) }
@@ -464,7 +479,9 @@ fun Bubble(m: Msg, onApproval: (Long, String) -> Unit = { _, _ -> }, onClarify: 
                         text = if (m.pending && m.text.isEmpty()) "…" else m.text,
                         color = if (m.pending) c.dim else if (isUser) c.userText else c.text,
                         fontSize = 16.sp,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        selectionReset = selectionReset,
+                        onClearSelection = onClearSelection,
                     )
                 }
                 // 过程轨迹（工具调用等）：默认折叠一行，点开才展开，不占屏幕
@@ -476,11 +493,13 @@ fun Bubble(m: Msg, onApproval: (Long, String) -> Unit = { _, _ -> }, onClarify: 
                         modifier = Modifier.clickable { traceOpen = !traceOpen }
                     )
                     if (traceOpen) {
-                        SelectionContainer {
-                            Text(
-                                m.trace.trim(),
-                                color = c.dim, fontSize = 11.sp, fontFamily = FontFamily.Monospace
-                            )
+                        key(selectionReset) {
+                            SelectionContainer {
+                                Text(
+                                    m.trace.trim(),
+                                    color = c.dim, fontSize = 11.sp, fontFamily = FontFamily.Monospace
+                                )
+                            }
                         }
                     }
                 }

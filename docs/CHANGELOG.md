@@ -1,5 +1,12 @@
 # 变更记录
 
+## 2.16 — versionCode 27
+- 长按选中文本后可以取消选中了：点消息区空白处或点正文任意位置会重建 SelectionContainer，
+  选中态随之清除（原来是选中后没法取消）。
+- 有新版本时，抽屉里「设置」按钮右上角（边框内）显示一个小绿点，提示可更新；
+  启动/切身份时静默检查，点「检查更新」仍会弹确认框。
+（Screens.kt、Markdown.kt、ChatViewModel.kt、App.kt）
+
 ## 2.15 — versionCode 26
 修两个渲染层问题：
 - 消息里的图片可以长按保存到系统相册（Pictures/Hermes）。API 29+ 走 MediaStore 免存储权限；

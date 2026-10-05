@@ -13,6 +13,7 @@ import androidx.compose.foundation.text.ClickableText
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -178,6 +179,10 @@ fun RichText(
     color: Color,
     fontSize: TextUnit,
     modifier: Modifier = Modifier,
+    /** 变化即重建 SelectionContainer：用于点空白/点正文取消文本选中。 */
+    selectionReset: Int = 0,
+    /** 点正文空白处（非链接）时回调：外层据此取消选中。 */
+    onClearSelection: () -> Unit = {},
 ) {
     val c = LocalAppColors.current
     val uri = LocalUriHandler.current
@@ -191,19 +196,25 @@ fun RichText(
                 is MdBlock.Attachment -> MdAttachmentCard(b.name, b.dataUrl, b.token)
                 is MdBlock.Para -> {
                     val ann = remember(b.text, c.accent) { linkAnnotated(b.text, c.accent) }
-                    SelectionContainer {
-                        ClickableText(
-                            text = ann,
-                            style = TextStyle(
-                                color = color, fontSize = fontSize,
-                                fontFamily = FontFamily.Monospace
-                            ),
-                            onClick = { off ->
-                                ann.getStringAnnotations("URL", off, off).firstOrNull()?.let {
-                                    runCatching { uri.openUri(it.item) }
+                    // key 变化 → SelectionContainer 被重建，选中态随之清除（点空白/点正文时触发）。
+                    key(selectionReset) {
+                        SelectionContainer {
+                            ClickableText(
+                                text = ann,
+                                style = TextStyle(
+                                    color = color, fontSize = fontSize,
+                                    fontFamily = FontFamily.Monospace
+                                ),
+                                onClick = { off ->
+                                    val hit = ann.getStringAnnotations("URL", off, off).firstOrNull()
+                                    if (hit != null) {
+                                        runCatching { uri.openUri(hit.item) }
+                                    } else {
+                                        onClearSelection()   // 点正文空白：取消选中
+                                    }
                                 }
-                            }
-                        )
+                            )
+                        }
                     }
                 }
                 is MdBlock.Table -> MdTable(b.rows, color, fontSize)
