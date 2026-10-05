@@ -3,13 +3,18 @@ package com.hermesapp
 import android.app.Activity
 import android.content.Context
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
 import android.view.Gravity
+import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -18,6 +23,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -26,9 +32,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalView
@@ -38,6 +46,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
 
 /**
@@ -52,14 +61,75 @@ fun ChatScreen(
     onInput: (String) -> Unit,
 ) {
     var fullscreen by remember { mutableStateOf(false) }
+    val c = LocalAppColors.current
+    val ctx = LocalContext.current
+    val pend by vm.pendingImages.collectAsState()
+    val note by vm.imageNote.collectAsState()
+    var askVision by remember { mutableStateOf(false) }
+
+    // 相册/图片选择器（系统 Photo Picker，无需存储权限）
+    val picker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(5)
+    ) { uris ->
+        for (u in uris) vm.addImage(ctx, u)
+    }
 
     Column(Modifier.fillMaxSize()) {
         MessageList(vm, Modifier.weight(1f))
+        // 待发送图片：缩略图横排，每张右上角 × 可单删
+        if (pend.isNotEmpty() || note.isNotEmpty()) {
+            Column(Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 10.dp, vertical = 6.dp)) {
+                if (note.isNotEmpty()) {
+                    Text(note, color = c.warn, fontSize = 12.sp)
+                    Spacer(Modifier.height(4.dp))
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (p in pend) {
+                        Box(Modifier.size(56.dp)) {
+                            AsyncImage(
+                                model = p.uri,
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(8.dp))
+                            )
+                            Text(
+                                "×", color = Color.White, fontSize = 12.sp,
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                                    .clickable { vm.removeImage(p.id) }
+                                    .padding(horizontal = 5.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
         ChatInputBar(
             vm = vm,
             inputState = inputState,
             onInput = onInput,
             onFullscreen = { fullscreen = true },
+            onPickImages = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+        )
+    }
+
+    if (askVision) {
+        AlertDialog(
+            onDismissRequest = { askVision = false },
+            title = { Text("当前模型不支持图片") },
+            text = { Text("要把这几张图自动转成文字描述发过去吗？转文字后模型能读懂图里内容，但原始图片不会保留。", fontSize = 13.sp) },
+            confirmButton = {
+                TextButton(onClick = {
+                    askVision = false
+                    prefs.visionAutoText = true
+                    vm.send(inputState.value.trim())
+                    onInput("")
+                }) { Text("转成文字发送") }
+            },
+            dismissButton = {
+                TextButton(onClick = { askVision = false }) { Text("取消") }
+            }
         )
     }
 
@@ -121,14 +191,22 @@ fun ChatInputBar(
     inputState: MutableState<String>,
     onInput: (String) -> Unit,
     onFullscreen: () -> Unit,
+    onPickImages: () -> Unit,
 ) {
     val c = LocalAppColors.current
     val busy by vm.busy.collectAsState()
     val input = inputState.value
     Row(
         Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 8.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically
+        verticalAlignment = Alignment.Bottom
     ) {
+        // 图片入口：小描边圆钮
+        OutlinedButton(
+            onClick = onPickImages,
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+            shape = RoundedCornerShape(8.dp),
+        ) { Text("＋", color = c.accent, fontSize = 14.sp) }
+        Spacer(Modifier.width(6.dp))
         Box(Modifier.weight(1f)) {
             NativeChatInput(
                 value = input,
@@ -157,7 +235,9 @@ fun ChatInputBar(
             OutlinedButton(
                 onClick = {
                     val t = input.trim()
-                    if (t.isNotEmpty()) { vm.send(t); onInput("") }
+                    if (t.isNotEmpty() || vm.pendingImages.value.isNotEmpty()) {
+                        vm.send(t); onInput("")
+                    }
                 },
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                 shape = RoundedCornerShape(8.dp),
@@ -198,7 +278,10 @@ fun FullScreenInput(
                 value = v,
                 onValueChange = { v = it },
                 hintText = "在此输入…",
-                modifier = Modifier.weight(1f).fillMaxWidth()
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                minLines = 8,
+                maxLines = 500,
+                fill = true,
             )
         }
     }
@@ -208,6 +291,7 @@ fun FullScreenInput(
 fun Bubble(m: Msg) {
     val c = LocalAppColors.current
     val isUser = m.role == "user"
+    var traceOpen by remember { mutableStateOf(false) }
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
@@ -218,13 +302,46 @@ fun Bubble(m: Msg) {
             modifier = Modifier.widthIn(max = 320.dp)
         ) {
             Column(Modifier.padding(10.dp)) {
-                SelectionContainer {
+                // 用户发的图：气泡内缩略图回显
+                if (m.images.isNotEmpty()) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        for (u in m.images) {
+                            AsyncImage(
+                                model = u,
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.size(72.dp).clip(RoundedCornerShape(8.dp))
+                            )
+                        }
+                    }
+                    if (m.text.isNotBlank()) Spacer(Modifier.height(6.dp))
+                }
+                if (m.text.isNotEmpty() || (m.pending && m.trace.isEmpty())) {
+                    SelectionContainer {
+                        Text(
+                            text = if (m.pending && m.text.isEmpty()) "…" else m.text,
+                            color = if (m.pending) c.dim else if (isUser) c.userText else c.text,
+                            fontSize = 14.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+                // 过程轨迹（工具调用等）：默认折叠一行，点开才展开，不占屏幕
+                if (m.trace.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
                     Text(
-                        text = if (m.pending && m.text.isEmpty()) "…" else m.text,
-                        color = if (m.pending) c.dim else if (isUser) c.userText else c.text,
-                        fontSize = 14.sp,
-                        fontFamily = FontFamily.Monospace
+                        if (traceOpen) "▾ 过程" else "▸ 过程（" + m.trace.count { it == '\n' } + " 步）",
+                        color = c.dim, fontSize = 11.sp,
+                        modifier = Modifier.clickable { traceOpen = !traceOpen }
                     )
+                    if (traceOpen) {
+                        SelectionContainer {
+                            Text(
+                                m.trace.trim(),
+                                color = c.dim, fontSize = 11.sp, fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
                 }
                 if (m.ts > 0) {
                     Spacer(Modifier.height(4.dp))
@@ -374,6 +491,9 @@ fun NativeChatInput(
     onValueChange: (String) -> Unit,
     hintText: String,
     modifier: Modifier = Modifier,
+    minLines: Int = 2,
+    maxLines: Int = 8,
+    fill: Boolean = false,
 ) {
     val c = LocalAppColors.current
     AndroidView(
@@ -390,12 +510,21 @@ fun NativeChatInput(
                 setTextColor(c.text.toArgb())
                 textSize = 15f
                 isSingleLine = false
-                maxLines = 5
+                this.minLines = minLines
+                this.maxLines = maxLines
                 gravity = Gravity.TOP or Gravity.START
                 inputType = InputType.TYPE_CLASS_TEXT or
                     InputType.TYPE_TEXT_FLAG_MULTI_LINE or
                     InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
                 setPadding(30, 16, 30, 16)
+                if (fill) {
+                    // 全屏编辑：占满可用高度，内容超出时框内滚动（不再被截断）
+                    layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+                    isVerticalScrollBarEnabled = true
+                    setTextIsSelectable(true)
+                    scrollBarStyle = android.view.View.SCROLLBARS_INSIDE_INSET
+                }
                 addTextChangedListener(object : TextWatcher {
                     override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                     override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}

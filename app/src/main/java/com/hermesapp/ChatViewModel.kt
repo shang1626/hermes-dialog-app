@@ -3,6 +3,8 @@ package com.hermesapp
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -23,6 +25,10 @@ data class Msg(
     val text: String,
     var pending: Boolean = false,
     val ts: Long = 0L,
+    /** 本条消息附带的本地图片路径（用户发的图用于气泡回显缩略图）。 */
+    val images: List<String> = emptyList(),
+    /** 过程轨迹（工具调用等）。与正文分开存，界面上默认折叠，不占屏幕。 */
+    val trace: String = "",
     /** 稳定唯一 id：给 LazyColumn 做 key，避免滑动时整列重组。 */
     val id: Long = nextMsgId(),
 ) {
@@ -31,6 +37,9 @@ data class Msg(
         fun nextMsgId(): Long = counter.incrementAndGet()
     }
 }
+
+/** 待发送的图片：uri 用于展示，file 是拷进沙盒后的真实文件。 */
+data class PendingImage(val id: Long, val uri: String, val file: java.io.File)
 
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = Prefs(app)
@@ -70,6 +79,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _downloadText = MutableStateFlow("")
     val downloadText = _downloadText.asStateFlow()
+
+    /** 待发送图片（选好未发送）。 */
+    private val _pendingImages = MutableStateFlow<List<PendingImage>>(emptyList())
+    val pendingImages = _pendingImages.asStateFlow()
+
+    /** 模型是否支持原生图片（/v1/capabilities features.supports_vision）；未知按 true。 */
+    private val _supportsVision = MutableStateFlow(true)
+    val supportsVision = _supportsVision.asStateFlow()
+
+    /** 图片上传进度文案（空表示无进行中上传）。 */
+    private val _imageNote = MutableStateFlow("")
+    val imageNote = _imageNote.asStateFlow()
 
     private var api: HermesApi? = null
     private var currentCall: Call? = null
@@ -225,6 +246,51 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         pingLoop()
         refreshStatus()
         refreshFromServer()
+        fetchCapabilities()
+        resumeActiveRun()
+    }
+
+    /**
+     * 重开 App 时恢复「正在跑的任务」状态：
+     * 本地存了 activeRunId 就查一次 /v1/runs/{id}——还在跑就把按钮恢复成「停止」并继续接流，
+     * 已结束则清掉标记并重新从服务端拉会话内容（后台跑完的产出据此补回）。
+     */
+    fun resumeActiveRun() {
+        val a = api ?: return
+        val rid = prefs.activeRunId
+        if (rid.isEmpty() || _busy.value) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val st = try {
+                a.getRun(rid).optString("status", "")
+            } catch (_: Exception) {
+                ""
+            }
+            val running = st in setOf("started", "running", "waiting_for_approval", "queued")
+            if (running) {
+                currentRunId = rid
+                runFinished = false
+                lastSeq = -1
+                _busy.value = true
+                RunService.start(getApplication())
+                streamRun(a)
+            } else {
+                prefs.activeRunId = ""
+                refreshFromServer()
+            }
+        }
+    }
+
+    /** 拉一次服务端能力：是否支持原生图片（决定图片是原生附图还是先转文字）。 */
+    fun fetchCapabilities() {
+        val a = api ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val caps = a.capabilities()
+                val f = caps.optJSONObject("features")
+                if (f != null) _supportsVision.value = f.optBoolean("supports_vision", true)
+            } catch (_: Exception) {
+            }
+        }
     }
 
     /** 重开 App 时从服务端拉当前会话消息：后台跑完的任务产出据此补回。 */
@@ -361,7 +427,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun send(text: String) {
         val a = api ?: return
-        if (text.isBlank() || _busy.value) return
+        val imgs = _pendingImages.value
+        if ((text.isBlank() && imgs.isEmpty()) || _busy.value) return
         // 空态（无选中会话）：直接输入即新建对话
         if (_currentId.value.isEmpty()) {
             val id = UUID.randomUUID().toString()
@@ -371,13 +438,77 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             store.saveIndex(_sessions.value)
         }
         val wasEmpty = _messages.value.none { it.role == "user" }
-        setMsgs(_messages.value + Msg("user", text, ts = stamp()))
+        setMsgs(_messages.value + Msg("user", text, ts = stamp(), images = imgs.map { it.uri }))
         touchSession(if (wasEmpty) text else null)
+        _pendingImages.value = emptyList()
         autoContinue = 0
-        startRunWith(a, text)
+        startRunWith(a, text, imgs.map { it.file })
     }
 
-    private fun startRunWith(a: HermesApi, text: String) {
+    /** 把选中的图片拷进 App 沙盒，加入待发列表。 */
+    fun addImage(ctx: Context, uri: Uri) {
+        val app = getApplication<Application>()
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val (name, size) = queryNameSize(app, uri)
+                if (size > 10L * 1024 * 1024) {
+                    _imageNote.value = "图片超过 10MB：" + name
+                    return@launch
+                }
+                val dir = File(app.filesDir, "outbox").apply { mkdirs() }
+                val ext = name.substringAfterLast('.', "jpg").lowercase().let {
+                    if (it.length in 1..5) it else "jpg"
+                }
+                val dst = File(dir, "img_${System.currentTimeMillis()}_${(0..9999).random()}.$ext")
+                app.contentResolver.openInputStream(uri)?.use { input ->
+                    dst.outputStream().use { out -> input.copyTo(out) }
+                } ?: run {
+                    _imageNote.value = "读取图片失败"
+                    return@launch
+                }
+                if (_pendingImages.value.size >= 5) {
+                    _imageNote.value = "最多 5 张"
+                    dst.delete()
+                    return@launch
+                }
+                _imageNote.value = ""
+                _pendingImages.value = _pendingImages.value + PendingImage(Msg.nextMsgId(), uri.toString(), dst)
+            } catch (e: Exception) {
+                _imageNote.value = "读取图片失败：" + (e.message ?: "?")
+            }
+        }
+    }
+
+    fun removeImage(id: Long) {
+        val list = _pendingImages.value
+        list.firstOrNull { it.id == id }?.file?.delete()
+        _pendingImages.value = list.filter { it.id != id }
+    }
+
+    private fun queryNameSize(ctx: Context, uri: Uri): Pair<String, Long> {
+        var name = "image.jpg"
+        var size = 0L
+        runCatching {
+            ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
+                val ni = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                val si = c.getColumnIndex(OpenableColumns.SIZE)
+                if (c.moveToFirst()) {
+                    if (ni >= 0) c.getString(ni)?.let { name = it }
+                    if (si >= 0 && !c.isNull(si)) size = c.getLong(si)
+                }
+            }
+        }
+        return name to size
+    }
+
+    private fun mimeOf(file: File): String = when (file.extension.lowercase()) {
+        "png" -> "image/png"
+        "gif" -> "image/gif"
+        "webp" -> "image/webp"
+        else -> "image/jpeg"
+    }
+
+    private fun startRunWith(a: HermesApi, text: String, files: List<File> = emptyList()) {
         setMsgs(_messages.value + Msg("assistant", "", pending = true, ts = stamp()))
         _busy.value = true
         runFinished = false
@@ -385,10 +516,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         RunService.start(getApplication())
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val run = a.startRun(text, _currentId.value)
+                val ids = mutableListOf<String>()
+                for ((i, f) in files.withIndex()) {
+                    _imageNote.value = "上传图片 ${i + 1}/${files.size}…"
+                    ids.add(a.uploadImage(f.readBytes(), f.name, mimeOf(f)))
+                }
+                _imageNote.value = ""
+                val run = a.startRun(text, _currentId.value, ids)
                 currentRunId = run.optString("run_id", run.optString("id", ""))
+                prefs.activeRunId = currentRunId ?: ""
                 streamRun(a)
             } catch (e: Exception) {
+                _imageNote.value = ""
                 appendDelta("\n[请求失败] " + (e.message ?: "?"))
                 failPending()
             }
@@ -424,11 +563,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     "tool.started" -> {}
                     "tool.completed" -> {
                         val line = toolLine(ev, ev.data.optBoolean("error", false))
-                        if (line.isNotEmpty()) appendDelta(line)
+                        if (line.isNotEmpty()) appendTrace(line)
                     }
                     "tool.failed" -> {
                         val line = toolLine(ev, true)
-                        if (line.isNotEmpty()) appendDelta(line)
+                        if (line.isNotEmpty()) appendTrace(line)
                     }
                     "run.completed" -> {
                         runFinished = true
@@ -483,7 +622,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         appendDelta("\n[已请求停止]")
         finishPending()
         _busy.value = false
+        prefs.activeRunId = ""
         RunService.stop(getApplication())
+    }
+
+    /** 工具轨迹追加到当前 assistant 消息的 trace（界面默认折叠，不进正文）。 */
+    private fun appendTrace(d: String) {
+        if (d.isEmpty()) return
+        val list = _messages.value.toMutableList()
+        val i = list.indexOfLast { it.role == "assistant" && it.pending }
+        if (i >= 0) list[i] = list[i].copy(trace = list[i].trace + d)
+        else list.add(Msg("assistant", "", pending = true, ts = stamp(), trace = d))
+        setMsgs(list)
     }
 
     private fun appendDelta(d: String) {
@@ -512,6 +662,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun failPending() {
         finishPending()
         _busy.value = false
+        prefs.activeRunId = ""
         RunService.stop(getApplication())
     }
 
@@ -520,6 +671,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         _retryNote.value = ""
         finishPending()
         _busy.value = false
+        prefs.activeRunId = ""
         RunService.stop(getApplication())
     }
 

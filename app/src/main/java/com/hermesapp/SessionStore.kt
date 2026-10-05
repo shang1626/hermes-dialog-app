@@ -77,13 +77,20 @@ class SessionStore(ctx: Context, private val profile: String) {
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
                 val text = o.optString("text", "")
-                if (text.isEmpty()) continue
+                val trace = o.optString("trace", "")
+                if (text.isEmpty() && trace.isEmpty()) continue
+                val imgs = mutableListOf<String>()
+                o.optJSONArray("images")?.let { ia ->
+                    for (k in 0 until ia.length()) ia.optString(k)?.takeIf { it.isNotEmpty() }?.let { imgs.add(it) }
+                }
                 out.add(
                     Msg(
                         role = o.optString("role", "assistant"),
                         text = text,
                         pending = false,
                         ts = o.optLong("ts", 0L),
+                        images = imgs,
+                        trace = trace,
                     )
                 )
             }
@@ -93,11 +100,18 @@ class SessionStore(ctx: Context, private val profile: String) {
 
     fun saveMessages(id: String, list: List<Msg>, max: Int = 300) {
         runCatching {
-            val clean = list.filter { !(it.pending && it.text.isEmpty()) }
+            val clean = list.filter { !(it.pending && it.text.isEmpty() && it.trace.isEmpty()) }
             val tail = if (clean.size > max) clean.takeLast(max) else clean
             val arr = JSONArray()
             for (m in tail) {
-                arr.put(JSONObject().put("role", m.role).put("text", m.text).put("ts", m.ts))
+                val o = JSONObject().put("role", m.role).put("text", m.text).put("ts", m.ts)
+                if (m.trace.isNotEmpty()) o.put("trace", m.trace)
+                if (m.images.isNotEmpty()) {
+                    val ia = JSONArray()
+                    for (u in m.images) ia.put(u)
+                    o.put("images", ia)
+                }
+                arr.put(o)
             }
             msgFile(id).writeText(arr.toString())
         }
