@@ -384,6 +384,7 @@ fun DrawerPanel(
     val sessions by vm.sessions.collectAsState()
     val currentId by vm.currentId.collectAsState()
     val updateBadge by vm.updateBadge.collectAsState()
+    val runningIds by vm.runningIds.collectAsState()
     var showArchived by remember { mutableStateOf(false) }
 
     ModalDrawerSheet(
@@ -443,6 +444,7 @@ fun DrawerPanel(
                             meta = s,
                             selected = s.id == currentId && !showArchived,
                             archived = showArchived,
+                            running = s.id in runningIds,
                             onOpen = { vm.switchSession(s.id); onTab(0); onClose() },
                             onArchive = { vm.archiveSession(s.id, !s.archived) },
                             onDelete = { vm.deleteSession(s.id) },
@@ -506,6 +508,7 @@ fun SessionRow(
     meta: SessionMeta,
     selected: Boolean,
     archived: Boolean,
+    running: Boolean,
     onOpen: () -> Unit,
     onArchive: () -> Unit,
     onDelete: () -> Unit,
@@ -519,10 +522,20 @@ fun SessionRow(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(Modifier.weight(1f).clickable { onOpen() }) {
-            Text(
-                meta.title, color = if (selected) c.accent else c.text, fontSize = 13.sp,
-                maxLines = 1, overflow = TextOverflow.Ellipsis
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (running) {
+                    Text("●", color = c.warn, fontSize = 9.sp)
+                    Spacer(Modifier.width(4.dp))
+                }
+                Text(
+                    meta.title, color = if (selected) c.accent else c.text, fontSize = 13.sp,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false)
+                )
+                if (running) {
+                    Spacer(Modifier.width(6.dp))
+                    Text("执行中", color = c.warn, fontSize = 10.sp)
+                }
+            }
             Text(
                 TimeFmt.mdhm(meta.updatedAt), color = c.dim, fontSize = 10.sp
             )
