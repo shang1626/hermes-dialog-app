@@ -525,7 +525,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         _busy.value = true
         runFinished = false
         lastSeq = -1
-        RunService.start(getApplication())
+        if (prefs.keepAlive) RunService.start(getApplication())
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val ids = mutableListOf<String>()
@@ -690,12 +690,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** App 不在前台时，任务完成弹系统通知（提示音+震动）。前台则静默，界面自己会更新。 */
     private fun notifyIfBackground(output: String) {
-        if (AppForeground.isForeground) return
+        if (AppForeground.isForeground || !prefs.keepAlive) return
         val app = getApplication<Application>()
         val body = output.replace(Regex("\\s+"), " ").trim().let {
             if (it.isEmpty()) "任务已完成" else if (it.length > 120) it.take(120) + "…" else it
         }
         Notifier.notifyMessage(app, "Hermes 回复", body)
+    }
+
+    /** 设置页切换「后台运行」时调用：关掉立即停掉前台服务，常驻通知随之消失。 */
+    fun setKeepAlive(on: Boolean) {
+        prefs.keepAlive = on
+        if (!on) RunService.stop(getApplication())
     }
 
     // ---------- 自更新 ----------
