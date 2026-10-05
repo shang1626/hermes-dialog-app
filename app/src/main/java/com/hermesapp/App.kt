@@ -94,6 +94,11 @@ fun isDarkMode(mode: String, ctx: Context): Boolean = when (mode) {
 class MainActivity : ComponentActivity() {
     private val vm: ChatViewModel by viewModels()
 
+    // Android 13+ 通知权限申请（后台消息提醒用）；拒绝也不影响其他功能
+    private val notifPerm = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val prefs = Prefs(this)
@@ -101,7 +106,21 @@ class MainActivity : ComponentActivity() {
         val bg = (if (isDarkMode(prefs.themeMode, this)) DarkColors else LightColors).bg.toArgb()
         window.statusBarColor = bg
         window.navigationBarColor = bg
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            runCatching { notifPerm.launch(android.Manifest.permission.POST_NOTIFICATIONS) }
+        }
+        Notifier.ensureChannel(this)
         setContent { HermesApp(vm, prefs) }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        AppForeground.isForeground = true
+    }
+
+    override fun onPause() {
+        AppForeground.isForeground = false
+        super.onPause()
     }
 }
 

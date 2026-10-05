@@ -41,6 +41,12 @@ data class Msg(
 /** 待发送的图片：uri 用于展示，file 是拷进沙盒后的真实文件。 */
 data class PendingImage(val id: Long, val uri: String, val file: java.io.File)
 
+/** 状态页的一行：标签 + 值。value 为空则该行不显示。 */
+data class StatusItem(val label: String, val value: String)
+
+/** 状态页的一个分组：标题 + 若干行。 */
+data class StatusSection(val title: String, val items: List<StatusItem>)
+
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = Prefs(app)
     private var store = SessionStore(app, prefs.profile)
@@ -63,8 +69,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val _retryNote = MutableStateFlow("")
     val retryNote = _retryNote.asStateFlow()
 
-    private val _statusText = MutableStateFlow("尚未获取")
-    val statusText = _statusText.asStateFlow()
+    private val _statusSections = MutableStateFlow<List<StatusSection>>(emptyList())
+    val statusSections = _statusSections.asStateFlow()
+
+    private val _statusErr = MutableStateFlow("")
+    val statusErr = _statusErr.asStateFlow()
 
     private val _updateNote = MutableStateFlow("")
     val updateNote = _updateNote.asStateFlow()
@@ -341,86 +350,89 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val h = api?.sysinfo() ?: return@launch
-                _statusText.value = formatHealth(h)
+                _statusSections.value = buildStatus(h)
+                _statusErr.value = ""
             } catch (e: Exception) {
-                _statusText.value = "获取失败: " + (e.message ?: "?")
+                _statusErr.value = "获取失败：" + (e.message ?: "?")
             }
         }
     }
 
-    private fun formatHealth(h: JSONObject): String {
-        val sb = StringBuilder()
+    /** 把 /health/sysinfo 的扁平字段整理成「分组 → 行」结构，供状态页排版渲染。 */
+    private fun buildStatus(h: JSONObject): List<StatusSection> {
+        val out = mutableListOf<StatusSection>()
 
-        fun sec(title: String) {
-            sb.append("\n【").append(title).append("】\n")
+        fun sec(title: String, items: List<StatusItem>) {
+            val keep = items.filter { it.value.isNotEmpty() }
+            if (keep.isNotEmpty()) out.add(StatusSection(title, keep))
         }
-        fun line(label: String, v: String?) {
-            if (!v.isNullOrEmpty()) sb.append(label).append("：").append(v).append("\n")
-        }
+        fun it(label: String, v: String?): StatusItem =
+            StatusItem(label, v.orEmpty())
 
-        sb.append("网关状态: ").append(if (h.optString("status") == "ok") "正常" else h.optString("status", "?"))
-        line("  进程 PID", h.optInt("pid", 0).takeIf { it > 0 }?.toString())
+        val gw = mutableListOf<StatusItem>()
+        gw.add(it("运行状态", if (h.optString("status") == "ok") "正常" else h.optString("status", "?")))
+        val pid = h.optInt("pid", 0)
+        if (pid > 0) gw.add(it("进程 PID", pid.toString()))
+        gw.add(it("操作系统", h.optString("platform", "")))
+        gw.add(it("Python", h.optString("python", "")))
+        sec("网关", gw)
 
-        sec("主机")
-        line("操作系统", h.optString("platform", ""))
-        line("Python", h.optString("python", ""))
-
-        sec("CPU")
-        val cpuModel = h.optString("cpu_model", "")
-        if (cpuModel.isNotEmpty()) line("型号", cpuModel)
-        val cpu = h.optDouble("cpu_percent", -1.0)
-        if (cpu >= 0) line("使用率", String.format("%.1f%%  （%d 核）", cpu, h.optInt("cpu_count", 0)))
+        val cpu = mutableListOf<StatusItem>()
+        cpu.add(it("型号", h.optString("cpu_model", "")))
+        val cpuPct = h.optDouble("cpu_percent", -1.0)
+        if (cpuPct >= 0) cpu.add(it("使用率", String.format("%.1f%%", cpuPct)))
+        val cores = h.optInt("cpu_count", 0)
+        if (cores > 0) cpu.add(it("核心数", cores.toString() + " 核"))
         val freq = h.optInt("cpu_freq_mhz", 0)
-        if (freq > 0) line("主频", freq.toString() + " MHz")
+        if (freq > 0) cpu.add(it("主频", freq.toString() + " MHz"))
+        sec("CPU", cpu)
 
-        sec("内存")
-        val mem = h.optDouble("memory_percent", -1.0)
-        if (mem >= 0) {
-            line("使用率", String.format("%.1f%%", mem))
-            line("已用/总量", h.optInt("memory_used_mb", 0).toString() + " MB / " +
-                h.optInt("memory_total_mb", 0).toString() + " MB")
-        }
+        val mem = mutableListOf<StatusItem>()
+        val memPct = h.optDouble("memory_percent", -1.0)
+        if (memPct >= 0) mem.add(it("使用率", String.format("%.1f%%", memPct)))
+        val mUsed = h.optInt("memory_used_mb", 0)
+        val mTotal = h.optInt("memory_total_mb", 0)
+        if (mTotal > 0) mem.add(it("已用/总量", mUsed.toString() + " MB / " + mTotal.toString() + " MB"))
         val pmem = h.optInt("proc_memory_mb", 0)
-        if (pmem > 0) line("网关进程占用", pmem.toString() + " MB")
+        if (pmem > 0) mem.add(it("网关进程", pmem.toString() + " MB"))
+        sec("内存", mem)
 
-        sec("磁盘")
-        val disk = h.optDouble("disk_percent", -1.0)
-        if (disk >= 0) {
-            val total = h.optDouble("disk_total_gb", -1.0)
-            val used = h.optDouble("disk_used_gb", -1.0)
-            val free = h.optDouble("disk_free_gb", -1.0)
-            if (total >= 0) {
-                line("总大小", String.format("%.1f GB", total))
-                line("已用", String.format("%.1f GB", used))
-                line("可用", String.format("%.1f GB", free))
-            }
-            line("使用率", String.format("%.1f%%", disk))
-        }
+        val disk = mutableListOf<StatusItem>()
+        val dTotal = h.optDouble("disk_total_gb", -1.0)
+        if (dTotal >= 0) disk.add(it("总大小", String.format("%.1f GB", dTotal)))
+        val dUsed = h.optDouble("disk_used_gb", -1.0)
+        if (dUsed >= 0) disk.add(it("已用", String.format("%.1f GB", dUsed)))
+        val dFree = h.optDouble("disk_free_gb", -1.0)
+        if (dFree >= 0) disk.add(it("可用", String.format("%.1f GB", dFree)))
+        val dPct = h.optDouble("disk_percent", -1.0)
+        if (dPct >= 0) disk.add(it("使用率", String.format("%.1f%%", dPct)))
+        sec("磁盘", disk)
 
-        sec("负载与运行")
+        val run = mutableListOf<StatusItem>()
         val la = h.optJSONArray("load_avg")
         if (la != null && la.length() >= 3) {
-            line("1/5/15 分钟负载", String.format("%.2f / %.2f / %.2f",
-                la.optDouble(0, 0.0), la.optDouble(1, 0.0), la.optDouble(2, 0.0)))
+            run.add(it("负载 1/5/15", String.format("%.2f / %.2f / %.2f",
+                la.optDouble(0, 0.0), la.optDouble(1, 0.0), la.optDouble(2, 0.0))))
         }
         val up = h.optLong("uptime_seconds", -1)
-        if (up >= 0) line("已运行", (up / 86400).toString() + " 天 " + ((up % 86400) / 3600).toString() + " 小时 " + ((up % 3600) / 60).toString() + " 分")
+        if (up >= 0) run.add(it("已运行", (up / 86400).toString() + " 天 " + ((up % 86400) / 3600).toString() + " 小时 " + ((up % 3600) / 60).toString() + " 分"))
+        sec("运行", run)
 
-        sec("API 与任务")
-        val model = h.optString("model", "")
-        line("当前模型", model.ifEmpty { "未知" })
+        val apiSec = mutableListOf<StatusItem>()
+        apiSec.add(it("当前模型", h.optString("model", "").ifEmpty { "未知" }))
         val mt = h.optJSONObject("metrics_today")
         if (mt != null) {
-            line("今日请求", mt.optInt("requests", 0).toString())
-            line("今日消息", mt.optInt("messages", 0).toString())
+            apiSec.add(it("今日请求", mt.optInt("requests", 0).toString()))
+            apiSec.add(it("今日消息", mt.optInt("messages", 0).toString()))
         }
-        line("活跃任务", h.optInt("active_runs", 0).toString())
-        line("子任务", h.optInt("active_delegations", 0).toString())
-        line("队列深度", h.optInt("process_queue_depth", 0).toString())
+        apiSec.add(it("活跃任务", h.optInt("active_runs", 0).toString()))
+        apiSec.add(it("子任务", h.optInt("active_delegations", 0).toString()))
+        apiSec.add(it("队列深度", h.optInt("process_queue_depth", 0).toString()))
         val hb = h.optString("last_heartbeat", "")
-        if (hb.isNotEmpty()) line("最后心跳", TimeFmt.isoToBj(hb) + "（北京）")
+        if (hb.isNotEmpty()) apiSec.add(it("最后心跳", TimeFmt.isoToBj(hb) + "（北京）"))
+        sec("API 与任务", apiSec)
 
-        return sb.toString().trim()
+        return out
     }
 
     // ---------- 发送与流式接收 ----------
@@ -574,6 +586,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         val out = ev.data.optString("output", "")
                         if (out.isNotEmpty()) setPendingText(out) else finishPending()
                         doneOk()
+                        notifyIfBackground(out)
                     }
                     "run.failed" -> {
                         runFinished = true
@@ -673,6 +686,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         _busy.value = false
         prefs.activeRunId = ""
         RunService.stop(getApplication())
+    }
+
+    /** App 不在前台时，任务完成弹系统通知（提示音+震动）。前台则静默，界面自己会更新。 */
+    private fun notifyIfBackground(output: String) {
+        if (AppForeground.isForeground) return
+        val app = getApplication<Application>()
+        val body = output.replace(Regex("\\s+"), " ").trim().let {
+            if (it.isEmpty()) "任务已完成" else if (it.length > 120) it.take(120) + "…" else it
+        }
+        Notifier.notifyMessage(app, "Hermes 回复", body)
     }
 
     // ---------- 自更新 ----------

@@ -43,6 +43,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -200,13 +201,6 @@ fun ChatInputBar(
         Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.Bottom
     ) {
-        // 图片入口：小描边圆钮
-        OutlinedButton(
-            onClick = onPickImages,
-            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-            shape = RoundedCornerShape(8.dp),
-        ) { Text("＋", color = c.accent, fontSize = 14.sp) }
-        Spacer(Modifier.width(6.dp))
         Box(Modifier.weight(1f)) {
             NativeChatInput(
                 value = input,
@@ -214,15 +208,24 @@ fun ChatInputBar(
                 hintText = "发消息…",
                 modifier = Modifier.fillMaxWidth()
             )
-            Text(
-                "⛶",
-                fontSize = 14.sp,
-                color = c.dim,
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(end = 10.dp, bottom = 6.dp)
-                    .clickable { onFullscreen() }
-            )
+            // 全屏 + 图片：并排的小无边框图标，压在输入框右下角
+            Row(
+                Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "🖼",
+                    fontSize = 13.sp,
+                    color = c.dim,
+                    modifier = Modifier.clickable { onPickImages() }.padding(horizontal = 4.dp)
+                )
+                Text(
+                    "⛶",
+                    fontSize = 13.sp,
+                    color = c.dim,
+                    modifier = Modifier.clickable { onFullscreen() }.padding(horizontal = 4.dp)
+                )
+            }
         }
         Spacer(Modifier.width(6.dp))
         if (busy) {
@@ -355,7 +358,8 @@ fun Bubble(m: Msg) {
 @Composable
 fun StatusScreen(vm: ChatViewModel, prefs: Prefs) {
     val c = LocalAppColors.current
-    val txt by vm.statusText.collectAsState()
+    val sections by vm.statusSections.collectAsState()
+    val err by vm.statusErr.collectAsState()
     val online by vm.online.collectAsState()
     LaunchedEffect(Unit) { vm.refreshStatus() }
     // 每 5 秒自动刷新
@@ -366,24 +370,55 @@ fun StatusScreen(vm: ChatViewModel, prefs: Prefs) {
         }
     }
 
-    Column(Modifier.fillMaxSize().padding(14.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(if (online) "● 网关在线" else "● 网关离线",
-                color = if (online) c.ok else c.bad, fontSize = 14.sp)
-            Spacer(Modifier.weight(1f))
-            Text("5 秒自动刷新", color = c.dim, fontSize = 11.sp)
+    Column(Modifier.fillMaxSize()) {
+        // 顶部状态条：在线点 + 身份/地址 + 刷新
+        Row(
+            Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(if (online) "● 在线" else "● 离线",
+                color = if (online) c.ok else c.bad, fontSize = 13.sp)
             Spacer(Modifier.width(10.dp))
+            Text(prefs.profile + " · " + prefs.serverUrl, color = c.dim, fontSize = 11.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Spacer(Modifier.width(8.dp))
             OutlinedButton(
                 onClick = { vm.refreshStatus() },
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
                 shape = RoundedCornerShape(8.dp),
             ) { Text("刷新", fontSize = 12.sp, color = c.accent) }
         }
-        Spacer(Modifier.height(12.dp))
-        Text(prefs.profile + " · " + prefs.serverUrl, color = c.dim, fontSize = 11.sp)
-        Spacer(Modifier.height(14.dp))
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-            Text(txt, color = c.text, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+
+        if (err.isNotEmpty()) {
+            Text(err, color = c.bad, fontSize = 12.sp,
+                modifier = Modifier.fillMaxWidth().padding(14.dp))
+        }
+
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(12.dp)) {
+            for (s in sections) {
+                StatusCard(s)
+                Spacer(Modifier.height(10.dp))
+            }
+            Text("每 5 秒自动刷新", color = c.dim, fontSize = 10.sp,
+                modifier = Modifier.fillMaxWidth().padding(top = 2.dp))
+        }
+    }
+}
+
+/** 单个状态分组卡片：标题栏 + 标签值行（标签固定宽，值左对齐成列）。 */
+@Composable
+fun StatusCard(s: StatusSection) {
+    val c = LocalAppColors.current
+    Surface(color = c.panel, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp)) {
+            Text(s.title, color = c.accent, fontSize = 13.sp)
+            Spacer(Modifier.height(8.dp))
+            for (item in s.items) {
+                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                    Text(item.label, color = c.dim, fontSize = 12.sp, modifier = Modifier.width(78.dp))
+                    Text(item.value, color = c.text, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                }
+            }
         }
     }
 }
