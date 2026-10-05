@@ -107,6 +107,12 @@ data class StatusItem(val label: String, val value: String)
 /** 状态页的一个分组：标题 + 若干行。 */
 data class StatusSection(val title: String, val items: List<StatusItem>)
 
+/** SSE 断流后的最大自动重连次数（退避等待，见 ChatViewModel.backoffDelayMs）。 */
+private const val MAX_RECONNECT_ATTEMPTS = 8
+
+/** 断线丢事件时补进正文的提示行。 */
+private const val TRUNCATED_NOTICE = "\n[提示] 断线期间有内容未收到，已从服务端补拉最新结果\n"
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = Prefs(app)
@@ -128,6 +134,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         var startedAt: Long = 0L
         var loaded: Boolean = false
         var saveJob: Job? = null
+        /** 最近一次收到事件的墙钟时间，用于「回到前台」判断流是否已假死。 */
+        var lastEventAt: Long = 0L
     }
 
     private val runtimes = ConcurrentHashMap<String, SessionRuntime>()
@@ -439,6 +447,34 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+    }
+
+    /**
+     * 回到前台时的即时体检：对每个仍在跑、且超过 25 秒没收到任何事件（含心跳帧）的会话，
+     * 判定为「流已被隧道假死卡住」，主动断开并走一次重连续接。
+     *
+     * 阈值 25 秒的由来：服务端每 10 秒必发一个 keepalive，25 秒 ≈ 连丢两拍，
+     * 正常空闲绝不会误判；不这样做的话，息屏期间假死的流要等 30 秒读超时才断开。
+     */
+    fun onAppForeground() {
+        val now = System.currentTimeMillis()
+        for (r in runtimes.values) {
+            if (!r.busy.value || r.finished) continue
+            val last = r.lastEventAt
+            if (last > 0 && now - last > 25_000L) {
+                val c = r.call
+                if (c != null && !c.isCanceled()) {
+                    if (r.retryNote.value.isEmpty()) r.retryNote.value = "回到前台，正在重连…"
+                    // 主动掐掉假死连接：onError 回调会走一次退避续接，这里不重复调，
+                    // 避免同一次断流把重试计数加两回。
+                    c.cancel()
+                } else {
+                    maybeContinue(r.id)
+                }
+            }
+        }
+        // 顺带刷一次在线状态，别让角标停在离线
+        viewModelScope.launch(Dispatchers.IO) { refreshStatus() }
     }
 
     /** 拉一次服务端能力：是否支持原生图片（决定图片是原生附图还是先转文字）。 */
@@ -929,13 +965,30 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val r = rt(sid)
         val rid = r.runId
         if (rid.isEmpty()) return
+        r.lastEventAt = System.currentTimeMillis()   // 重新起流即重置活跃时间，避免刚连上就被判假死
         r.call = a.streamEvents(
             runId = rid,
             lastSeq = r.lastSeq,
             onEvent = { ev ->
                 if (ev.id != null) r.lastSeq = ev.id
+                r.lastEventAt = System.currentTimeMillis()
                 val name = ev.event ?: ev.data.optString("event", "")
+                // 收到任何真实事件即视为连接已恢复正常：清掉重试提示与计数。
+                if (name != "replay.truncated" && r.autoContinue != 0) {
+                    r.autoContinue = 0
+                    r.retryNote.value = ""
+                }
                 when (name) {
+                    // 服务端明确告知：断线期间的事件已超出保留窗口、拿不回来了。
+                    // 不能静默——在气泡里标一行，并拉一次服务端消息兜底。
+                    "replay.truncated" -> {
+                        appendDelta(r, TRUNCATED_NOTICE)
+                        val s = sid
+                        viewModelScope.launch(Dispatchers.IO) {
+                            delay(600)
+                            if (s == _currentId.value) refreshFromServer()
+                        }
+                    }
                     "message.delta" -> appendDelta(r, ev.data.optString("delta", ""))
                     "message.interim" -> {}
                     "tool.started" -> {}
@@ -974,8 +1027,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             },
             onClosed = { if (r.busy.value && !r.finished) maybeContinue(sid) },
             onError = { e ->
-                if (!r.finished) appendDelta(r, "\n[连接断开] " + (e.message ?: "?"))
-                if (r.busy.value && !r.finished) maybeContinue(sid)
+                // 不再往正文塞「[连接断开]」——断流期间的提示统一走 retryNote（气泡上方一行），
+                // 正文只保留任务真实产出，避免一次抖动就在会话里留一条错行。
+                if (r.busy.value && !r.finished) {
+                    if (r.retryNote.value.isEmpty()) r.retryNote.value = "连接中断：" + (e.message ?: "未知")
+                    maybeContinue(sid)
+                }
             }
         )
     }
@@ -984,22 +1041,28 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * SSE 流提前断开（没收到 run.completed）时的续接：
      * 绝不伪造用户消息——只查同一 run 的状态，仍在跑就续接它的事件流；
      * 已结束就从服务端拉回结果。仅作用于该 run 所属的会话。
+     *
+     * 重试用退避而非固定间隔：网络抖动（地铁、切基站、隧道重连）往往几秒内恢复，
+     * 原来的「固定 1.2 秒 × 3 次」会在 4 秒内烧完次数然后彻底放弃；现在
+     * 1→2→4→8→16→30 秒封顶、最多 8 次，覆盖约 1 分钟的窗口，且首次仍只等 1 秒。
      */
     private fun maybeContinue(sid: String) {
         val r = rt(sid)
         if (r.finished) return
-        if (r.autoContinue >= 3) {
-            r.retryNote.value = "已自动重连 3 次，仍未完成"
-            failPending(sid)
-            return
-        }
-        r.autoContinue++
-        r.retryNote.value = "连接中断，正在确认任务状态 " + r.autoContinue + "/3"
         val a = api ?: return
         val rid = r.runId
         if (rid.isEmpty()) { failPending(sid); return }
+        if (r.autoContinue >= MAX_RECONNECT_ATTEMPTS) {
+            r.retryNote.value = "已重试 $MAX_RECONNECT_ATTEMPTS 次仍未完成，可点「发送」重发或稍后再看"
+            failPending(sid)
+            return
+        }
+        val attempt = r.autoContinue + 1
+        r.autoContinue = attempt
+        val waitMs = backoffDelayMs(attempt)
+        r.retryNote.value = "连接中断，${waitMs / 1000} 秒后重试（$attempt/$MAX_RECONNECT_ATTEMPTS）"
         viewModelScope.launch(Dispatchers.IO) {
-            delay(1200)
+            delay(waitMs)
             if (!r.busy.value || r.finished) return@launch
             val st = try { a.getRun(rid).optString("status", "") } catch (_: Exception) { "" }
             if (st in setOf("started", "running", "waiting_for_approval", "queued", "stopping")) {
@@ -1015,6 +1078,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 if (sid == _currentId.value) refreshFromServer()  // 任务已结束：拉回服务端产出
             }
         }
+    }
+
+    /** 退避等待：第 n 次重试 2^(n-1) 秒（首次 1 秒），封顶 30 秒。 */
+    private fun backoffDelayMs(attempt: Int): Long {
+        val base = 1000L shl (attempt - 1).coerceIn(0, 5)   // 1,2,4,8,16,32…
+        return base.coerceAtMost(30_000L)
     }
 
     /** 停止「当前会话」正在跑的任务。 */

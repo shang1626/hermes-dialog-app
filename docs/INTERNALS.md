@@ -82,7 +82,7 @@ App 私有目录 `filesDir`，纯 JSON，不碰服务端库：
 
 ## 自更新链路
 
-1. `checkUpdate()` 拉 `Keys.UPDATE_URL`（`https://hermes.99801888.xyz/update/version.json`）
+1. `checkUpdate()` 拉 `Keys.UPDATE_URL`（`https://gx.99801886.xyz/update/version.json`）
 2. `versionCode > 当前` → `pendingUpdate`，界面弹确认框
 3. `confirmUpdate()` 带进度下载 APK 到 `getExternalFilesDir/apk/`
 4. `installApk()` 用 FileProvider（authority `com.hermesapp.fileprovider`）拉起系统安装，需 `REQUEST_INSTALL_PACKAGES` 权限

@@ -120,6 +120,9 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         AppForeground.isForeground = true
+        // 回到前台立刻体检一次：息屏/切后台期间流可能已被隧道假死卡住，
+        // 光靠 30 秒读超时要等很久，这里主动判定一次并重连。
+        vm.onAppForeground()
     }
 
     override fun onPause() {

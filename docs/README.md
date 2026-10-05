@@ -39,7 +39,7 @@ cd /root/hermes-app
 4. 更新 `dist/update/version.json`：
 
 ```json
-{"versionCode":19,"versionName":"2.8","url":"https://hermes.99801888.xyz/update/<文件名>.apk",
+{"versionCode":19,"versionName":"2.8","url":"https://gx.99801886.xyz/update/<文件名>.apk",
  "notes":"这一版改了什么","size":<字节>,"md5":"<md5>"}
 ```
 
@@ -47,7 +47,7 @@ cd /root/hermes-app
 
 ## 公网链路
 
-- 更新分发：Cloudflare tunnel `hermes-app` → 本机 8644；对外 `https://hermes.99801888.xyz/update/version.json`
+- 更新分发：`gx.99801886.xyz`（腾讯 EdgeOne → 本机 8644）；对外 `https://gx.99801886.xyz/update/version.json`
 - 对话 API：Hermes 网关 api_server 监听 127.0.0.1:8642，经反 tunnel（HK → 本机）暴露，App 里 `Keys.DEFAULT_URL` 指向它
 - 隧道配置在 `/root/.cloudflared/hermes-app-*`，systemd 单元 `hermes-update-files.service` / `hermes-reverse-tunnel*.service`
 
