@@ -588,6 +588,9 @@ fun NativeChatInput(
     fill: Boolean = false,
 ) {
     val c = LocalAppColors.current
+    // TextWatcher 在 factory 里只挂一次，必须经 rememberUpdatedState 拿到最新回调，
+    // 否则后续重组的新回调永远不生效（输入内容回传的是旧闭包）。
+    val onChange by rememberUpdatedState(onValueChange)
     AndroidView(
         modifier = modifier,
         factory = { context ->
@@ -615,16 +618,17 @@ fun NativeChatInput(
                     override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                     override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
                     override fun afterTextChanged(s: Editable?) {
-                        onValueChange(s?.toString() ?: "")
+                        onChange(s?.toString() ?: "")
                     }
                 })
             }
         },
         update = { et ->
-            // 主题可能已切换：颜色每次 update 都按当前配色重刷，否则白天模式会留夜间白字
+            // 主题可能已切换：仅在配色真的变了时重刷，否则每次按键重建 drawable 会拖慢长文本输入
             applyNativeInputColors(et, c)
-            val cur = et.text?.toString() ?: ""
-            if (cur != value) {
+            // 长度先比，避免长文本时每次重组都整串 toString 分配
+            val ed = et.text
+            if (ed == null || ed.length != value.length || ed.toString() != value) {
                 et.setText(value)
                 et.setSelection(value.length)
             }
@@ -632,8 +636,11 @@ fun NativeChatInput(
     )
 }
 
-/** 原生 EditText 的描边/文字/提示颜色统一按当前配色刷新（主题切换后必须重刷）。 */
+/** 原生 EditText 的描边/文字/提示颜色统一按当前配色刷新（配色未变则直接跳过）。 */
 private fun applyNativeInputColors(et: EditText, c: AppColors) {
+    val key = c.dim.toArgb() * 31 + c.text.toArgb()
+    if (et.tag == key) return
+    et.tag = key
     et.background = GradientDrawable().apply {
         setColor(android.graphics.Color.TRANSPARENT)
         setStroke(2, c.dim.toArgb())

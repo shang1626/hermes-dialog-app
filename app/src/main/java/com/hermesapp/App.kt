@@ -31,6 +31,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 // ---------- 昼夜配色 ----------
@@ -290,6 +292,8 @@ fun MainScaffold(
     var tab by remember { mutableStateOf(0) }
     // 输入框内容提到这里，切到状态/设置再回来不丢；草稿写盘，进程被杀重进也能恢复
     val inputState = remember { mutableStateOf(prefs.draftInput) }
+    // 草稿落盘去抖：长文本时每次按键都写盘会反复整串序列化 → 输入一卡一卡。停手 600ms 再写。
+    val draftJob = remember { mutableStateOf<Job?>(null) }
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     LaunchedEffect(prefs.profile) { vm.onProfileChanged(prefs) }
@@ -324,7 +328,16 @@ fun MainScaffold(
                 when (tab) {
                     0 -> ChatScreen(vm, prefs, inputState) { v ->
                         inputState.value = v
-                        prefs.draftInput = v
+                        // 去抖写盘：输入过程零磁盘开销；清空（发完消息）立即落盘
+                        draftJob.value?.cancel()
+                        if (v.isEmpty()) {
+                            prefs.draftInput = ""
+                        } else {
+                            draftJob.value = scope.launch {
+                                delay(600)
+                                prefs.draftInput = v
+                            }
+                        }
                     }
                     1 -> StatusScreen(vm, prefs)
                     else -> SettingsScreen(vm, prefs, mode, onMode, onLogout)
