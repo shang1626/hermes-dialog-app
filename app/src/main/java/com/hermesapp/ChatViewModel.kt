@@ -303,7 +303,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         val list = store.loadIndex().sortedByDescending { it.updatedAt }
-        val target = list.firstOrNull { !it.archived } ?: list.first()
+        // 优先恢复上次停留的会话（prefs.sessionId）；找不到才回退到最近更新的未归档会话。
+        // 原来忽略 profileSessionId，重开 App 总跳到「最近更新」的会话，用户感知为「切换后内容不对」。
+        val preferred = profileSessionId?.takeIf { it.isNotEmpty() }
+            ?.let { pid -> list.firstOrNull { it.id == pid && !it.archived } }
+        val target = preferred ?: list.firstOrNull { !it.archived } ?: list.first()
         _currentId.value = target.id
         prefs.sessionId = target.id
         _messages.value = store.loadMessages(target.id)
@@ -386,6 +390,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     if (content.isEmpty()) continue
                     list.add(Msg(role, content, pending = false, ts = parseTs(o.optString("timestamp", ""))))
                 }
+                // 守卫：请求发出后用户可能已切走会话（或已在跑新任务）。此时绝不能把
+                // 旧会话的服务端内容写进 _messages —— 否则用户看到的就是「切换后内容不对」。
+                if (_currentId.value != id || _busy.value) return@launch
+                // 服务端没有该会话/返回空时不覆盖本地，避免把正在看的对话清空。
                 if (list.isNotEmpty()) {
                     _messages.value = list
                     store.saveMessages(id, list, maxHistory)
@@ -535,8 +543,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val (name, size) = queryNameSize(app, uri)
-                if (size > 50L * 1024 * 1024) {
-                    _imageNote.value = "图片超过 50MB：" + name
+                if (size > 20L * 1024 * 1024) {
+                    _imageNote.value = "图片超过 20MB：" + name
                     return@launch
                 }
                 val dir = File(app.filesDir, "outbox").apply { mkdirs() }

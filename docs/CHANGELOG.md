@@ -1,5 +1,13 @@
 # 变更记录
 
+## 2.12 — versionCode 23
+修「切换对话内容不对」+ 图片上传限制对齐：
+- 重开 App 恢复上次停留的会话（原来忽略 sessionId，总是跳到最近更新的那个）。
+- 服务端拉取加会话守卫：切走后返回的旧会话数据不再覆盖当前对话内容。
+- 图片单张上限 50MB→20MB（最多仍 10 张）；服务端修复大图上传被截断/被 413 挡掉
+  （StreamReader 单次 read 截断 + 全局 10MB 请求上限提到 55MB）。
+（ChatViewModel.kt、app/build.gradle.kts；服务端补丁见 hermes-patches）
+
 ## 2.11 — versionCode 22
 对话体验增强四项：
 - 审批卡片：服务端 `approval.request` 事件渲染成可点按钮（允许一次/本会话/始终/拒绝），
