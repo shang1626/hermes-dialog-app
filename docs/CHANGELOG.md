@@ -1,3 +1,15 @@
+## 2.59 — versionCode 70
+
+修复 token 用量与耗时在重开 App / 切会话后消失，并补上「耗时」显示。
+
+- 根因一：`SessionStore` 从不落盘 usage，重开 App 或从服务端刷新历史就丢；
+  现在 usage 随消息一起落盘、读回时还原。
+- 根因二：`refreshFromServer` 的服务端消息没有 usage 字段（服务端只存正文），
+  合并时不能覆盖本地已带回填的 usage；已加守卫保留本地那份。
+- 耗时列改为直接显示秒数（如「耗时 12.3s」），速度仍按耗时算 tok/s。
+- 纯客户端改动，不碰服务端。
+（SessionStore.kt、ChatViewModel.kt、Screens.kt、app/build.gradle.kts）
+
 ## 2.58 — versionCode 69
 
 语音播报图标改为与时间并排。
