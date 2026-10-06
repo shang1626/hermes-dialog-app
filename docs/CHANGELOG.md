@@ -1,3 +1,10 @@
+## 2.52 — versionCode 63
+
+- **会话导出为 Markdown 并分享**：会话列表的「⋯」菜单新增「导出为 Markdown」——把整段对话（角色、北京时间、正文）写成一个 .md 文件，直接调系统分享面板发出去（发同事、存网盘、导入笔记都行）。只读本地记录，不碰服务端、不改会话内容。
+  - 工具轨迹用可折叠块包起来，导出后想细看还能展开；正文里的内联图片/附件会换成一行占位（base64 塞进 md 没意义）。
+  - 文件名取会话标题 + 导出时间，落在 App 私有 `exports/` 目录（FileProvider 已声明）。失败只记日志，不打扰对话。
+  - （SessionStore.kt、ChatViewModel.kt、App.kt、res/xml/file_paths.xml、app/build.gradle.kts）
+
 ## 2.51 — versionCode 62
 
 「完成语音播报」默认改为开启 + 补全另一个机器人的语音配置。
