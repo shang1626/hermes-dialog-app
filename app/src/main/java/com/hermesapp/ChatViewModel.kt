@@ -226,6 +226,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         var call: Call? = null
         var lastSeq: Int = -1
         var autoContinue: Int = 0
+        /**
+         * 退避探测单飞位：同一会话同时只允许一条退避链在等。
+         * 多口子（onClosed / onError / 回前台体检）并发进来时，只有一个能排上重试。
+         */
+        val probing = java.util.concurrent.atomic.AtomicBoolean(false)
         var finished: Boolean = false
         var startedAt: Long = 0L
         var loaded: Boolean = false
@@ -511,7 +516,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private var api: HermesApi? = null
-    private var pingStarted = false
+    /**
+     * 探测循环只允许起一个。
+     *
+     * 原来用普通 Boolean 做防重入，但 onProfileChanged 可能被并发调用两次
+     * （登录回调 + MainScaffold 的 LaunchedEffect），两个线程都读到 false，
+     * 各自把自己当成第一个 → 起了多个 5 秒轮询循环。症状：同一条「恢复在线」
+     * 一次打好几遍、离线判定挤在同一毫秒、探测请求成倍（白耗流量与电）。
+     * compareAndSet 是原子操作，只有一个线程能赢。
+     */
+    private val pingStarted = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /** 本机版本号：静默检查更新时用来比较（免去每次从界面传进来）。 */
     private val myVersionCode: Int = runCatching {
@@ -959,8 +973,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }.getOrDefault(0L)
 
     private fun pingLoop() {
-        if (pingStarted) return
-        pingStarted = true
+        if (!pingStarted.compareAndSet(false, true)) return
         viewModelScope.launch(Dispatchers.IO) {
             var fails = 0
             var tick = 0
@@ -1813,6 +1826,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             startHistoryRecovery(sid, rid)
             return
         }
+        // 同一次断流可能从多个口子进来（onClosed 与 onError 都会调、切回前台的
+        // 体检也会间接触发），各起一条退避链就会重复探测、重复加计数，
+        // 严重时一边判「还在跑」一边判「已结束」，接流与收尾互相打架。
+        // 这里做单飞：同一会话同时只允许一条退避链在等。
+        if (!r.probing.compareAndSet(false, true)) return
         val attempt = r.autoContinue + 1
         r.autoContinue = attempt
         val waitMs = backoffDelayMs(attempt)
@@ -1820,8 +1838,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         AppLog.log("retry", "第 $attempt/$MAX_RECONNECT_ATTEMPTS 次重试，${waitMs / 1000}s 后探 run=" + rid.take(12))
         viewModelScope.launch(Dispatchers.IO) {
             delay(waitMs)
-            if (!r.busy.value || r.finished) return@launch
+            // 退出前必须留一行：这条退避链可能已被别的路径（切回前台的体检、
+            // 翻历史取回、手动停止）抢先收尾。静默 return 会让日志里只剩
+            // 「第 N 次重试」却没有「探测结果」，排查时被误读成重试卡死。
+            if (!r.busy.value || r.finished) {
+                r.probing.set(false)
+                AppLog.log("retry", "退避作废 run=" + rid.take(12) +
+                    "（本轮已由其它路径收尾 busy=" + r.busy.value + " finished=" + r.finished + "）")
+                return@launch
+            }
             val st = a.probeRun(rid)
+            r.probing.set(false)   // 探测出结果即释放单飞位，后续该重试还能再进
             AppLog.log("retry", "探测结果 " + when (st) {
                 is HermesApi.RunStatus.Known -> "Known(" + st.status + ")"
                 HermesApi.RunStatus.Missing -> "Missing(404)"

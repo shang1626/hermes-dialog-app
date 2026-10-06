@@ -43,15 +43,19 @@ object AppLog {
             sb.append(" | ").append(t.javaClass.simpleName).append(": ").append(t.message ?: "")
         }
         val line = sb.toString()
+        val c = app
+        // 内存队列与文件追加放同一把锁里：原来只锁内存，多个线程同时
+        // appendText/trim 会互相截断（trim 把别的线程刚写的行覆盖掉），
+        // 表现为日志莫名少行——正是排查断流时最需要的那几行。
         synchronized(lock) {
             mem.addLast(line)
             while (mem.size > MAX_MEM) mem.removeFirst()
-        }
-        val c = app ?: return
-        runCatching {
-            val f = File(c.filesDir, FILE)
-            f.appendText(line + "\n")
-            if (f.length() > MAX_FILE_BYTES) trim(f)
+            if (c == null) return
+            runCatching {
+                val f = File(c.filesDir, FILE)
+                f.appendText(line + "\n")
+                if (f.length() > MAX_FILE_BYTES) trim(f)
+            }
         }
     }
 
