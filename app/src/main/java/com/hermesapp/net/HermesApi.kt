@@ -121,15 +121,18 @@ class HermesApi(
         }
     }
 
-    /** 澄清回执：POST /v1/runs/{id}/clarify，response 是用户选的选项（或自由文本）。 */
-    fun respondClarify(runId: String, clarifyId: String, response: String) {
-        runCatching {
-            val body = JSONObject().put("clarify_id", clarifyId).put("response", response)
-            client.newCall(
-                base("/v1/runs/" + runId + "/clarify").post(body.toString().toRequestBody(jsonType)).build()
-            ).execute().use { it.body?.string() }
-        }
-    }
+    /**
+     * 澄清回执：POST /v1/runs/{id}/clarify，response 是用户选的选项（或自由文本）。
+     * 返回是否被服务端接受（HTTP 2xx）。调用方据此给用户明确反馈——原来 runCatching
+     * 把返回整个吞了，回执没送到时界面照样把卡片标成「已选择」，用户以为送达了其实没有
+     * （与 steer 同一类缺陷）。
+     */
+    fun respondClarify(runId: String, clarifyId: String, response: String): Boolean = runCatching {
+        val body = JSONObject().put("clarify_id", clarifyId).put("response", response)
+        client.newCall(
+            base("/v1/runs/" + runId + "/clarify").post(body.toString().toRequestBody(jsonType)).build()
+        ).execute().use { it.isSuccessful }
+    }.getOrDefault(false)
 
     /** 按需下载网关托管的媒体文件（大附件走这条路，不塞进消息体）。 */
     fun downloadMedia(token: String): ByteArray {
@@ -226,16 +229,17 @@ class HermesApi(
             .execute().use { it.isSuccessful }
     }.getOrDefault(false)
 
-    /** 审批回执：POST /v1/runs/{id}/approval，choice ∈ once/session/always/deny。 */
-    fun respondApproval(runId: String, requestId: String, choice: String) {
-        runCatching {
-            val body = JSONObject().put("choice", choice)
-            if (requestId.isNotEmpty()) body.put("request_id", requestId)
-            client.newCall(
-                base("/v1/runs/" + runId + "/approval").post(body.toString().toRequestBody(jsonType)).build()
-            ).execute().use { it.body?.string() }
-        }
-    }
+    /**
+     * 审批回执：POST /v1/runs/{id}/approval，choice ∈ once/session/always/deny。
+     * 返回是否被服务端接受（HTTP 2xx）；失败时调用方给「回执没送到」提示，不静默。
+     */
+    fun respondApproval(runId: String, requestId: String, choice: String): Boolean = runCatching {
+        val body = JSONObject().put("choice", choice)
+        if (requestId.isNotEmpty()) body.put("request_id", requestId)
+        client.newCall(
+            base("/v1/runs/" + runId + "/approval").post(body.toString().toRequestBody(jsonType)).build()
+        ).execute().use { it.isSuccessful }
+    }.getOrDefault(false)
 
     // ---------- 定时任务（服务端 /api/jobs） ----------
 
