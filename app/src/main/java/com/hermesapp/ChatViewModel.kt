@@ -1994,7 +1994,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val run = a.startRun(text, sid, ids, idemKey)
                 r.runId = run.optString("run_id", run.optString("id", ""))
                 AppLog.log("send", "已建 run=" + r.runId.take(12) + " 重放=" + run.optBoolean("replayed", false) + " 附件=" + ids.size)
-                r.startedAt = System.currentTimeMillis()
+                // 计时起点不在这里重设：上传附件+建 run 的往返也算本轮耗时，
+                // 重设会把这一段抹掉，最终值比界面实时值小一截。
                 prefs.putActiveRun(sid, r.runId)
                 prefs.putLastSeq(sid, -1)   // 新 run 从 0 开始，清掉上一轮的续接序号
                 // 拿到 run_id 才算「服务端已收下」，此时回执才转已送达。
@@ -2169,13 +2170,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 轮末 token 用量：挂到该会话最后一条助手消息上。 */
     private fun attachUsage(r: SessionRuntime, ev: com.hermesapp.net.SseEvent) {
         val u = ev.data.optJSONObject("usage") ?: return
+        // 耗时起点与界面实时计时同源：用该助手气泡自己的 startedAt。
+        // 不混用 r.startedAt——它会被「建 run / 传附件」的往返推移。
+        val bubbleStart = r.messages.value.lastOrNull { it.role == "assistant" }?.startedAt ?: 0L
+        val baseStart = if (bubbleStart > 0) bubbleStart else r.startedAt
         val usage = Usage(
             input = u.optInt("input_tokens", 0),
             output = u.optInt("output_tokens", 0),
             total = u.optInt("total_tokens", 0),
             cacheRead = u.optInt("cache_read_tokens", 0),
             cacheWrite = u.optInt("cache_write_tokens", 0),
-            durationMs = if (r.startedAt > 0) System.currentTimeMillis() - r.startedAt else 0L,
+            durationMs = if (baseStart > 0) System.currentTimeMillis() - baseStart else 0L,
         )
         // 只有耗时（token 全 0）的轮次也要挂上：耗时本身就是用户要看的统计。
         if (usage.total <= 0 && usage.input <= 0 && usage.output <= 0 && usage.durationMs <= 0) return
