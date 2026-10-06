@@ -1,4 +1,6 @@
 package com.hermesapp
+import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.Download
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -598,6 +600,20 @@ private fun MdAttachmentCard(name: String, dataUrl: String, token: String) {
         token.isNotEmpty() -> "网关托管 · 点击下载打开"
         else -> "解析失败"
     }
+    // 分享/保存都要拿到字节：内联的直接用，网关托管的先按需下载再动作。
+    fun withBytes(action: (DecodedData) -> Unit) {
+        when {
+            decoded != null -> action(decoded)
+            token.isNotEmpty() -> {
+                busy = true
+                scope.launch {
+                    val bytes = withContext(Dispatchers.IO) { MediaFetch.download(token) }
+                    busy = false
+                    if (bytes != null && bytes.isNotEmpty()) action(DecodedData(guessMime(name), bytes))
+                }
+            }
+        }
+    }
     Row(
         Modifier
             .widthIn(max = 300.dp)
@@ -628,6 +644,31 @@ private fun MdAttachmentCard(name: String, dataUrl: String, token: String) {
         Column(Modifier.weight(1f, fill = false)) {
             Text(name, color = c.text, fontSize = 13.sp, maxLines = 2)
             Text(sub, color = c.dim, fontSize = 11.sp)
+        }
+        if (decoded != null || token.isNotEmpty()) {
+            Spacer(Modifier.width(6.dp))
+            Icon(
+                Icons.Rounded.Share, "分享", tint = c.accent,
+                modifier = Modifier.size(18.dp).clip(CircleShape).clickable {
+                    if (busy) return@clickable
+                    withBytes { shareAttachment(ctx, name, it) }
+                }
+            )
+            Spacer(Modifier.width(10.dp))
+            Icon(
+                Icons.Rounded.Download, "保存到下载", tint = c.accent,
+                modifier = Modifier.size(18.dp).clip(CircleShape).clickable {
+                    if (busy) return@clickable
+                    withBytes { d ->
+                        val saved = saveAttachmentToDownloads(ctx, name, d)
+                        Toast.makeText(
+                            ctx,
+                            if (saved != null) "已保存到下载：Download/Hermes/" + saved else "保存失败",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+            )
         }
     }
 }
