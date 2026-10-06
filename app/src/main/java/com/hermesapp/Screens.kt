@@ -870,6 +870,12 @@ fun SettingsScreen(
             ctx.packageManager.getPackageInfo(ctx.packageName, 0).longVersionCode.toInt()
         }.getOrDefault(1)
     }
+    // 版本名（如 2.41）：与 versionCode 一起显示，用户能一眼对上发布的版本号。
+    val vName = remember {
+        runCatching {
+            ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: ""
+        }.getOrDefault("")
+    }
 
     Column(Modifier.fillMaxSize().padding(14.dp).verticalScroll(rememberScrollState())) {
         Text("服务器地址", color = c.dim, fontSize = 12.sp)
@@ -914,7 +920,10 @@ fun SettingsScreen(
             Text(dtext, color = c.dim, fontSize = 12.sp)
         }
         Spacer(Modifier.height(6.dp))
-        Text("当前版本 " + vc, color = c.dim, fontSize = 11.sp)
+        Text(
+            if (vName.isNotEmpty()) "当前版本 " + vName + "（" + vc + "）" else "当前版本 " + vc,
+            color = c.dim, fontSize = 11.sp
+        )
 
         // 上次闪退记录：崩溃是进程被直接杀掉，界面和日志都留不下东西，只有落到这里才查得动。
         // 复现一次后「复制全文」发出来即可定位到具体哪一行。
