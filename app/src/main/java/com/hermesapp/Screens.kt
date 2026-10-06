@@ -37,6 +37,7 @@ import androidx.compose.material.icons.outlined.Photo
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -473,6 +474,23 @@ fun FullScreenInput(
     }
 }
 
+/**
+ * 进行中的实时耗时：每秒重算一次并跳动显示，回复到达后该组件不再渲染。
+ * 只读 startedAt，不碰任何状态机；就算一直没结束也只是每秒刷一个文本，开销可忽略。
+ */
+@Composable
+private fun LiveElapsed(startedAt: Long, color: Color) {
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(startedAt) {
+        while (true) {
+            now = System.currentTimeMillis()
+            delay(1000L)
+        }
+    }
+    val ms = (now - startedAt).coerceAtLeast(0L)
+    Text("耗时 " + String.format("%.1f", ms / 1000.0) + "s", color = color, fontSize = 10.sp)
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun Bubble(
@@ -739,6 +757,11 @@ fun Bubble(
                             Spacer(Modifier.width(5.dp))
                         }
                         if (m.ts > 0) Text(TimeFmt.hm(m.ts), color = c.dim, fontSize = 10.sp)
+                        // 进行中：从气泡创建起实时跳动显示耗时（回复到达后由用量行显示最终值）。
+                        if (m.pending && m.startedAt > 0) {
+                            Spacer(Modifier.width(6.dp))
+                            LiveElapsed(m.startedAt, c.accent)
+                        }
                         if (voiceTarget.isNotEmpty()) {
                             Spacer(Modifier.width(6.dp))
                             VoiceMiniButton(voiceTarget)

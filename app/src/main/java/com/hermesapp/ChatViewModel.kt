@@ -33,6 +33,8 @@ data class Msg(
     val text: String,
     var pending: Boolean = false,
     val ts: Long = 0L,
+    /** 本气泡开始等回复的墙钟时间：进行中时界面实时显示耗时。0 表示不显示。 */
+    val startedAt: Long = 0L,
     /** 本条消息附带的本地图片路径（用户发的图用于气泡回显缩略图）。 */
     val images: List<String> = emptyList(),
     /** 本条消息附带的非图片附件名（气泡里回显成文件卡片）。 */
@@ -932,11 +934,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                                 lastAssistant == r.messages.value.lastIndex && r.lastSeq >= 0
                             if (hasLocalTurnBubble) {
                                 val m = r.messages.value.toMutableList()
-                                m[lastAssistant] = m[lastAssistant].copy(pending = true)
+                                m[lastAssistant] = m[lastAssistant].copy(
+                                    pending = true,
+                                    startedAt = if (m[lastAssistant].startedAt > 0) m[lastAssistant].startedAt
+                                    else if (r.startedAt > 0) r.startedAt else System.currentTimeMillis()
+                                )
                                 r.messages.value = m
                             } else {
                                 r.messages.value = r.messages.value +
-                                    Msg("assistant", "", pending = true, ts = System.currentTimeMillis())
+                                    Msg("assistant", "", pending = true, ts = System.currentTimeMillis(), startedAt = System.currentTimeMillis())
                             }
                             r.busy.value = true
                             updateRunService()
@@ -1742,7 +1748,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             r.busy.value = true
             r.finished = false
             r.retryNote.value = "已确认送达，正在取回结果…"
-            setMsgs(r, r.messages.value + Msg("assistant", "", pending = true, ts = stamp()))
+            setMsgs(r, r.messages.value + Msg("assistant", "", pending = true, ts = stamp(), startedAt = stamp()))
             updateRunService()
             startHistoryRecovery(sid, "")
         }
@@ -1947,7 +1953,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         autoRetryLeft: Int = 1,
     ) {
         val r = rt(sid)
-        setMsgs(r, r.messages.value + Msg("assistant", "", pending = true, ts = stamp()))
+        setMsgs(r, r.messages.value + Msg("assistant", "", pending = true, ts = stamp(), startedAt = stamp()))
         r.busy.value = true
         r.finished = false
         r.lastSeq = -1
@@ -2043,7 +2049,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         var i = list.indexOfLast { it.role == "assistant" && it.pending }
         if (i < 0) i = list.indexOfLast { it.role == "assistant" }
         if (i >= 0) list[i] = list[i].copy(clarify = card)
-        else list.add(Msg("assistant", "", pending = true, ts = stamp(), clarify = card))
+        else list.add(Msg("assistant", "", pending = true, ts = stamp(), startedAt = stamp(), clarify = card))
         setMsgs(r, list)
     }
 
@@ -2089,7 +2095,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         var i = list.indexOfLast { it.role == "assistant" && it.pending }
         if (i < 0) i = list.indexOfLast { it.role == "assistant" }
         if (i >= 0) list[i] = list[i].copy(approval = card)
-        else list.add(Msg("assistant", "", pending = true, ts = stamp(), approval = card))
+        else list.add(Msg("assistant", "", pending = true, ts = stamp(), startedAt = stamp(), approval = card))
         setMsgs(r, list)
     }
 
@@ -2564,7 +2570,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val list = r.messages.value.toMutableList()
         val i = list.indexOfLast { it.role == "assistant" && it.pending }
         if (i >= 0) list[i] = list[i].copy(trace = list[i].trace + d)
-        else list.add(Msg("assistant", "", pending = true, ts = stamp(), trace = d))
+        else list.add(Msg("assistant", "", pending = true, ts = stamp(), startedAt = stamp(), trace = d))
         setMsgs(r, list)
     }
 
@@ -2573,7 +2579,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val list = r.messages.value.toMutableList()
         val i = list.indexOfLast { it.role == "assistant" && it.pending }
         if (i >= 0) list[i] = list[i].copy(text = list[i].text + d)
-        else list.add(Msg("assistant", d, pending = true, ts = stamp()))
+        else list.add(Msg("assistant", d, pending = true, ts = stamp(), startedAt = stamp()))
         setMsgs(r, list)
     }
 
