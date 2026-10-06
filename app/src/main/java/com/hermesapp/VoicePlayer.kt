@@ -4,19 +4,32 @@ import android.content.Context
 import android.media.MediaPlayer
 import android.util.Base64
 import java.io.File
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * 完成语音播报：服务端在任务收尾时会把整段回复合成语音，作为音频附件随回复下发
  * （正文里是一行 `[📎 名.mp3](data:audio/mpeg;base64,…)` 或 `[📎 名.mp3](hermes-media://token)`）。
- * 这里在收到 run.completed 时把它挑出来自动播一遍。
+ * 这里在收到 run.completed 时把它挑出来自动播一遍；界面上它不再渲染成文件卡片，
+ * 而是一个「▶ 播放 / ■ 停止」按钮，点一下就能重播。
  *
  * 用系统自带 MediaPlayer，不引第三方库、不加权限；播完立即释放，不常驻内存。
- * 开关由 Prefs.playCompletionVoice 控制，默认关。
+ * 开关由 Prefs.playCompletionVoice 控制，默认开（关掉只是不自动播，按钮照样能点）。
  */
 object VoicePlayer {
 
     @Volatile
     private var player: MediaPlayer? = null
+
+    /** 正在播放的音频来源（data URL 或 hermes-media://token）；空闲为空串。界面靠它切按钮状态。 */
+    private val _nowPlaying = MutableStateFlow("")
+    val nowPlaying: StateFlow<String> = _nowPlaying.asStateFlow()
+
+    /** 音频扩展名：这类附件渲染成播放按钮，不显示成文件卡片。 */
+    private val AUDIO_EXT = Regex("\\.(mp3|m4a|aac|wav|ogg|opus)$", RegexOption.IGNORE_CASE)
+
+    fun isAudio(name: String): Boolean = AUDIO_EXT.containsMatchIn(name)
 
     /** 音频附件：data URL 内联，或走网关托管 token。 */
     private val AUDIO_ATT_RE = Regex(
@@ -31,7 +44,23 @@ object VoicePlayer {
     fun playFromReply(ctx: Context, output: String, enabled: Boolean) {
         if (!enabled || output.isEmpty()) return
         val m = AUDIO_ATT_RE.find(output) ?: return
-        val target = m.groupValues[2]
+        playTarget(ctx, m.groupValues[2])
+    }
+
+    /** 界面播放按钮：同一个源正在播就停掉，否则播它。 */
+    fun toggle(ctx: Context, target: String) {
+        if (target.isEmpty()) return
+        if (_nowPlaying.value == target) {
+            stop()
+            return
+        }
+        playTarget(ctx, target)
+    }
+
+    /** 取字节 → 落临时文件 → 播放；先置状态，界面立刻切成「停止」。 */
+    private fun playTarget(ctx: Context, target: String) {
+        if (target.isEmpty()) return
+        _nowPlaying.value = target
         Thread {
             val bytes = runCatching {
                 if (target.startsWith("hermes-media://")) {
@@ -42,16 +71,18 @@ object VoicePlayer {
                 }
             }.getOrNull()
             if (bytes == null || bytes.isEmpty()) {
-                AppLog.log("voice", "完成语音取字节失败")
+                AppLog.log("voice", "取语音字节失败")
+                _nowPlaying.value = ""
                 return@Thread
             }
-            play(ctx, bytes)
+            play(ctx, target, bytes)
         }.start()
     }
 
-    private fun play(ctx: Context, bytes: ByteArray) {
+    private fun play(ctx: Context, target: String, bytes: ByteArray) {
         try {
             stop()
+            _nowPlaying.value = target
             val f = File(ctx.cacheDir, "completion_voice.mp3")
             f.writeBytes(bytes)
             val mp = MediaPlayer()
@@ -59,26 +90,34 @@ object VoicePlayer {
             mp.setDataSource(f.absolutePath)
             mp.setOnCompletionListener {
                 runCatching { it.release() }
-                if (player === it) player = null
+                if (player === it) {
+                    player = null
+                    _nowPlaying.value = ""
+                }
             }
             mp.setOnErrorListener { p, _, _ ->
                 runCatching { p.release() }
-                if (player === p) player = null
+                if (player === p) {
+                    player = null
+                    _nowPlaying.value = ""
+                }
                 true
             }
             mp.prepare()
             mp.start()
-            AppLog.log("voice", "完成语音已开始播放 " + bytes.size + " 字节")
+            AppLog.log("voice", "语音已开始播放 " + bytes.size + " 字节")
         } catch (e: Exception) {
-            AppLog.err("voice", "完成语音播放失败", e)
+            AppLog.err("voice", "语音播放失败", e)
             stop()
         }
     }
 
-    /** 播下一条前先停掉上一条，避免两条叠着响。 */
+    /** 播下一条前先停掉上一条，避免两条叠着响；也用于「停止」按钮。 */
     fun stop() {
-        val p = player ?: return
+        val p = player
         player = null
+        _nowPlaying.value = ""
+        if (p == null) return
         runCatching { if (p.isPlaying) p.stop() }
         runCatching { p.release() }
     }
