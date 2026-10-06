@@ -268,6 +268,10 @@ class SessionStore(ctx: Context, private val profile: String) {
     private fun stripDataUrls(s: String): String {
         if (s.isEmpty() || !s.contains("data:")) return s
         return s.replace(Regex("!\\[[^\\]]*\\]\\(data:image/[^)]+\\)"), "（图片）")
+            // 音频附件在 App 里是播放按钮，导出的 md 里标成「（语音）」而不是笼统的「（附件）」。
+            .replace(
+                Regex("\\[[^\\]]*\\.(?:mp3|m4a|aac|wav|ogg|opus)\\]\\(data:[^)]+\\)", RegexOption.IGNORE_CASE),
+                "（语音）")
             .replace(Regex("\\[[^\\]]*\\]\\(data:[^)]+\\)"), "（附件）")
     }
 

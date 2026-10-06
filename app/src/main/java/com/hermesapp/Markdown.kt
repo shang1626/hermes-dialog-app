@@ -14,6 +14,7 @@ import androidx.compose.material3.Text
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -573,6 +574,11 @@ private fun ZoomableImage(
 /** 非图片附件卡片：点一下落盘再拉起系统应用打开（HTML 走浏览器）。 */
 @Composable
 private fun MdAttachmentCard(name: String, dataUrl: String, token: String) {
+    // 完成语音播报的音频附件：不以文件卡片形式展示，只给一个播放按钮，点一下重播。
+    if (VoicePlayer.isAudio(name)) {
+        MdVoiceButton(name, dataUrl, token)
+        return
+    }
     val ctx = LocalContext.current
     val c = LocalAppColors.current
     val scope = rememberCoroutineScope()
@@ -616,6 +622,40 @@ private fun MdAttachmentCard(name: String, dataUrl: String, token: String) {
             Text(name, color = c.text, fontSize = 13.sp, maxLines = 2)
             Text(sub, color = c.dim, fontSize = 11.sp)
         }
+    }
+}
+
+/**
+ * 语音附件的播放按钮：一个胶囊按钮，显示「▶ 播放语音」；正在播这条时变成「■ 停止播放」。
+ * 不显示文件名（`tts_reply_xxx.mp3` 对用户没有意义），也不走「点击打开」那条文件路径。
+ */
+@Composable
+private fun MdVoiceButton(name: String, dataUrl: String, token: String) {
+    val ctx = LocalContext.current
+    val c = LocalAppColors.current
+    val target = when {
+        dataUrl.isNotEmpty() -> dataUrl
+        token.isNotEmpty() -> "hermes-media://" + token
+        else -> ""
+    }
+    val playing by VoicePlayer.nowPlaying.collectAsState()
+    val isThis = target.isNotEmpty() && playing == target
+    Row(
+        Modifier
+            .widthIn(max = 300.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(c.card)
+            .border(0.5.dp, if (isThis) c.accent else c.dim, RoundedCornerShape(8.dp))
+            .clickable(enabled = target.isNotEmpty()) { VoicePlayer.toggle(ctx, target) }
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(if (isThis) "\u25A0" else "\u25B6", color = c.accent, fontSize = 14.sp)
+        Spacer(Modifier.width(8.dp))
+        Text(
+            if (isThis) "停止播放" else "播放语音",
+            color = c.text, fontSize = 13.sp
+        )
     }
 }
 
