@@ -118,11 +118,22 @@ class SessionStore(ctx: Context, private val profile: String) {
                     ClarifyCard(co.optString("clarifyId", ""), co.optString("question", ""), ch,
                         co.optBoolean("multiSelect", false), co.optString("resolved", ""))
                 }
+                // token 用量 / 耗时：不落盘的话重开 App、切会话回来这三项就没了。
+                val usage = o.optJSONObject("usage")?.let { uo ->
+                    Usage(
+                        input = uo.optInt("input", 0),
+                        output = uo.optInt("output", 0),
+                        total = uo.optInt("total", 0),
+                        cacheRead = uo.optInt("cacheRead", 0),
+                        cacheWrite = uo.optInt("cacheWrite", 0),
+                        durationMs = uo.optLong("durationMs", 0L),
+                    )
+                }
                 // 只要还有正文 / 工具轨迹 / 图片 / 附件 / 待办卡片，这条就得留住。
                 // 待办卡片气泡的正文可能是空的（服务端还没产出内容），只查正文与轨迹的
                 // 老条件会把整条丢掉——重开 App 那张等你点的卡片就没了。
                 if (text.isEmpty() && trace.isEmpty() && imgs.isEmpty() && files.isEmpty() &&
-                    approval == null && clarify == null) continue
+                    approval == null && clarify == null && usage == null) continue
                 // 投递状态：老消息没有这个键 → 保持 null（界面不显示角标，不报错）。
                 val rc = o.optJSONObject("receipt")?.let { ro ->
                     val arts = mutableListOf<String>()
@@ -152,6 +163,7 @@ class SessionStore(ctx: Context, private val profile: String) {
                         quote = o.optString("quote", ""),
                         approval = approval,
                         clarify = clarify,
+                        usage = usage,
                     )
                 )
             }
@@ -199,6 +211,14 @@ class SessionStore(ctx: Context, private val profile: String) {
                         .put("multiSelect", c.multiSelect).put("resolved", c.resolved)
                     val ca = JSONArray(); for (s in c.choices) ca.put(s); cj.put("choices", ca)
                     o.put("clarify", cj)
+                }
+                // token 用量 / 耗时 / 速度也要落盘，否则重开 App 或切走再回来这三项就没了。
+                m.usage?.let { u ->
+                    val uj = JSONObject()
+                        .put("input", u.input).put("output", u.output).put("total", u.total)
+                        .put("cacheRead", u.cacheRead).put("cacheWrite", u.cacheWrite)
+                        .put("durationMs", u.durationMs)
+                    o.put("usage", uj)
                 }
                 // 投递状态要落盘：重开 App 后「不确定/失败」的消息还得能处置。
                 // sending 不落盘——重启后那个 POST 已经没了，留着会一直转圈；

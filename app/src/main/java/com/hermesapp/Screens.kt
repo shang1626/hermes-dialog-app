@@ -697,6 +697,10 @@ fun Bubble(
                     if (u.cacheRead > 0) parts.add("缓存 " + u.cacheRead)
                     parts.add("出 " + u.output)
                     parts.add("共 " + u.total)
+                    // 本轮耗时：从发起任务到收到回复的墙钟时间。
+                    if (u.durationMs > 0) {
+                        parts.add("耗时 " + String.format("%.1f", u.durationMs / 1000.0) + "s")
+                    }
                     if (speed.isNotEmpty()) parts.add(speed + " tok/s")
                     Text(parts.joinToString(" · "), color = c.dim, fontSize = 10.sp)
                 }

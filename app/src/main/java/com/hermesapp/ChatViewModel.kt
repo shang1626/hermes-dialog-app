@@ -2155,7 +2155,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             cacheWrite = u.optInt("cache_write_tokens", 0),
             durationMs = if (r.startedAt > 0) System.currentTimeMillis() - r.startedAt else 0L,
         )
-        if (usage.total <= 0 && usage.input <= 0 && usage.output <= 0) return
+        // 只有耗时（token 全 0）的轮次也要挂上：耗时本身就是用户要看的统计。
+        if (usage.total <= 0 && usage.input <= 0 && usage.output <= 0 && usage.durationMs <= 0) return
         val list = r.messages.value.toMutableList()
         val i = list.indexOfLast { it.role == "assistant" }
         if (i >= 0) list[i] = list[i].copy(usage = usage)
