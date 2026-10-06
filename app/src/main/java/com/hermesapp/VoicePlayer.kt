@@ -22,6 +22,13 @@ object VoicePlayer {
     @Volatile
     private var player: MediaPlayer? = null
 
+    /**
+     * 播报语速（1.0 = 正常）。由设置页写入、启动时用 Prefs.voiceRate 初始化。
+     * 用 PlaybackParams.setSpeed 在播放器上设速，是纯播放层变速，不改语音文件。
+     */
+    @Volatile
+    var rate: Float = 1.0f
+
     /** 正在播放的音频来源（data URL 或 hermes-media://token）；空闲为空串。界面靠它切按钮状态。 */
     private val _nowPlaying = MutableStateFlow("")
     val nowPlaying: StateFlow<String> = _nowPlaying.asStateFlow()
@@ -110,6 +117,11 @@ object VoicePlayer {
                 true
             }
             mp.prepare()
+            // 变速：PlaybackParams.setSpeed（0.5~2.0 之间；越界系统会抛，做钳制与兜底）。
+            val r = rate
+            if (r != 1.0f) {
+                runCatching { mp.playbackParams = mp.playbackParams.setSpeed(r.coerceIn(0.5f, 2.0f)) }
+            }
             mp.start()
             AppLog.log("voice", "语音已开始播放 " + bytes.size + " 字节")
         } catch (e: Exception) {

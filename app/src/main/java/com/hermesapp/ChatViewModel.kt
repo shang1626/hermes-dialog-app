@@ -939,6 +939,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         MediaFetch.handler = { token -> a0?.downloadMedia(token) }
         bootstrapSessions(p.sessionId)
         syncFromServer()
+        // 把设置里存的语速灌进播放器（播放器是单例，重启 App 后要重新初始化）
+        VoicePlayer.rate = p.voiceRate
         pingLoop()
         refreshStatus()
         refreshFromServer()
@@ -2875,6 +2877,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun setPlayCompletionVoice(on: Boolean) {
         prefs.playCompletionVoice = on
         if (!on) VoicePlayer.stop()
+    }
+
+    /** 设置页调播报语速：写入 prefs 并立刻灌进播放器（下次播放即用新速度）。 */
+    fun setVoiceRate(rate: Float) {
+        prefs.voiceRate = rate
+        VoicePlayer.rate = rate
     }
 
     // ---------- 自更新 ----------

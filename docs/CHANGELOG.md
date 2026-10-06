@@ -1,3 +1,12 @@
+## 2.74 — versionCode 85
+
+两项改进：
+
+1. **语音播报可调语速**：设置页「完成语音播报」下方新增语速档位（0.75× / 正常 / 1.25× / 1.5×，平铺按钮，无下拉）。用 MediaPlayer 的 `PlaybackParams.setSpeed` 在播放层变速，不改语音文件；选择存 SharedPreferences，重启后仍生效，下次播报即用新速度。
+2. **打开 App 不再卡顿**：长会话（几百条）打开或切会话时，原来对消息列表用 `animateScrollToItem`，会从第 0 项逐帧动画滚到末尾，明显卡。改为：仅「同一会话末尾追加一条」才平滑动画，其余（首次加载、切会话、批量合并）一律 `scrollToItem` 瞬间到底。
+
+（Screens.kt、VoicePlayer.kt、Prefs.kt、ChatViewModel.kt、App.kt、app/build.gradle.kts）
+
 ## 2.73 — versionCode 84
 
 一次收干净三处缺陷（都是审出来的）。

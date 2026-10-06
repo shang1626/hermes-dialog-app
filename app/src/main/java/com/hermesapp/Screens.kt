@@ -227,8 +227,22 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
     var selReset by remember { mutableStateOf(0) }
 
     // 末尾放一个 1dp 占位项，永远滚到它 = 永远贴底（正文增长也能跟上）
+    //
+    // 关键优化：打开 App / 切会话时，消息是一次性从 0 加载到几百条的，若用
+    // animateScrollToItem 会从第 0 项一路动画滚到末尾——300 条逐帧滚，明显卡顿。
+    // 改为：同一会话里「末尾追加了一条」（size 恰好 +1）才用平滑动画，其余
+    // （首次加载、切会话、批量合并）一律 scrollToItem 瞬间到底，无逐帧滚动。
+    var lastCount by remember { mutableStateOf(-1) }
+    var lastFirstId by remember { mutableStateOf(0L) }
     LaunchedEffect(msgs.size, msgs.lastOrNull()?.id, msgs.lastOrNull()?.text, msgs.lastOrNull()?.pending) {
-        if (msgs.isNotEmpty() && !searchOn) listState.animateScrollToItem(msgs.size)
+        if (msgs.isEmpty() || searchOn) return@LaunchedEffect
+        val firstId = msgs.firstOrNull()?.id ?: 0L
+        val sameConv = firstId == lastFirstId
+        val increment = sameConv && lastCount >= 0 && msgs.size == lastCount + 1
+        if (increment) listState.animateScrollToItem(msgs.size)
+        else listState.scrollToItem(msgs.size)
+        lastCount = msgs.size
+        lastFirstId = firstId
     }
 
     // 跳到命中：当前命中项一变就滚到那条消息（搜索时自动贴底让位）。
@@ -1086,6 +1100,7 @@ fun SettingsScreen(
     var keepAlive by remember { mutableStateOf(prefs.keepAlive) }
     var notifyDone by remember { mutableStateOf(prefs.notifySessionCompletions) }
     var playVoice by remember { mutableStateOf(prefs.playCompletionVoice) }
+    var voiceRate by remember { mutableStateOf(prefs.voiceRate) }
     var showClear by remember { mutableStateOf(false) }
     // 排查诊断区默认收起：运行日志/闪退记录平时用不上，展开才占屏幕。
     var diagOpen by remember { mutableStateOf(false) }
@@ -1168,6 +1183,26 @@ fun SettingsScreen(
                 playVoice = it
                 vm.setPlayCompletionVoice(it)
             })
+        }
+        Spacer(Modifier.height(12.dp))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("播报语速", color = c.text, fontSize = 13.sp)
+                Text(
+                    "播放速度和文件无关，随时可改；下次播报即生效",
+                    color = c.dim, fontSize = 11.sp
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                for (r in listOf(0.75f, 1.0f, 1.25f, 1.5f)) {
+                    SpeedBtn(
+                        label = if (r == 1.0f) "正常" else r.toString().trimEnd('0').trimEnd('.') + "×",
+                        selected = voiceRate == r,
+                        onClick = { voiceRate = r; vm.setVoiceRate(r) }
+                    )
+                }
+            }
         }
 
         // ───────── 三、版本更新 ─────────
