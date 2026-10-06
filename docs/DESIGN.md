@@ -23,7 +23,7 @@ MainActivity (App.kt)
 | `net/HermesApi.kt` | ~190 | OkHttp 封装：REST 同步调用 + SSE 流式读取（手写 event-stream 解析） |
 | `SessionStore.kt` | ~144 | 本地会话：索引 `sessions_<profile>.json`，消息 `chat_<profile>_<id>.json`，旧版单文件迁移 |
 | `Markdown.kt` | ~170 | 轻量 Markdown 渲染：块解析 + 行内链接可点 + 表格 |
-| `Prefs.kt` | ~52 | SharedPreferences：登录态、profile、服务器地址、主题、草稿、activeRunId、视觉策略、后台运行开关 |
+| `Prefs.kt` | ~60 | SharedPreferences：登录态、profile、服务器地址、主题、草稿、activeRunId、视觉策略、后台运行开关 |
 | `Keys.kt` | ~19 | 固定密钥 / URL / UpdateInfo 数据类 |
 | `RunService.kt` | ~71 | 前台服务（任务期间保 SSE 连接），`dataSync` 类型 |
 | `Notifier.kt` | ~63 | 通知渠道（IMPORTANCE_MIN 静默）+ AppForeground 前后台标记 |
