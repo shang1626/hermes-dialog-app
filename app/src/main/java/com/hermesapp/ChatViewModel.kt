@@ -1185,31 +1185,64 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private var jobsIncludeDisabled = false
 
     /** 已知定时任务的中文名；不认识的返回空串，界面回落显示原始名。 */
-    private fun jobZhName(name: String): String = when (name) {
-        "nightly-memory-refactor" -> "夜间记忆整理"
-        "browser-idle-reaper" -> "浏览器空闲回收"
-        "mem0-watchdog" -> "记忆库看门狗"
-        "boot-verify-report" -> "开机自检报告"
-        "fix-dup-unit-report" -> "重复服务修复报告"
-        "boot-verify2-report" -> "开机自检报告（二）"
-        else -> ""
+    private fun jobZhName(name: String): String {
+        when (name) {
+            "nightly-memory-refactor" -> return "夜间记忆整理"
+            "browser-idle-reaper" -> return "浏览器空闲回收"
+            "mem0-watchdog" -> return "记忆库看门狗"
+            "boot-verify-report" -> return "开机自检报告"
+            "fix-dup-unit-report" -> return "重复服务修复报告"
+            "boot-verify2-report" -> return "开机自检报告（二）"
+        }
+        // 精确表认不出时按关键词兜底：别的档案（friend）和以后新加的任务都能自动出中文，
+        // 不用每加一个任务改一次代码。顺序有讲究：watchdog 必须排在 watch 前面。
+        val n = name.lowercase()
+        return when {
+            n.contains("memory-refactor") || n.contains("memory_refactor") -> "记忆整理"
+            n.contains("watchdog") -> "看门狗"
+            n.contains("watch") -> "上游巡检"
+            n.contains("reaper") -> "空闲回收"
+            n.contains("backup") -> "备份"
+            n.contains("report") -> "结果报告"
+            n.contains("verify") || n.contains("check") -> "自检"
+            else -> ""
+        }
     }
 
     /** 这个任务是干什么的；不认识的返回空串。 */
-    private fun jobZhNote(name: String): String = when (name) {
-        "nightly-memory-refactor" ->
-            "每天凌晨自动整理记忆：做容量体检，把待落盘的内容并进记忆文件，超限就压缩。"
-        "browser-idle-reaper" ->
-            "每 15 分钟收掉闲置的浏览器进程，回收内存；没有闲置进程时静默。"
-        "mem0-watchdog" ->
-            "每 15 分钟检查记忆库：服务掉了就拉起，网关记忆后端初始化失败就重启网关。健康时静默。"
-        "boot-verify-report" ->
-            "一次性任务：容器重启后把开机自检结果发给你，跑完自动删。"
-        "fix-dup-unit-report" ->
-            "一次性任务：修复重复网关服务后把结果发给你，跑完自动删。"
-        "boot-verify2-report" ->
-            "一次性任务：容器重启后的自检（含重启次数与重复服务检查），跑完自动删。"
-        else -> ""
+    private fun jobZhNote(name: String): String {
+        when (name) {
+            "nightly-memory-refactor" ->
+                return "每天凌晨自动整理记忆：做容量体检，把待落盘的内容并进记忆文件，超限就压缩。"
+            "browser-idle-reaper" ->
+                return "每 15 分钟收掉闲置的浏览器进程，回收内存；没有闲置进程时静默。"
+            "mem0-watchdog" ->
+                return "每 15 分钟检查记忆库：服务掉了就拉起，网关记忆后端初始化失败就重启网关。健康时静默。"
+            "boot-verify-report" ->
+                return "一次性任务：容器重启后把开机自检结果发给你，跑完自动删。"
+            "fix-dup-unit-report" ->
+                return "一次性任务：修复重复网关服务后把结果发给你，跑完自动删。"
+            "boot-verify2-report" ->
+                return "一次性任务：容器重启后的自检（含重启次数与重复服务检查），跑完自动删。"
+        }
+        val n = name.lowercase()
+        return when {
+            n.contains("memory-refactor") || n.contains("memory_refactor") ->
+                "定时整理记忆：做容量体检，把待落盘的内容并进记忆文件，超限就压缩。"
+            n.contains("watchdog") ->
+                "定期检查记忆库：服务掉了就拉起，网关记忆后端初始化失败就重启网关。健康时静默。"
+            n.contains("watch") ->
+                "定期巡检上游页面的变化，有变化才出报告；无变化时静默。"
+            n.contains("reaper") ->
+                "定期收掉闲置的进程，回收内存；没有闲置时静默。"
+            n.contains("backup") ->
+                "定时备份数据。"
+            n.contains("report") ->
+                "一次性任务：把结果发给你，跑完自动删。"
+            n.contains("verify") || n.contains("check") ->
+                "定时自检，结果有异常才提醒。"
+            else -> ""
+        }
     }
 
     /** 运行状态翻译。 */
@@ -1241,7 +1274,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     else -> "每 " + m + " 分钟"
                 }
             }
-            "cron" -> cronZh(sch.optString("expr", ""))
+            // 优先按 cron 表达式翻（服务端 display 常是「every day at 9am」这种英文，
+            // 靠它翻不出来）；表达式翻不出再回落 display。
+            "cron" -> cronZh(sch.optString("expr", "")).ifEmpty { sch.optString("display", "") }
             "once" -> "一次性"
             else -> sch.optString("display", "")
         }
