@@ -160,6 +160,27 @@ data class StatusSection(val title: String, val items: List<StatusItem>)
 /** SSE 断流后的最大自动重连次数（退避等待，见 ChatViewModel.backoffDelayMs）。 */
 private const val MAX_RECONNECT_ATTEMPTS = 8
 
+/**
+ * 「服务端还在跑」的状态集合：探测到这些状态就续接事件流，不判结束。
+ * 注意必须与 api_server 的 run 状态机一致（含 stopping——已请求停止但还没收尾）。
+ */
+private val RUNNING_STATES = setOf(
+    "started", "running", "waiting_for_approval", "queued", "stopping",
+)
+
+/** 重开 App 恢复活跃任务时，探测状态的尝试次数（开机网络未就绪时多试几次）。 */
+private const val RESUME_PROBE_TRIES = 3
+
+/**
+ * 历史域名 → 当前域名。App 把服务器地址存在 prefs 里（登录时填的那次），
+ * 就地升级不会改；域名一换（如 2026-10-06 从 .example-old.com 换到 .example.com），
+ * 老用户的地址就成了死链，表现正是「一直重连连不上」。
+ * 命中即静默改写成新地址，用户不用重新登录。
+ */
+private val LEGACY_HOSTS = mapOf(
+    "your-gateway.example.com" to "your-gateway.example.com",
+)
+
 /** 断线丢事件时补进正文的提示行。 */
 private const val TRUNCATED_NOTICE = "\n[提示] 断线期间有内容未收到，已从服务端补拉最新结果\n"
 
@@ -653,6 +674,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     // ---------- 连接 ----------
 
     fun onProfileChanged(p: Prefs) {
+        migrateLegacyHost(p)
         val key = if (p.profile == "default") Keys.DEFAULT_KEY else Keys.FRIEND_KEY
         val prefix = if (p.profile == "default") "" else "/p/friend"
         api = HermesApi(p.serverUrl, key, prefix)
@@ -667,6 +689,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         resumeActiveRun()
         drainPendingReply()
         checkUpdateSilently()
+    }
+
+    /**
+     * 老域名静默迁移：把 prefs 里存的历史域名换成当前域名。
+     *
+     * 为什么必须做：服务器地址是登录时写进 prefs 的，就地升级（不重新登录）
+     * 时不会更新。域名一旦迁移（2026-10-06 .example-old.com → .example.com），
+     * 老用户的地址就指向死链，表现就是「一直重连连不上、怎么都连不上」。
+     * 这里只做主机名替换，路径/端口/协议原样保留。
+     */
+    private fun migrateLegacyHost(p: Prefs) {
+        val cur = p.serverUrl
+        if (cur.isEmpty()) return
+        val hit = LEGACY_HOSTS.entries.firstOrNull { cur.contains(it.key) } ?: return
+        val fixed = cur.replace(hit.key, hit.value)
+        if (fixed != cur) p.serverUrl = fixed
     }
 
     /**
@@ -694,24 +732,41 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (map.isEmpty()) return
         for ((sid, rid) in map) {
             viewModelScope.launch(Dispatchers.IO) {
-                val st = try {
-                    a.getRun(rid).optString("status", "")
-                } catch (_: Exception) {
-                    ""
+                // 开机时网络往往还没就绪，探测失败不能当成「任务已结束」——
+                // 那样会把活跃标记删掉，这条任务就永远回不来了。重试几次，
+                // 实在探不出来就保留标记，等下次进前台/切身份再试。
+                var last: HermesApi.RunStatus = HermesApi.RunStatus.Unknown
+                for (i in 1..RESUME_PROBE_TRIES) {
+                    last = a.probeRun(rid)
+                    if (last !is HermesApi.RunStatus.Unknown) break
+                    delay(if (i == 1) 1_000L else 3_000L)
                 }
-                val running = st in setOf("started", "running", "waiting_for_approval", "queued")
-                if (running) {
-                    val r = rt(sid)
-                    ensureLoaded(sid)
-                    r.runId = rid
-                    r.finished = false
-                    r.lastSeq = -1
-                    r.busy.value = true
-                    updateRunService()
-                    streamRun(a, sid)
-                } else {
-                    prefs.removeActiveRun(sid)
-                    if (sid == _currentId.value) refreshFromServer()
+                when (last) {
+                    is HermesApi.RunStatus.Known -> {
+                        if (last.status in RUNNING_STATES) {
+                            val r = rt(sid)
+                            ensureLoaded(sid)
+                            r.runId = rid
+                            r.finished = false
+                            r.lastSeq = -1
+                            r.busy.value = true
+                            updateRunService()
+                            streamRun(a, sid)
+                        } else {
+                            prefs.removeActiveRun(sid)
+                            if (sid == _currentId.value) refreshFromServer()
+                        }
+                    }
+                    // 服务端明确说没这个 run：标记失效，清掉并拉一次记录。
+                    HermesApi.RunStatus.Missing -> {
+                        prefs.removeActiveRun(sid)
+                        if (sid == _currentId.value) refreshFromServer()
+                    }
+                    // 探不出来：保留标记（不清），只拉一次服务端记录兜底。
+                    // 下次 onProfileChanged / onAppForeground 还会再来试。
+                    HermesApi.RunStatus.Unknown -> {
+                        if (sid == _currentId.value) refreshFromServer()
+                    }
                 }
             }
         }
@@ -1571,18 +1626,44 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             delay(waitMs)
             if (!r.busy.value || r.finished) return@launch
-            val st = try { a.getRun(rid).optString("status", "") } catch (_: Exception) { "" }
-            if (st in setOf("started", "running", "waiting_for_approval", "queued", "stopping")) {
-                r.retryNote.value = ""
-                streamRun(a, sid)   // 续接同一 run，不新增任何用户消息
-            } else {
-                r.retryNote.value = ""
-                r.finished = true
-                finishPending(r)
-                r.busy.value = false
-                prefs.removeActiveRun(sid)
-                updateRunService()
-                if (sid == _currentId.value) refreshFromServer()  // 任务已结束：拉回服务端产出
+            when (val st = a.probeRun(rid)) {
+                // 服务端明确回答「还在跑」：续接同一 run，不新增任何用户消息。
+                is HermesApi.RunStatus.Known -> {
+                    if (st.status in RUNNING_STATES) {
+                        r.retryNote.value = ""
+                        streamRun(a, sid)
+                    } else {
+                        // 服务端明确回答「已结束」：收尾并拉回产出。
+                        r.retryNote.value = ""
+                        r.finished = true
+                        finishPending(r)
+                        r.busy.value = false
+                        prefs.removeActiveRun(sid)
+                        updateRunService()
+                        if (sid == _currentId.value) refreshFromServer()
+                    }
+                }
+                // 服务端明确说没这个 run：判结束（极少见，run 记录被清）。
+                HermesApi.RunStatus.Missing -> {
+                    r.retryNote.value = ""
+                    r.finished = true
+                    finishPending(r)
+                    r.busy.value = false
+                    prefs.removeActiveRun(sid)
+                    updateRunService()
+                    if (sid == _currentId.value) refreshFromServer()
+                }
+                // 探不出来（网还没通）：不知道 ≠ 已结束，继续退避重试。
+                // 这是原实现最大的坑——把「不知道」当成了「已结束」，第一次探测
+                // 失败就把任务判死，8 次退避等于摆设。
+                HermesApi.RunStatus.Unknown -> {
+                    if (r.autoContinue >= MAX_RECONNECT_ATTEMPTS) {
+                        r.retryNote.value = ""
+                        startHistoryRecovery(sid, rid)
+                    } else {
+                        maybeContinue(sid)
+                    }
+                }
             }
         }
     }
