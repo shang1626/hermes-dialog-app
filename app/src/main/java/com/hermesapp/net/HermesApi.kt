@@ -200,6 +200,14 @@ class HermesApi(
     fun sessionMessages(sessionId: String): JSONObject =
         sync(base("/api/sessions/" + sessionId + "/messages").get().build())
 
+    /**
+     * 拉取服务端会话列表（每行带模型生成的 title）。
+     * 用途：把服务端的正式标题同步回本地会话索引——本地只会生成「新对话」和首句截断，
+     * 服务端由小模型生成 3~7 词的正式标题，质量更好，且历史会话也有。
+     */
+    fun listSessions(limit: Int = 200): JSONObject =
+        sync(base("/api/sessions?limit=" + limit).get().build())
+
     fun stopRun(runId: String) {
         runCatching {
             client.newCall(base("/v1/runs/" + runId + "/stop").post("{}".toRequestBody(jsonType)).build())

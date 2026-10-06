@@ -628,6 +628,55 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         _sessions.value = store.loadIndex().sortedByDescending { it.updatedAt }
     }
 
+    /** 上次从服务端同步标题的时间：节流用，避免每个轮末都打一次接口。 */
+    private var lastTitleSyncAt = 0L
+
+    /**
+     * 把服务端生成的正式标题同步回本地会话索引。
+     *
+     * 为什么需要：本地标题只有一条生成路径（touchSession：首条用户文本截 20 字），
+     * 且只在「本地还没有任何用户消息」时触发——重开 App 先拉回服务端消息、排队发送、
+     * 别的端建的会话都会错过，于是标题永远停在「新对话」。服务端其实一直在用
+     * 小模型生成 3~7 词的正式标题（title_source=llm），历史会话也有，直接取来覆盖即可。
+     *
+     * 只改 title 字段：不动 updatedAt（避免列表顺序与「上次停留」突变）、不增删行；
+     * 服务端没有的本地行（新建未发消息的会话）保持原样。
+     */
+    fun syncServerTitles(throttleMs: Long = 0L) {
+        val a = api ?: return
+        val now = System.currentTimeMillis()
+        if (throttleMs > 0 && now - lastTitleSyncAt < throttleMs) return
+        lastTitleSyncAt = now
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val resp = a.listSessions()
+                val arr = resp.optJSONArray("data") ?: return@launch
+                val byId = HashMap<String, String>()
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val id = o.optString("id", "")
+                    if (id.isEmpty()) continue
+                    val t = o.optString("title", "").trim()
+                    if (t.isNotEmpty()) byId[id] = t
+                }
+                if (byId.isEmpty()) return@launch
+                val list = _sessions.value.toMutableList()
+                var changed = false
+                for (k in list.indices) {
+                    val s = list[k]
+                    val t = byId[s.id] ?: continue
+                    if (s.title != t) { list[k] = s.copy(title = t); changed = true }
+                }
+                if (changed) {
+                    _sessions.value = list.sortedByDescending { it.updatedAt }
+                    store.saveIndex(_sessions.value)
+                }
+            } catch (_: Exception) {
+                // 离线 / 接口异常：保留本地标题，不影响使用
+            }
+        }
+    }
+
     /** 切到某个会话（网关 session_id 同步指过去）。不再停止任何正在跑的任务。 */
     fun switchSession(id: String) {
         if (id == _currentId.value) return
@@ -739,6 +788,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val a0 = api
         MediaFetch.handler = { token -> a0?.downloadMedia(token) }
         bootstrapSessions(p.sessionId)
+        syncServerTitles()
         pingLoop()
         refreshStatus()
         refreshFromServer()
@@ -886,6 +936,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         updateRunService()
         // 顺带刷一次在线状态，别让角标停在离线
         viewModelScope.launch(Dispatchers.IO) { refreshStatus() }
+        // 回前台顺带同步一次服务端标题（节流 30 秒，避免频繁切前后台狂打接口）
+        syncServerTitles(30_000L)
     }
 
     /** 拉一次服务端能力：是否支持原生图片（决定图片是原生附图还是先转文字）。 */
@@ -2296,6 +2348,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         updateRunService()
         if (sid == _currentId.value) drainPendingReply()
         drainQueue(sid)   // 本轮结束：把排队的下一条发出去
+        // 本轮跑完：服务端此刻多半已生成了正式标题，同步一次（节流 5 秒）。
+        syncServerTitles(5_000L)
     }
 
     /**
