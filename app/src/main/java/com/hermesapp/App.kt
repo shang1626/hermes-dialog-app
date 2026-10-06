@@ -4,7 +4,11 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
+import android.graphics.Rect
 import android.os.Bundle
+import android.view.MotionEvent
+import android.view.inputmethod.InputMethodManager
+import android.widget.EditText
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -116,6 +120,31 @@ class MainActivity : ComponentActivity() {
         }
         Notifier.ensureChannel(this)
         setContent { HermesApp(vm, prefs) }
+    }
+
+    /**
+     * 点击输入框以外的任何位置都收起软键盘。
+     *
+     * 为什么不只靠 Compose 侧 detectTapGestures：原生 EditText 承载在 AndroidView 里，
+     * View 体系本身「点外部不会失焦」；而且消息气泡的 combinedClickable 会先消费掉 tap，
+     * 父级 detectTapGestures 根本收不到 → 点气泡收不起键盘（Google issue 282963174 一类互通坑）。
+     * dispatchTouchEvent 在任何子 View / Compose 消费之前拿到 ACTION_DOWN，判定落点是否落在
+     * 当前聚焦的 EditText 内，不在就清焦点 + 收键盘，一次覆盖点空白 / 气泡 / 顶栏 / 抽屉 / 切 tab。
+     */
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (ev.action == MotionEvent.ACTION_DOWN) {
+            val focused = currentFocus
+            if (focused is EditText) {
+                val r = Rect()
+                focused.getGlobalVisibleRect(r)
+                if (!r.contains(ev.rawX.toInt(), ev.rawY.toInt())) {
+                    focused.clearFocus()
+                    val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+                    imm?.hideSoftInputFromWindow(focused.windowToken, 0)
+                }
+            }
+        }
+        return super.dispatchTouchEvent(ev)
     }
 
     override fun onResume() {
