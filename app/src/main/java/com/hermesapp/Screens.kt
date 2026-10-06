@@ -307,6 +307,8 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
                     onResendReceipt = { vm.resendReceipt(it) },
                     onAckReceipt = { vm.acknowledgeReceipt(it) },
                     onQuote = { vm.setQuote(it) },
+                    onCancelQueued = { vm.cancelQueued(it) },
+                    onEditQueued = { vm.editQueued(it) },
                     onCardAction = { vm.dispatchCardAction(it, ctx) },
                     highlight = hl,
                     hitQuery = if (hl) q else "",
@@ -333,6 +335,13 @@ fun ChatInputBar(
     val c = LocalAppColors.current
     val busy by vm.busy.collectAsState()
     val queued by vm.queuedCount.collectAsState()
+    val paused by vm.queuedPaused.collectAsState()
+    val editText by vm.queuedEdit.collectAsState()
+    // 编辑排队消息：正文回填输入框，取走即清。
+    LaunchedEffect(editText) {
+        val e = editText
+        if (e != null) { onInput(e); vm.clearQueuedEdit() }
+    }
     val input = inputState.value
     Row(
         Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 8.dp, vertical = 6.dp),
@@ -377,7 +386,7 @@ fun ChatInputBar(
         Spacer(Modifier.width(6.dp))
         // 忙时也能发：本会话在跑就排队，等这轮结束自动发出去（不再把输入框锁死）。
         if (queued > 0) {
-            Text("排队 " + queued, color = c.warn, fontSize = 11.sp)
+            Text(if (paused) "待发 " + queued else "排队 " + queued, color = c.warn, fontSize = 11.sp)
             Spacer(Modifier.width(6.dp))
         }
         OutlinedButton(
@@ -397,11 +406,28 @@ fun ChatInputBar(
         }
         if (busy) {
             Spacer(Modifier.width(6.dp))
+            // 插话：把这句注入本轮（与「排队」不同——排队是下一轮才发）。
+            OutlinedButton(
+                onClick = {
+                    val t = input.trim()
+                    if (t.isNotEmpty()) { vm.steerCurrent(t); onInput("") }
+                },
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                shape = RoundedCornerShape(8.dp),
+            ) { Text("插话", color = c.accent, fontSize = 13.sp) }
+            Spacer(Modifier.width(6.dp))
             OutlinedButton(
                 onClick = { vm.stop() },
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                 shape = RoundedCornerShape(8.dp),
             ) { Text("停止", color = c.bad, fontSize = 13.sp) }
+        } else if (paused && queued > 0) {
+            Spacer(Modifier.width(6.dp))
+            OutlinedButton(
+                onClick = { vm.resumeQueue() },
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                shape = RoundedCornerShape(8.dp),
+            ) { Text("继续", color = c.ok, fontSize = 13.sp) }
         }
     }
 }
@@ -460,6 +486,10 @@ fun Bubble(
     onResendReceipt: (Long) -> Unit = {},
     /** 「知道了，不重发」：收掉「不确定」角标与提示，不动网络。 */
     onAckReceipt: (Long) -> Unit = {},
+    /** 撤回一条还没发出去的排队消息（从队列摘掉、收掉气泡）。 */
+    onCancelQueued: (Long) -> Unit = {},
+    /** 编辑一条排队消息：从队列摘掉，正文回填到输入框。 */
+    onEditQueued: (Long) -> Unit = {},
     /** 长按气泡选「引用」：把这整条交给 ViewModel。 */
     onQuote: (Msg) -> Unit = {},
     /** 富卡片按钮点击：交给 ViewModel 分发（发消息 / 开链接）。 */
@@ -674,7 +704,8 @@ fun Bubble(
                 // 状态标记与发送时间并排同一行（不再各自独占一行）；告警说明接在时间后面。
                 val rc = m.receipt
                 val actionable = rc != null &&
-                    (rc.status == Receipt.UNCERTAIN || rc.status == Receipt.FAILED)
+                    (rc.status == Receipt.UNCERTAIN || rc.status == Receipt.FAILED ||
+                        rc.status == Receipt.QUEUED)
                 val mark = when (rc?.status) {
                     Receipt.SENDING -> "◌"
                     Receipt.QUEUED -> "⋯"
@@ -704,7 +735,7 @@ fun Bubble(
                         if (m.ts > 0) Text(TimeFmt.hm(m.ts), color = c.dim, fontSize = 10.sp)
                         if (rc != null) {
                             val tip = when (rc.status) {
-                                Receipt.QUEUED -> "排队中，本轮结束后自动发送"
+                                Receipt.QUEUED -> "排队中，本轮结束后自动发送（点这里可撤回或编辑）"
                                 Receipt.UNCERTAIN -> "发送结果不确定，点这里处理"
                                 Receipt.FAILED -> if (rc.note.isNotEmpty()) rc.note else "发送失败，点这里重发"
                                 else -> ""
@@ -723,23 +754,37 @@ fun Bubble(
                     if (receiptMenuOpen && actionable) {
                         Spacer(Modifier.height(6.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            OutlinedButton(
-                                onClick = { onConfirmReceipt(m.id) },
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                shape = RoundedCornerShape(8.dp),
-                            ) { Text("确认送达", color = c.accent, fontSize = 12.sp) }
-                            OutlinedButton(
-                                onClick = { onResendReceipt(m.id) },
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                shape = RoundedCornerShape(8.dp),
-                            ) { Text("重新发送", color = c.accent, fontSize = 12.sp) }
-                            // 「不确定」时给一个不重发的出口：看过就算了，不必拿这句话去赌会不会发两遍。
-                            if (rc?.status == Receipt.UNCERTAIN) {
+                            if (rc?.status == Receipt.QUEUED) {
+                                // 排队中：还没发出去，给「撤回 / 编辑」两个出口。
                                 OutlinedButton(
-                                    onClick = { onAckReceipt(m.id) },
+                                    onClick = { onCancelQueued(m.id) },
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
                                     shape = RoundedCornerShape(8.dp),
-                                ) { Text("知道了", color = c.dim, fontSize = 12.sp) }
+                                ) { Text("撤回", color = c.bad, fontSize = 12.sp) }
+                                OutlinedButton(
+                                    onClick = { onEditQueued(m.id) },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                ) { Text("编辑", color = c.accent, fontSize = 12.sp) }
+                            } else {
+                                OutlinedButton(
+                                    onClick = { onConfirmReceipt(m.id) },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                ) { Text("确认送达", color = c.accent, fontSize = 12.sp) }
+                                OutlinedButton(
+                                    onClick = { onResendReceipt(m.id) },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                ) { Text("重新发送", color = c.accent, fontSize = 12.sp) }
+                                // 「不确定」时给一个不重发的出口：看过就算了，不必拿这句话去赌会不会发两遍。
+                                if (rc?.status == Receipt.UNCERTAIN) {
+                                    OutlinedButton(
+                                        onClick = { onAckReceipt(m.id) },
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                        shape = RoundedCornerShape(8.dp),
+                                    ) { Text("知道了", color = c.dim, fontSize = 12.sp) }
+                                }
                             }
                         }
                     }
