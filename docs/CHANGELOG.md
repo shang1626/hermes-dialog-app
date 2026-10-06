@@ -1,5 +1,18 @@
 # 变更记录
 
+## 2.40 — versionCode 51
+常驻通知改成真常驻（原来只在「有任务在跑」期间挂，跑完即撤）：
+- 判据从「有任务才起前台服务、全部结束就停」改成「只要设置页『后台运行』开关开着，
+  就一直保持前台服务与一条静默常驻通知」，跟有没有任务在跑无关；关掉开关才停、通知消失。
+- 进主界面（MainScaffold 的 LaunchedEffect）补一次 `ensureRunService()`：开关开着但还没发过
+  消息时也把常驻通知挂上。原来要等第一次发消息或回前台才起，期间切后台状态栏一条都不剩。
+- 通知标题「Hermes」→「Hermes 在线」。
+- 设置页「后台运行」说明文字改准（原来写「任务期间保持连接」）。
+- 注：compileSdk=34 不支持 `Service.onTimeout`（API 35 才有），`dataSync` 的 6 小时/24 小时
+  上限也只在 targetSdk≥35 才强制，本版 targetSdk=34 不受影响，故未加超时兜底。
+  开机自启做不到（安卓禁止后台起前台服务），需手动打开一次 App 才会挂上。
+（RunService.kt、ChatViewModel.kt、App.kt、Screens.kt、app/build.gradle.kts）
+
 ## 2.39 — versionCode 50
 修「点通知栏常驻条目没反应」：
 - 那条常驻条目是任务运行期间的前台服务通知（RunService，通知 id 1001，标题就一个
