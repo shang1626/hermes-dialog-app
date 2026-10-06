@@ -662,3 +662,16 @@ fun ModeBtn(label: String, selected: Boolean, m: Modifier, onClick: () -> Unit) 
         ),
     ) { Text(label, color = if (selected) c.accent else c.dim, fontSize = 12.sp) }
 }
+
+/**
+ * 进程入口：第一时间装上崩溃留痕。
+ *
+ * 放在 Application 而不是 MainActivity——闪退可能发生在界面起来之前，
+ * 挂在这里才能保证任何阶段的崩溃都留下堆栈。
+ */
+class HermesApplication : android.app.Application() {
+    override fun onCreate() {
+        super.onCreate()
+        CrashLog.install(this)
+    }
+}
