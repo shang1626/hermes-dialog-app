@@ -53,6 +53,11 @@ data class Msg(
     val receipt: Receipt? = null,
     /** 引用回复：被引用的上一条消息正文片段（空表示不是引用发送）。 */
     val quote: String = "",
+    /**
+     * 本条的幂等键：发送时生成一次，重发时复用。服务端凭它保证同一句话只执行一次，
+     * 重发不再有「可能发两遍」的风险，还能拿回原来那轮的 run_id 直接接上。
+     */
+    val idemKey: String = "",
 ) {
     companion object {
         private val counter = java.util.concurrent.atomic.AtomicLong(0)
@@ -77,6 +82,16 @@ data class Receipt(
     val note: String = "",
     val rawText: String = "",
     val priorUserCount: Int = -1,
+    /**
+     * 本条发送时用的幂等键，重发必须原样复用：服务端凭它认出「这是同一条」，
+     * 只执行一次并把原来那轮的 run_id 还回来。
+     */
+    val idemKey: String = "",
+    /**
+     * 首次发送时上传附件拿到的 artifact id。重发必须复用这一份：服务端算指纹时
+     * 把请求体一起算进去，附件 id 变了指纹就变了，会被判成「键相同、内容不同」而 409。
+     */
+    val artifactIds: List<String> = emptyList(),
 ) {
     companion object {
         const val SENDING = "sending"
@@ -149,6 +164,8 @@ data class QueuedSend(
     val msgId: Long,
     /** 入队时该会话已有的用户消息条数：翻历史认锚点要用。 */
     val priorUserCount: Int,
+    /** 入队时生成的幂等键：真正发出去时用它，重发也复用，保证只执行一次。 */
+    val idemKey: String = "",
 )
 
 /** 状态页的一行：标签 + 值。value 为空则该行不显示。 */
@@ -1108,6 +1125,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
         // 投递状态挂在用户消息自己身上（按 msgId 认领，不靠位置）：POST 没回来前是 sending，
         // 拿到 run_id 才转 accepted，中途断了转 uncertain 等用户处置。
+        // 幂等键在发送前一次性生成，写进回执并随请求发出：服务端凭它保证同一句话只执行
+        // 一次，重发不会变成两遍。
+        val idemKey = UUID.randomUUID().toString().replace("-", "")
         val userMsg = Msg(
             "user", text, ts = stamp(),
             images = durableImgs.toList(),
@@ -1116,8 +1136,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 status = if (willQueue) Receipt.QUEUED else Receipt.SENDING,
                 rawText = wireText.trim(),
                 priorUserCount = prior,
+                idemKey = idemKey,
             ),
             quote = quoteSnip,
+            idemKey = idemKey,
         )
         r.lastUserMsgId = userMsg.id
         setMsgs(r, r.messages.value + userMsg)
@@ -1126,11 +1148,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         _quoteTarget.value = null
         if (willQueue) {
             // 排队：气泡先落下（回执标「排队中」），本轮一结束由 drainQueue 自动发。
-            r.queue.add(QueuedSend(wireText, uploadFiles.toList(), userMsg.id, prior))
+            r.queue.add(QueuedSend(wireText, uploadFiles.toList(), userMsg.id, prior, idemKey))
             r.queued.value = r.queue.size
             return
         }
-        startRunWith(a, sid, wireText, uploadFiles.toList(), receiptMsgId = userMsg.id)
+        startRunWith(a, sid, wireText, uploadFiles.toList(), receiptMsgId = userMsg.id, idemKey = idemKey)
     }
 
     /**
@@ -1147,7 +1169,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.pendingSendText = next.text.trim()
         r.recoveryJob?.cancel()
         advanceReceipt(sid, next.msgId, Receipt.SENDING, note = "")
-        startRunWith(a, sid, next.text, next.files, receiptMsgId = next.msgId)
+        startRunWith(a, sid, next.text, next.files, receiptMsgId = next.msgId, idemKey = next.idemKey)
     }
 
     /** 按消息 id 改投递状态（找不到就忽略——消息可能已被「清理缓存」截掉）。 */
@@ -1162,7 +1184,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 把某条用户消息的投递状态推到下一档，其余字段保留。 */
-    private fun advanceReceipt(sid: String, msgId: Long, status: String, runId: String? = null, note: String = "") {
+    private fun advanceReceipt(
+        sid: String,
+        msgId: Long,
+        status: String,
+        runId: String? = null,
+        note: String = "",
+        idemKey: String? = null,
+        artifactIds: List<String>? = null,
+    ) {
         if (msgId <= 0) return
         val r = rt(sid)
         val list = r.messages.value.toMutableList()
@@ -1176,6 +1206,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 note = note,
                 rawText = old?.rawText ?: list[i].text.trim(),
                 priorUserCount = old?.priorUserCount ?: -1,
+                // 幂等键与附件 id 一旦定下就不再变：传入才覆盖，否则沿用旧的。
+                idemKey = idemKey ?: old?.idemKey.orEmpty(),
+                artifactIds = artifactIds ?: old?.artifactIds ?: emptyList(),
             )
         )
         setMsgs(r, list)
@@ -1243,7 +1276,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 「重新发送」：拿原正文再 POST 一次（图片附件能找回就一并带上）。 */
+    /**
+     * 「重新发送」：拿原正文再 POST 一次（图片附件能找回就一并带上）。
+     *
+     * 复用首次发送时的幂等键与附件 id：服务端凭键认出这是同一条，24 小时内只执行
+     * 一次，重发不会变成发两遍；若首次其实已经收下，服务端会把**原来那轮的 run_id**
+     * 还回来，这里直接接上那一轮取结果。这就是「不确定」不再需要用户赌一把的原因。
+     */
     fun resendReceipt(msgId: Long) {
         val a = api ?: return
         val sid = _currentId.value
@@ -1264,11 +1303,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val files = m.images.mapNotNull { u ->
             runCatching { File(Uri.parse(u).path ?: "") }.getOrNull()?.takeIf { it.exists() }
         }
-        if (m.files.isNotEmpty()) {
+        // 附件已有 artifact id 就复用，不再重传（重传会换 id、指纹不符会被判冲突）。
+        val reuse = rc.artifactIds
+        if (m.files.isNotEmpty() && reuse.isEmpty()) {
             r.retryNote.value = "这条带过附件，重发只带上图片，其他附件请重新选"
         }
         advanceReceipt(sid, msgId, Receipt.SENDING, note = "")
-        startRunWith(a, sid, rc.rawText, files, receiptMsgId = msgId)
+        startRunWith(
+            a, sid, rc.rawText, files,
+            receiptMsgId = msgId,
+            idemKey = rc.idemKey,
+            reuseArtifacts = reuse,
+        )
     }
 
     /**
@@ -1424,6 +1470,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         text: String,
         files: List<File> = emptyList(),
         receiptMsgId: Long = 0L,
+        idemKey: String = "",
+        reuseArtifacts: List<String> = emptyList(),
+        autoRetryLeft: Int = 1,
     ) {
         val r = rt(sid)
         setMsgs(r, r.messages.value + Msg("assistant", "", pending = true, ts = stamp()))
@@ -1433,33 +1482,60 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.autoContinue = 0
         r.startedAt = System.currentTimeMillis()
         updateRunService()
+        val ids = mutableListOf<String>()
+        var uploadsDone = reuseArtifacts.isNotEmpty()
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val ids = mutableListOf<String>()
-                for ((i, f) in files.withIndex()) {
-                    _imageNote.value = "上传附件 ${i + 1}/${files.size}…"
-                    ids.add(a.uploadImage(f.readBytes(), f.name, mimeOf(f)))
+                // 附件 id：重发必须复用首次那份（服务端算指纹含请求体，换了 id 会被判冲突）。
+                if (reuseArtifacts.isNotEmpty()) {
+                    ids.addAll(reuseArtifacts)
+                } else {
+                    for ((i, f) in files.withIndex()) {
+                        _imageNote.value = "上传附件 ${i + 1}/${files.size}…"
+                        ids.add(a.uploadImage(f.readBytes(), f.name, mimeOf(f)))
+                    }
+                    uploadsDone = true
                 }
                 _imageNote.value = ""
-                val run = a.startRun(text, sid, ids)
+                val run = a.startRun(text, sid, ids, idemKey)
                 r.runId = run.optString("run_id", run.optString("id", ""))
                 r.startedAt = System.currentTimeMillis()
                 prefs.putActiveRun(sid, r.runId)
                 prefs.putLastSeq(sid, -1)   // 新 run 从 0 开始，清掉上一轮的续接序号
                 // 拿到 run_id 才算「服务端已收下」，此时回执才转已送达。
-                advanceReceipt(sid, receiptMsgId, Receipt.ACCEPTED, runId = r.runId)
+                // 幂等键与附件 id 一并落进回执，供后续重发原样复用。
+                advanceReceipt(sid, receiptMsgId, Receipt.ACCEPTED, runId = r.runId,
+                    idemKey = idemKey, artifactIds = ids)
                 streamRun(a, sid)
             } catch (e: Exception) {
                 _imageNote.value = ""
                 val msg = e.message ?: "?"
+                val httpReject = msg.startsWith("HTTP ")
+                // 网络中断（收不到回执）、带幂等键、且还没重试过 → 自动安全重试一次。
+                // 为什么现在敢自动重试：服务端对同一个键只执行一次，重试要么接上原来那轮
+                // （首次其实已收下，只是回包丢了），要么全新执行一次，绝不会变成发两遍。
+                // 这正是加幂等键最大的收益——「不确定」不再需要用户赌一把。
+                if (!httpReject && idemKey.isNotEmpty() && autoRetryLeft > 0) {
+                    dropEmptyPending(r)
+                    r.retryNote.value = "发送未确认，正在自动重试…"
+                    delay(2000)
+                    // 附件已传完就复用那份 id（保证指纹一致、能命中重放）；
+                    // 上传阶段就断了则重新上传（此时服务端没记下任何键，不会冲突）。
+                    startRunWith(
+                        a, sid, text, files, receiptMsgId,
+                        idemKey = idemKey,
+                        reuseArtifacts = if (uploadsDone) ids.toList() else emptyList(),
+                        autoRetryLeft = autoRetryLeft - 1,
+                    )
+                    return@launch
+                }
                 // 服务端有明确回执（HTTP 4xx/5xx）= 拒绝，标失败；
-                // 收不到回执（超时/连接被掐）= 不知道收没收，标「不确定」等用户处置，
-                // 绝不自作主张重发，避免同一句话发两遍。
+                // 重试用尽仍收不到回执 = 标「不确定」等用户处置（此时仍可手动重发，也安全）。
                 dropEmptyPending(r)
-                if (msg.startsWith("HTTP ")) {
+                if (httpReject) {
                     advanceReceipt(sid, receiptMsgId, Receipt.FAILED, note = msg)
                 } else {
-                    r.retryNote.value = "发送结果不确定：网络中断，服务端可能已收下"
+                    r.retryNote.value = "发送结果不确定：网络中断，服务端可能已收下，可重发（不会重复）"
                     advanceReceipt(sid, receiptMsgId, Receipt.UNCERTAIN, note = msg)
                 }
                 failPending(sid)

@@ -77,7 +77,23 @@ class HermesApi(
         }
     }
 
-    fun startRun(input: String, sessionId: String?, images: List<String> = emptyList()): JSONObject {
+    /**
+     * 发起一轮对话。
+     *
+     * [idempotencyKey] 非空时带上 Idempotency-Key 头：服务端把 (作用域, 键) 写进 SQLite
+     * 记账，24 小时内同一个键只会真正执行一次。重复提交不会重跑，而是把**原来那轮的
+     * run_id** 原样还回来，并在响应头 Idempotency-Replayed 标 true（正文里也有
+     * replayed 字段）。因此重发是安全的：不会变成发两遍，还能直接接上原来那轮。
+     *
+     * 请求体不同、键相同 → 409 idempotency_key_conflict（指纹对不上，服务端拒绝）。
+     * 这就是为什么重发必须复用同一份附件 id：body 变了指纹就变了。
+     */
+    fun startRun(
+        input: String,
+        sessionId: String?,
+        images: List<String> = emptyList(),
+        idempotencyKey: String = "",
+    ): JSONObject {
         val body = JSONObject().put("input", input)
         if (!sessionId.isNullOrEmpty()) body.put("session_id", sessionId)
         if (images.isNotEmpty()) {
@@ -85,7 +101,9 @@ class HermesApi(
             for (id in images) arr.put(id)
             body.put("images", arr)
         }
-        return sync(base("/v1/runs").post(body.toString().toRequestBody(jsonType)).build())
+        val rb = base("/v1/runs").post(body.toString().toRequestBody(jsonType))
+        if (idempotencyKey.isNotEmpty()) rb.header("Idempotency-Key", idempotencyKey)
+        return sync(rb.build())
     }
 
     /** 上传一张图片到 artifact 通道，返回 artifact_id（一次性、绑定本 profile 密钥作用域）。 */
