@@ -91,11 +91,18 @@ class SessionStore(ctx: Context, private val profile: String) {
                 val o = arr.optJSONObject(i) ?: continue
                 val text = o.optString("text", "")
                 val trace = o.optString("trace", "")
-                if (text.isEmpty() && trace.isEmpty()) continue
                 val imgs = mutableListOf<String>()
                 o.optJSONArray("images")?.let { ia ->
                     for (k in 0 until ia.length()) ia.optString(k)?.takeIf { it.isNotEmpty() }?.let { imgs.add(it) }
                 }
+                val files = mutableListOf<String>()
+                o.optJSONArray("files")?.let { fa ->
+                    for (k in 0 until fa.length()) fa.optString(k)?.takeIf { it.isNotEmpty() }?.let { files.add(it) }
+                }
+                // 只要还有正文 / 工具轨迹 / 图片 / 附件，这条就得留住。
+                // 「只发了图、没打字」的消息正文是空的，按老条件（只查正文与轨迹）会被整条丢掉，
+                // 重开 App 后那条图就凭空消失——附件消息必须按附件是否为空一起判。
+                if (text.isEmpty() && trace.isEmpty() && imgs.isEmpty() && files.isEmpty()) continue
                 // 投递状态：老消息没有这个键 → 保持 null（界面不显示角标，不报错）。
                 val rc = o.optJSONObject("receipt")?.let { ro ->
                     Receipt(
@@ -113,6 +120,7 @@ class SessionStore(ctx: Context, private val profile: String) {
                         pending = false,
                         ts = o.optLong("ts", 0L),
                         images = imgs,
+                        files = files,
                         trace = trace,
                         receipt = rc,
                         quote = o.optString("quote", ""),
@@ -136,6 +144,12 @@ class SessionStore(ctx: Context, private val profile: String) {
                     val ia = JSONArray()
                     for (u in m.images) ia.put(u)
                     o.put("images", ia)
+                }
+                // 非图片附件的文件名也要落盘：不落的话重开 App 附件卡片就没了。
+                if (m.files.isNotEmpty()) {
+                    val fa = JSONArray()
+                    for (n in m.files) fa.put(n)
+                    o.put("files", fa)
                 }
                 // 投递状态要落盘：重开 App 后「不确定/失败」的消息还得能处置。
                 // sending 不落盘——重启后那个 POST 已经没了，留着会一直转圈；

@@ -1009,11 +1009,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val quoted = _quoteTarget.value
         val quoteSnip = if (quoted != null) quoteSnippet(quoted) else ""
         val sendText = if (quoteSnip.isNotEmpty()) "> " + quoteSnip + "\n" + text else text
+        // 只选了附件、一个字没打时，正文是空的。服务端对 input 有非空校验，而且是先查
+        // input、后处理附件——空正文直接被 400 挡回（Missing 'input' field），附件白选。
+        // 所以发往服务端的正文补一个占位词；气泡里仍然一个字都不显示。
+        // 引用/回执的位置锚点也用这一版，重发与「确认送达」才和服务端记录对得上。
+        val wireText = sendText.ifBlank { attachmentLabel(imgs) }
         // 记下发送前的用户消息条数（翻历史时的位置锚点）与本轮正文（内容校验）。
         // 锚点用拼好引用的 sendText：服务端记录里存的就是这一版，才能对上。
         val prior = r.messages.value.count { it.role == "user" }
         r.priorUserCount = prior
-        r.pendingSendText = sendText.trim()
+        r.pendingSendText = wireText.trim()
         r.recoveryJob?.cancel()
         // 发出去的图先落进 App 私有「已发送」目录：相册给的 content:// 会被系统回收
         // （换机/清数据/授权到期），outbox 会被「清理缓存」清掉——两者都会让历史里的图变白框。
@@ -1040,23 +1045,23 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             files = imgs.filter { !it.isImage }.map { it.file.name },
             receipt = Receipt(
                 status = if (willQueue) Receipt.QUEUED else Receipt.SENDING,
-                rawText = sendText.trim(),
+                rawText = wireText.trim(),
                 priorUserCount = prior,
             ),
             quote = quoteSnip,
         )
         r.lastUserMsgId = userMsg.id
         setMsgs(r, r.messages.value + userMsg)
-        touchSession(if (wasEmpty) text else null)
+        touchSession(if (wasEmpty) text.ifBlank { attachmentLabel(imgs) } else null)
         _pendingImages.value = emptyList()
         _quoteTarget.value = null
         if (willQueue) {
             // 排队：气泡先落下（回执标「排队中」），本轮一结束由 drainQueue 自动发。
-            r.queue.add(QueuedSend(sendText, uploadFiles.toList(), userMsg.id, prior))
+            r.queue.add(QueuedSend(wireText, uploadFiles.toList(), userMsg.id, prior))
             r.queued.value = r.queue.size
             return
         }
-        startRunWith(a, sid, sendText, uploadFiles.toList(), receiptMsgId = userMsg.id)
+        startRunWith(a, sid, wireText, uploadFiles.toList(), receiptMsgId = userMsg.id)
     }
 
     /**
@@ -1195,6 +1200,20 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
         advanceReceipt(sid, msgId, Receipt.SENDING, note = "")
         startRunWith(a, sid, rc.rawText, files, receiptMsgId = msgId)
+    }
+
+    /**
+     * 只发附件、没打字时，发给服务端的占位正文（服务端不允许空 input）。
+     * 纯占位，气泡里不显示；图片本身走原生多模态附件，模型照样看得到图。
+     */
+    private fun attachmentLabel(imgs: List<PendingImage>): String {
+        val hasImg = imgs.any { it.isImage }
+        val hasFile = imgs.any { !it.isImage }
+        return when {
+            hasImg && hasFile -> "（图片和文件）"
+            hasImg -> "（图片）"
+            else -> "（文件）"
+        }
     }
 
     /**
