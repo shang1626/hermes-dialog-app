@@ -956,15 +956,16 @@ fun JobCard(j: JobItem, onAction: (String) -> Unit) {
     val c = LocalAppColors.current
     val stateColor = when {
         !j.enabled -> c.dim
-        j.lastStatus == "ok" -> c.ok
+        j.lastOk -> c.ok
         j.lastStatus.isEmpty() -> c.dim
         else -> c.warn
     }
+    val title = j.zhName.ifEmpty { j.name }
     Surface(color = c.panel, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    j.name, color = c.text, fontSize = 13.sp,
+                    title, color = c.text, fontSize = 13.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false)
                 )
@@ -974,7 +975,12 @@ fun JobCard(j: JobItem, onAction: (String) -> Unit) {
                     color = stateColor, fontSize = 11.sp
                 )
             }
+            if (j.note.isNotEmpty()) {
+                Spacer(Modifier.height(4.dp))
+                Text(j.note, color = c.dim, fontSize = 11.sp)
+            }
             Spacer(Modifier.height(6.dp))
+            if (j.zhName.isNotEmpty()) Text("标识  " + j.name, color = c.dim, fontSize = 10.sp)
             if (j.schedule.isNotEmpty()) Text("排期  " + j.schedule, color = c.dim, fontSize = 11.sp)
             if (j.lastRun.isNotEmpty()) {
                 Text(

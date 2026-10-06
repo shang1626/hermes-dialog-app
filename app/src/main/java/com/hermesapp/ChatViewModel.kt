@@ -176,14 +176,20 @@ data class StatusItem(val label: String, val value: String)
 /** 状态页的一个分组：标题 + 若干行。 */
 data class StatusSection(val title: String, val items: List<StatusItem>)
 
-/** 定时任务页的一条（来自服务端 /api/jobs）。 */
+/** 定时任务页的一条（来自服务端 /api/jobs）。中文名/说明由本地映射表翻译。 */
 data class JobItem(
     val id: String,
     val name: String,
+    /** 中文名；不认识的返回空，界面回落显示原始名。 */
+    val zhName: String,
+    /** 这个任务是干什么的中文说明；不认识的为空。 */
+    val note: String,
     val schedule: String,
     val enabled: Boolean,
     val state: String,
     val lastStatus: String,
+    /** 上次运行是否成功（用于配色，不受翻译影响）。 */
+    val lastOk: Boolean,
     val lastRun: String,
     val nextRun: String,
 )
@@ -1178,6 +1184,97 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 上次列表用的过滤口径：动作完成后按同一口径重拉，避免刚暂停的任务凭空消失。 */
     private var jobsIncludeDisabled = false
 
+    /** 已知定时任务的中文名；不认识的返回空串，界面回落显示原始名。 */
+    private fun jobZhName(name: String): String = when (name) {
+        "nightly-memory-refactor" -> "夜间记忆整理"
+        "browser-idle-reaper" -> "浏览器空闲回收"
+        "mem0-watchdog" -> "记忆库看门狗"
+        "boot-verify-report" -> "开机自检报告"
+        "fix-dup-unit-report" -> "重复服务修复报告"
+        "boot-verify2-report" -> "开机自检报告（二）"
+        else -> ""
+    }
+
+    /** 这个任务是干什么的；不认识的返回空串。 */
+    private fun jobZhNote(name: String): String = when (name) {
+        "nightly-memory-refactor" ->
+            "每天凌晨自动整理记忆：做容量体检，把待落盘的内容并进记忆文件，超限就压缩。"
+        "browser-idle-reaper" ->
+            "每 15 分钟收掉闲置的浏览器进程，回收内存；没有闲置进程时静默。"
+        "mem0-watchdog" ->
+            "每 15 分钟检查记忆库：服务掉了就拉起，网关记忆后端初始化失败就重启网关。健康时静默。"
+        "boot-verify-report" ->
+            "一次性任务：容器重启后把开机自检结果发给你，跑完自动删。"
+        "fix-dup-unit-report" ->
+            "一次性任务：修复重复网关服务后把结果发给你，跑完自动删。"
+        "boot-verify2-report" ->
+            "一次性任务：容器重启后的自检（含重启次数与重复服务检查），跑完自动删。"
+        else -> ""
+    }
+
+    /** 运行状态翻译。 */
+    private fun jobZhState(s: String): String = when (s) {
+        "scheduled" -> "已排期"
+        "running" -> "执行中"
+        "completed" -> "已完成"
+        "paused" -> "已暂停"
+        "failed" -> "失败"
+        else -> s
+    }
+
+    /** 上次运行结果翻译。 */
+    private fun jobZhStatus(s: String): String = when (s) {
+        "ok" -> "正常"
+        "failed", "error" -> "失败"
+        else -> s
+    }
+
+    /** 排期翻译：interval / cron / once 三类分别转中文。 */
+    private fun jobZhSchedule(sch: JSONObject?): String {
+        if (sch == null) return ""
+        return when (sch.optString("kind", "")) {
+            "interval" -> {
+                val m = sch.optInt("minutes", 0)
+                when {
+                    m <= 0 -> "定时"
+                    m % 60 == 0 -> "每 " + (m / 60) + " 小时"
+                    else -> "每 " + m + " 分钟"
+                }
+            }
+            "cron" -> cronZh(sch.optString("expr", ""))
+            "once" -> "一次性"
+            else -> sch.optString("display", "")
+        }
+    }
+
+    /** 5 段 cron 转中文；认不出就原样返回。 */
+    private fun cronZh(expr: String): String {
+        val p = expr.trim().split(Regex("\\s+"))
+        if (p.size != 5) return expr
+        val mi = p[0]
+        val ho = p[1]
+        val dom = p[2]
+        val mo = p[3]
+        val dow = p[4]
+        val everyMin = Regex("^\\*/(\\d+)$").find(mi)
+        if (everyMin != null && ho == "*" && dom == "*" && mo == "*" && dow == "*") {
+            return "每 " + everyMin.groupValues[1] + " 分钟"
+        }
+        if (mi == "*" && ho == "*") return "每分钟"
+        val m = mi.toIntOrNull()
+        val h = ho.toIntOrNull()
+        if (m != null && h != null) {
+            val hm = String.format("%02d:%02d", h, m)
+            return when {
+                dom == "*" && mo == "*" && dow == "*" -> "每天 " + hm
+                dom == "*" && mo == "*" && dow == "1-5" -> "工作日 " + hm
+                dom == "*" && mo == "*" -> "每周 " + hm
+                else -> "每月 " + dom + " 日 " + hm
+            }
+        }
+        return expr
+    }
+
     fun refreshJobs(includeDisabled: Boolean = jobsIncludeDisabled) {
         jobsIncludeDisabled = includeDisabled
         viewModelScope.launch(Dispatchers.IO) {
@@ -1188,14 +1285,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 for (i in 0 until arr.length()) {
                     val o = arr.optJSONObject(i) ?: continue
                     val sch = o.optJSONObject("schedule")
+                    val rawName = o.optString("name", "(未命名)")
+                    val rawLast = o.optString("last_status", "")
                     out.add(
                         JobItem(
                             id = o.optString("id", ""),
-                            name = o.optString("name", "(未命名)"),
-                            schedule = sch?.optString("display", "") ?: "",
+                            name = rawName,
+                            zhName = jobZhName(rawName),
+                            note = jobZhNote(rawName),
+                            schedule = jobZhSchedule(sch),
                             enabled = o.optBoolean("enabled", true),
-                            state = o.optString("state", ""),
-                            lastStatus = o.optString("last_status", ""),
+                            state = jobZhState(o.optString("state", "")),
+                            lastStatus = jobZhStatus(rawLast),
+                            lastOk = rawLast == "ok",
                             lastRun = TimeFmt.isoToBj(o.optString("last_run_at", "")),
                             nextRun = TimeFmt.isoToBj(o.optString("next_run_at", "")),
                         )
