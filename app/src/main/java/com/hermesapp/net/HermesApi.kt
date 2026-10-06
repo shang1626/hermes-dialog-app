@@ -32,7 +32,7 @@ class HermesApi(
     /**
      * 在线探针专用 client：带硬性总超时。
      * 不能复用上面的 [client]——它 readTimeout=0（无限长，SSE 流式对话必须），
-     * 隧道半开（连接不断也不回包）时 /health 会永久挂起，pingLoop 卡死在那一行，
+     * 连接半开（TCP 半开：连接还在、对面不回包）时 /health 会永久挂起，pingLoop 卡死在那一行，
      * 在线状态冻结在最后一次结果（表现为「掉线了还显示在线」）。
      */
     private val probeClient = OkHttpClient.Builder()
@@ -44,9 +44,9 @@ class HermesApi(
         .build()
 
     /**
-     * SSE 事件流专用 client：读取超时设成硬阈值，用来识别「隧道假死」。
+     * SSE 事件流专用 client：读取超时设成硬阈值，用来识别「链路假死」。
      *
-     * 为什么不能用 [client]：它 readTimeout=0，隧道半死（连接在、不回包）时
+     * 为什么不能用 [client]：它 readTimeout=0，连接半死（连接在、不回包）时
      * 那条流会永久挂着，界面表现是「发出去一直转圈、没有反应」，且永远不触发重连。
      *
      * 为什么阈值安全：服务端在两次事件之间每 10 秒必发一个 `: keepalive` 注释帧
@@ -151,7 +151,7 @@ class HermesApi(
      * 探测 run 状态，走带硬超时的 [probeClient]。
      *
      * 不能用 [getRun]：它走 [client]（readTimeout=0，SSE 流式必须），
-     * 隧道半死时会永久挂起；而且它把 404 和网络异常都抛成同一个
+     * 连接半死时会永久挂起；而且它把 404 和网络异常都抛成同一个
      * IOException，上层分不清「任务真没了」和「网还没通」。
      */
     fun probeRun(runId: String): RunStatus = try {
@@ -271,7 +271,7 @@ class HermesApi(
             .header("Accept", "text/event-stream")
             .get()
         if (lastSeq >= 0) b.header("Last-Event-ID", lastSeq.toString())
-        // 走 streamClient（readTimeout=30s）：隧道假死时能抛超时断开，交给上层重连。
+        // 走 streamClient（readTimeout=30s）：链路假死时能抛超时断开，交给上层重连。
         val call = streamClient.newCall(b.build())
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) = onError(e)
@@ -286,6 +286,11 @@ class HermesApi(
                     try {
                         while (!src.exhausted()) {
                             val line = src.readUtf8Line() ?: break
+                            // 每读到一行（含 `: keepalive` 注释帧）就算一次「流还活着」。
+                            // 必须放在 when 之外：心跳行不以 id:/event:/data: 开头、也不是空行，
+                            // 落不到任何分支；若只在分支里回调，心跳永远刷不到活跃时间，
+                            // 长工具执行期间（只有心跳、没有真实事件）会被看门狗误判成假死。
+                            onActivity()
                             when {
                                 line.startsWith("id:") -> id = line.substring(3).trim().toIntOrNull()
                                 line.startsWith("event:") -> event = line.substring(6).trim()
