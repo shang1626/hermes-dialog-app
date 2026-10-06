@@ -2269,7 +2269,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             total = u.optInt("total_tokens", 0),
             cacheRead = u.optInt("cache_read_tokens", 0),
             cacheWrite = u.optInt("cache_write_tokens", 0),
-            durationMs = if (baseStart > 0) System.currentTimeMillis() - baseStart else 0L,
+            // 耗时以服务端为准：服务端随 usage 下发的 duration_seconds 是本轮真实执行耗时，
+            // 不含 App↔服务端网络往返、排队与断线重连等待，数字稳定。它没有才回落本地掐表。
+            durationMs = if (u.has("duration_seconds"))
+                (u.optDouble("duration_seconds", 0.0) * 1000.0).toLong()
+            else if (baseStart > 0) System.currentTimeMillis() - baseStart else 0L,
         )
         // 只有耗时（token 全 0）的轮次也要挂上：耗时本身就是用户要看的统计。
         if (usage.total <= 0 && usage.input <= 0 && usage.output <= 0 && usage.durationMs <= 0) return
