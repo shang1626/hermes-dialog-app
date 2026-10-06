@@ -83,6 +83,16 @@ class SessionStore(ctx: Context, private val profile: String) {
                 o.optJSONArray("images")?.let { ia ->
                     for (k in 0 until ia.length()) ia.optString(k)?.takeIf { it.isNotEmpty() }?.let { imgs.add(it) }
                 }
+                // 投递状态：老消息没有这个键 → 保持 null（界面不显示角标，不报错）。
+                val rc = o.optJSONObject("receipt")?.let { ro ->
+                    Receipt(
+                        status = ro.optString("status", Receipt.ACCEPTED),
+                        runId = ro.optString("runId", ""),
+                        note = ro.optString("note", ""),
+                        rawText = ro.optString("rawText", text.trim()),
+                        priorUserCount = ro.optInt("priorUserCount", -1),
+                    )
+                }
                 out.add(
                     Msg(
                         role = o.optString("role", "assistant"),
@@ -91,6 +101,7 @@ class SessionStore(ctx: Context, private val profile: String) {
                         ts = o.optLong("ts", 0L),
                         images = imgs,
                         trace = trace,
+                        receipt = rc,
                     )
                 )
             }
@@ -110,6 +121,19 @@ class SessionStore(ctx: Context, private val profile: String) {
                     val ia = JSONArray()
                     for (u in m.images) ia.put(u)
                     o.put("images", ia)
+                }
+                // 投递状态要落盘：重开 App 后「不确定/失败」的消息还得能处置。
+                // 发送中(sending)不落盘——重启后那个 POST 已经没了，留着会一直转圈。
+                m.receipt?.takeIf { it.status != Receipt.SENDING }?.let { rc ->
+                    o.put(
+                        "receipt",
+                        JSONObject()
+                            .put("status", rc.status)
+                            .put("runId", rc.runId)
+                            .put("note", rc.note)
+                            .put("rawText", rc.rawText)
+                            .put("priorUserCount", rc.priorUserCount)
+                    )
                 }
                 arr.put(o)
             }
