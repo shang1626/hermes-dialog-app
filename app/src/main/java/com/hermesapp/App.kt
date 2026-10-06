@@ -86,17 +86,44 @@ val LightColors = AppColors(
     userText = Color(0xFF1F2328),
 )
 
+/**
+ * 护眼：暖米黄纸感底色 + 暖灰文字，压低蓝光与对比度，长时间看不刺眼。
+ * 不是纯黑也不是纯白——纯白在暗环境里最累眼，纯黑在大段文字下反差过强。
+ */
+val EyeColors = AppColors(
+    bg = Color(0xFFF4EFE3),
+    panel = Color(0xFFFCF9F1),
+    card = Color(0xFFE7E1D2),
+    accent = Color(0xFF3D7A6B),
+    dim = Color(0xFF7A7466),
+    ok = Color(0xFF3F7A3F),
+    warn = Color(0xFF946A00),
+    bad = Color(0xFFB3402E),
+    text = Color(0xFF3A3730),
+    userBubble = Color(0xFFDCE8DF),
+    userText = Color(0xFF2E2B26),
+)
+
 val LocalAppColors = staticCompositionLocalOf { DarkColors }
 
 const val MODE_SYSTEM = "system"
 const val MODE_DAY = "day"
 const val MODE_NIGHT = "night"
+const val MODE_EYE = "eye"
 
 fun isDarkMode(mode: String, ctx: Context): Boolean = when (mode) {
     MODE_DAY -> false
     MODE_NIGHT -> true
+    MODE_EYE -> false
     else -> (ctx.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
         Configuration.UI_MODE_NIGHT_YES
+}
+
+/** 主题模式 → 色板（护眼优先判，其次按明暗）。窗口底色与 Compose 侧共用，保证不闪色。 */
+fun colorsFor(mode: String, ctx: Context): AppColors = when {
+    mode == MODE_EYE -> EyeColors
+    isDarkMode(mode, ctx) -> DarkColors
+    else -> LightColors
 }
 
 class MainActivity : ComponentActivity() {
@@ -111,7 +138,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val prefs = Prefs(this)
         // 启动前先定好窗口底色，避免浅色模式下闪一下黑
-        val bg = (if (isDarkMode(prefs.themeMode, this)) DarkColors else LightColors).bg.toArgb()
+        val bg = colorsFor(prefs.themeMode, this).bg.toArgb()
         window.statusBarColor = bg
         window.navigationBarColor = bg
         // 只在开启「后台运行」时申请通知权限：关掉后不起前台服务，通知自然不会出现
@@ -192,9 +219,11 @@ fun HermesApp(vm: ChatViewModel, prefs: Prefs) {
     val dark = when (mode) {
         MODE_DAY -> false
         MODE_NIGHT -> true
+        MODE_EYE -> false
         else -> isSystemInDarkTheme()
     }
-    val c = if (dark) DarkColors else LightColors
+    // 护眼优先：不是 Dark/Light 二分，直接按模式取板
+    val c = if (mode == MODE_EYE) EyeColors else if (dark) DarkColors else LightColors
 
     LaunchedEffect(dark) {
         (ctx as? Activity)?.window?.let {
@@ -593,10 +622,12 @@ fun DrawerPanel(
             // 主题切换（三选）
             Text("外观", color = c.dim, fontSize = 12.sp)
             Spacer(Modifier.height(6.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                ModeBtn("跟随系统", mode == MODE_SYSTEM, Modifier.weight(1f)) { onMode(MODE_SYSTEM) }
+            // 四档平铺（无下拉）：跟随系统 / 白天 / 夜间 / 护眼
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                ModeBtn("系统", mode == MODE_SYSTEM, Modifier.weight(1f)) { onMode(MODE_SYSTEM) }
                 ModeBtn("白天", mode == MODE_DAY, Modifier.weight(1f)) { onMode(MODE_DAY) }
                 ModeBtn("夜间", mode == MODE_NIGHT, Modifier.weight(1f)) { onMode(MODE_NIGHT) }
+                ModeBtn("护眼", mode == MODE_EYE, Modifier.weight(1f)) { onMode(MODE_EYE) }
             }
         }
     }
