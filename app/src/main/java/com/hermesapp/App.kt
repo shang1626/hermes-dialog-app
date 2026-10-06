@@ -2,6 +2,7 @@ package com.hermesapp
 
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.content.res.Configuration
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -123,6 +124,29 @@ class MainActivity : ComponentActivity() {
         // 回到前台立刻体检一次：息屏/切后台期间流可能已被隧道假死卡住，
         // 光靠 30 秒读超时要等很久，这里主动判定一次并重连。
         vm.onAppForeground()
+        openFromNotification()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        openFromNotification()
+    }
+
+    /**
+     * 审批/澄清通知被点开：切到对应会话，让用户直接看到那张待处理的卡片。
+     * 会话 id 有两个来源——Intent extra（App 还活着）与落盘（App 被系统杀过，冷启动时 intent 可能丢）。
+     * 取到就清掉，避免每次回前台都重复跳。
+     */
+    private fun openFromNotification() {
+        if (!Prefs(this).loggedIn) return
+        val fromIntent = intent?.getStringExtra(Notifier.EXTRA_OPEN_SESSION).orEmpty()
+        val prefs = Prefs(this)
+        val sid = fromIntent.ifEmpty { prefs.pendingOpenSession }
+        if (sid.isEmpty()) return
+        prefs.pendingOpenSession = ""
+        runCatching { intent?.removeExtra(Notifier.EXTRA_OPEN_SESSION) }
+        vm.switchSession(sid)
     }
 
     override fun onPause() {

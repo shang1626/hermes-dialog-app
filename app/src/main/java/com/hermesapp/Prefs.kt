@@ -61,6 +61,14 @@ class Prefs(ctx: Context) {
         sp.edit().remove("run:" + sessionId).apply()
     }
 
+    /**
+     * 待跳转的会话：审批/澄清通知被点开时写入，App 起来后切到该会话并清空。
+     * 走落盘而不是 Intent extra——App 可能已被系统杀掉，单靠 extra 会在冷启动时丢。
+     */
+    var pendingOpenSession: String
+        get() = sp.getString("pending_open_session", "") ?: ""
+        set(v) { sp.edit().putString("pending_open_session", v).apply() }
+
     /** 模型不支持视觉时：true=自动转文字，false=每次都问用户。 */
     var visionAutoText: Boolean
         get() = sp.getBoolean("vision_auto_text", true)

@@ -1317,6 +1317,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
         if (cid.isEmpty() || q.isEmpty()) return
         val card = ClarifyCard(cid, q, chs, ev.data.optBoolean("multi_select", false))
+        notifyNeedAction(r.id, "需要你选一下", q)
         val list = r.messages.value.toMutableList()
         val i = list.indexOfLast { it.role == "assistant" && it.pending }
         if (i >= 0) list[i] = list[i].copy(clarify = card)
@@ -1353,6 +1354,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
         if (rid.isEmpty() || chs.isEmpty()) return
         val card = ApprovalCard(rid, cmd, desc, chs)
+        notifyNeedAction(r.id, "需要你确认", desc.ifEmpty { cmd })
         val list = r.messages.value.toMutableList()
         val i = list.indexOfLast { it.role == "assistant" && it.pending }
         if (i >= 0) list[i] = list[i].copy(approval = card)
@@ -1794,6 +1796,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         } else {
             RunService.stop(getApplication())
         }
+    }
+
+    /**
+     * 任务停下来等人点头（审批/澄清）且 App 不在前台时弹提醒。
+     * 前台不弹——卡片就在屏幕上，再弹通知是骚扰。
+     */
+    private fun notifyNeedAction(sid: String, title: String, text: String) {
+        if (AppForeground.isForeground) return
+        // 落盘一份：App 若在用户点通知前被系统杀掉，冷启动的 Intent extra 可能丢，
+        // 靠这份落盘仍能跳回那条待处理卡片。
+        prefs.pendingOpenSession = sid
+        val app = getApplication<Application>()
+        val body = text.replace(Regex("\\s+"), " ").trim().let {
+            if (it.isEmpty()) "有任务在等你处理" else if (it.length > 120) it.take(120) + "…" else it
+        }
+        Notifier.notifyAction(app, title, body, sid)
     }
 
     /** App 不在前台时，任务完成弹系统通知（提示音+震动）。前台则静默，界面自己会更新。 */
