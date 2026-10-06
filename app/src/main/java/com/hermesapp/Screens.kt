@@ -908,6 +908,7 @@ fun SettingsScreen(
     var url by remember { mutableStateOf(prefs.serverUrl) }
     var keepAlive by remember { mutableStateOf(prefs.keepAlive) }
     var notifyDone by remember { mutableStateOf(prefs.notifySessionCompletions) }
+    var playVoice by remember { mutableStateOf(prefs.playCompletionVoice) }
     var showClear by remember { mutableStateOf(false) }
     val cacheText by vm.cacheText.collectAsState()
     LaunchedEffect(Unit) { vm.refreshCache() }
@@ -1136,6 +1137,22 @@ fun SettingsScreen(
                 notifyDone = it
                 vm.setNotifySessionCompletions(it)
                 if (it && !keepAlive) { keepAlive = true; vm.setKeepAlive(true) }
+            })
+        }
+        Spacer(Modifier.height(12.dp))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("完成语音播报", color = c.text, fontSize = 13.sp)
+                Text(
+                    if (playVoice) "任务跑完时自动把整段回复念给你听（用系统播放器，不额外占内存）"
+                    else "任务跑完只弹通知，不念内容",
+                    color = c.dim, fontSize = 11.sp
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Switch(checked = playVoice, onCheckedChange = {
+                playVoice = it
+                vm.setPlayCompletionVoice(it)
             })
         }
         Spacer(Modifier.height(24.dp))

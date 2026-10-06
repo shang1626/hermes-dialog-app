@@ -106,4 +106,12 @@ class Prefs(ctx: Context) {
     var notifySessionCompletions: Boolean
         get() = sp.getBoolean("notify_session_completions", false)
         set(v) { sp.edit().putBoolean("notify_session_completions", v).apply() }
+
+    /**
+     * 完成语音播报：任务跑完时把服务端合成的整段语音自动播一遍。
+     * 默认关；开关只影响「要不要播」，语音文件本来就随回复下发。
+     */
+    var playCompletionVoice: Boolean
+        get() = sp.getBoolean("play_completion_voice", false)
+        set(v) { sp.edit().putBoolean("play_completion_voice", v).apply() }
 }

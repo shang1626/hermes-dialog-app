@@ -1999,6 +1999,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         attachUsage(r, ev)
                         doneOk(sid)
                         notifyCompletion(sid, out)
+                        // 完成语音：服务端把整段回复合成音频随 output 下发，这里自动播一遍。
+                        if (out.isNotEmpty()) {
+                            VoicePlayer.playFromReply(getApplication(), out, prefs.playCompletionVoice)
+                        }
                     }
                     "run.failed" -> {
                         r.coalescer?.flushNow()
@@ -2433,6 +2437,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 设置页「其它会话完成也提醒」：需一条活连接才能观察到别的会话收尾。 */
     fun setNotifySessionCompletions(on: Boolean) {
         prefs.notifySessionCompletions = on
+    }
+
+    /** 设置页「完成语音播报」：任务跑完自动播服务端下发的整段语音。 */
+    fun setPlayCompletionVoice(on: Boolean) {
+        prefs.playCompletionVoice = on
+        if (!on) VoicePlayer.stop()
     }
 
     // ---------- 自更新 ----------
