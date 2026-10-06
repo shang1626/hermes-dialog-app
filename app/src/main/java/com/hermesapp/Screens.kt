@@ -475,6 +475,15 @@ fun FullScreenInput(
 }
 
 /**
+ * 耗时格式化：1 分钟以内按秒显示（保留一位小数），到 1 分钟起改按分钟显示。
+ * 45.2s -> 「45.2s」；60s -> 「1.0分」；90s -> 「1.5分」；3分20秒 -> 「3.3分」。
+ */
+private fun fmtDuration(ms: Long): String {
+    if (ms < 60_000L) return String.format("%.1f", ms / 1000.0) + "s"
+    return String.format("%.1f", ms / 60_000.0) + "分"
+}
+
+/**
  * 进行中的实时耗时：每秒重算一次并跳动显示，回复到达后该组件不再渲染。
  * 只读 startedAt，不碰任何状态机；就算一直没结束也只是每秒刷一个文本，开销可忽略。
  */
@@ -488,7 +497,7 @@ private fun LiveElapsed(startedAt: Long, color: Color) {
         }
     }
     val ms = (now - startedAt).coerceAtLeast(0L)
-    Text("耗时 " + String.format("%.1f", ms / 1000.0) + "s", color = color, fontSize = 10.sp)
+    Text("耗时 " + fmtDuration(ms), color = color, fontSize = 10.sp)
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -717,7 +726,7 @@ fun Bubble(
                     parts.add("共 " + u.total)
                     // 本轮耗时：从发起任务到收到回复的墙钟时间。
                     if (u.durationMs > 0) {
-                        parts.add("耗时 " + String.format("%.1f", u.durationMs / 1000.0) + "s")
+                        parts.add("耗时 " + fmtDuration(u.durationMs))
                     }
                     if (speed.isNotEmpty()) parts.add(speed + " tok/s")
                     Text(parts.joinToString(" · "), color = c.dim, fontSize = 10.sp)
