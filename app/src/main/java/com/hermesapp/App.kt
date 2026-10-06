@@ -225,7 +225,9 @@ fun HermesApp(vm: ChatViewModel, prefs: Prefs) {
     // 护眼优先：不是 Dark/Light 二分，直接按模式取板
     val c = if (mode == MODE_EYE) EyeColors else if (dark) DarkColors else LightColors
 
-    LaunchedEffect(dark) {
+    // 键必须是 c（而不是 dark）：护眼(MODE_EYE)与白天(MODE_DAY)的 dark 同为 false，
+    // 用 dark 当键时这两档互切不会重跑，系统栏会停在旧色。c 是 data class，配色一变即触发。
+    LaunchedEffect(c) {
         (ctx as? Activity)?.window?.let {
             it.statusBarColor = c.bg.toArgb()
             it.navigationBarColor = c.bg.toArgb()
