@@ -640,6 +640,8 @@ fun SessionRow(
 ) {
     val c = LocalAppColors.current
     var menu by remember { mutableStateOf(false) }
+    // 删除会连本地记录一起清掉且不可恢复，手一滑就没了——点删除先弹确认。
+    var confirmDelete by remember { mutableStateOf(false) }
     Row(
         Modifier.fillMaxWidth()
             .background(if (selected) c.card else Color.Transparent, RoundedCornerShape(8.dp))
@@ -677,10 +679,33 @@ fun SessionRow(
                 )
                 DropdownMenuItem(
                     text = { Text("删除", color = c.bad, fontSize = 13.sp) },
-                    onClick = { menu = false; onDelete() }
+                    onClick = { menu = false; confirmDelete = true }
                 )
             }
         }
+    }
+    // 删除前二次确认：删除会把本地记录一并清掉，删了就找不回来。
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("删除这个对话？", color = c.text, fontSize = 15.sp) },
+            text = { Text("本地记录会一并清掉，删了就找不回来了。", color = c.dim, fontSize = 12.sp) },
+            confirmButton = {
+                Text(
+                    "删除", color = c.bad, fontSize = 14.sp,
+                    modifier = Modifier.clickable { confirmDelete = false; onDelete() }
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                )
+            },
+            dismissButton = {
+                Text(
+                    "取消", color = c.dim, fontSize = 14.sp,
+                    modifier = Modifier.clickable { confirmDelete = false }
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                )
+            },
+            containerColor = c.panel,
+        )
     }
 }
 
