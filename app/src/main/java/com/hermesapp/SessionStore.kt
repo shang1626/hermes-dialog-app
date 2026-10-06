@@ -102,7 +102,27 @@ class SessionStore(ctx: Context, private val profile: String) {
                 // 只要还有正文 / 工具轨迹 / 图片 / 附件，这条就得留住。
                 // 「只发了图、没打字」的消息正文是空的，按老条件（只查正文与轨迹）会被整条丢掉，
                 // 重开 App 后那条图就凭空消失——附件消息必须按附件是否为空一起判。
-                if (text.isEmpty() && trace.isEmpty() && imgs.isEmpty() && files.isEmpty()) continue
+                val approval = o.optJSONObject("approval")?.let { ao ->
+                    val ch = mutableListOf<String>()
+                    ao.optJSONArray("choices")?.let { ca ->
+                        for (k in 0 until ca.length()) ca.optString(k)?.takeIf { it.isNotEmpty() }?.let { ch.add(it) }
+                    }
+                    ApprovalCard(ao.optString("requestId", ""), ao.optString("command", ""),
+                        ao.optString("description", ""), ch, ao.optString("resolved", ""))
+                }
+                val clarify = o.optJSONObject("clarify")?.let { co ->
+                    val ch = mutableListOf<String>()
+                    co.optJSONArray("choices")?.let { ca ->
+                        for (k in 0 until ca.length()) ca.optString(k)?.takeIf { it.isNotEmpty() }?.let { ch.add(it) }
+                    }
+                    ClarifyCard(co.optString("clarifyId", ""), co.optString("question", ""), ch,
+                        co.optBoolean("multiSelect", false), co.optString("resolved", ""))
+                }
+                // 只要还有正文 / 工具轨迹 / 图片 / 附件 / 待办卡片，这条就得留住。
+                // 待办卡片气泡的正文可能是空的（服务端还没产出内容），只查正文与轨迹的
+                // 老条件会把整条丢掉——重开 App 那张等你点的卡片就没了。
+                if (text.isEmpty() && trace.isEmpty() && imgs.isEmpty() && files.isEmpty() &&
+                    approval == null && clarify == null) continue
                 // 投递状态：老消息没有这个键 → 保持 null（界面不显示角标，不报错）。
                 val rc = o.optJSONObject("receipt")?.let { ro ->
                     val arts = mutableListOf<String>()
@@ -130,6 +150,8 @@ class SessionStore(ctx: Context, private val profile: String) {
                         trace = trace,
                         receipt = rc,
                         quote = o.optString("quote", ""),
+                        approval = approval,
+                        clarify = clarify,
                     )
                 )
             }
@@ -139,7 +161,12 @@ class SessionStore(ctx: Context, private val profile: String) {
 
     fun saveMessages(id: String, list: List<Msg>, max: Int = 300) {
         runCatching {
-            val clean = list.filter { !(it.pending && it.text.isEmpty() && it.trace.isEmpty()) }
+            // pending 且正文空、轨迹空、又没有待办卡片的才是空壳可丢；
+            // 带审批/澄清卡片的必须留下，否则重开 App 卡片就没了。
+            val clean = list.filter {
+                !(it.pending && it.text.isEmpty() && it.trace.isEmpty() &&
+                    it.approval == null && it.clarify == null)
+            }
             val tail = if (clean.size > max) clean.takeLast(max) else clean
             val arr = JSONArray()
             for (m in tail) {
@@ -156,6 +183,22 @@ class SessionStore(ctx: Context, private val profile: String) {
                     val fa = JSONArray()
                     for (n in m.files) fa.put(n)
                     o.put("files", fa)
+                }
+                // 待办卡片（审批/澄清）落盘：重启后即使还没联网也能先把卡片挂回来，
+                // 联网探测到 run 已结束再清掉（见 ChatViewModel.clearStaleCards）。
+                m.approval?.let { c ->
+                    val cj = JSONObject()
+                        .put("requestId", c.requestId).put("command", c.command)
+                        .put("description", c.description).put("resolved", c.resolved)
+                    val ca = JSONArray(); for (s in c.choices) ca.put(s); cj.put("choices", ca)
+                    o.put("approval", cj)
+                }
+                m.clarify?.let { c ->
+                    val cj = JSONObject()
+                        .put("clarifyId", c.clarifyId).put("question", c.question)
+                        .put("multiSelect", c.multiSelect).put("resolved", c.resolved)
+                    val ca = JSONArray(); for (s in c.choices) ca.put(s); cj.put("choices", ca)
+                    o.put("clarify", cj)
                 }
                 // 投递状态要落盘：重开 App 后「不确定/失败」的消息还得能处置。
                 // sending 不落盘——重启后那个 POST 已经没了，留着会一直转圈；

@@ -184,7 +184,7 @@ private const val MAX_RECONNECT_ATTEMPTS = 8
  * 注意必须与 api_server 的 run 状态机一致（含 stopping——已请求停止但还没收尾）。
  */
 private val RUNNING_STATES = setOf(
-    "started", "running", "waiting_for_approval", "queued", "stopping",
+    "started", "running", "waiting_for_approval", "waiting_for_clarify", "queued", "stopping",
 )
 
 /** 重开 App 恢复活跃任务时，探测状态的尝试次数（开机网络未就绪时多试几次）。 */
@@ -789,6 +789,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             // 续接序号从落盘恢复：只补断线之后的事件，避免从 0 全量重放
                             // 把已经存过的工具轨迹再追加一遍（用户报「过程重复显示」）。
                             r.lastSeq = prefs.lastSeq(sid)
+                            // 服务端还在等审批/澄清：把那张卡片重新挂回去（续接流只补
+                            // lastSeq 之后的事件，早于断点的 clarify.request 不会重放）。
+                            restorePendingCard(r, last.payload)
                             // 本地落盘的消息读回来时 pending 一律是 false，而服务端这条 run
                             // 还没结束。若断线前已收到过事件（lastSeq>=0），本地就有这一轮的
                             // 气泡，把它恢复成「进行中」，续接来的增量才追加到同一条上，不会
@@ -810,12 +813,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             updateRunService()
                             streamRun(a, sid)
                         } else {
+                            // run 已结束：清掉落盘读回的过期待办卡片，再拉记录。
+                            ensureLoaded(sid)
+                            clearStaleCards(rt(sid))
                             prefs.removeActiveRun(sid)
                             if (sid == _currentId.value) refreshFromServer()
                         }
                     }
                     // 服务端明确说没这个 run：标记失效，清掉并拉一次记录。
                     HermesApi.RunStatus.Missing -> {
+                        ensureLoaded(sid)
+                        clearStaleCards(rt(sid))
                         prefs.removeActiveRun(sid)
                         if (sid == _currentId.value) refreshFromServer()
                     }
@@ -1579,17 +1587,29 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 澄清请求：挂到该会话当前助手气泡上，等用户选选项回执。 */
     private fun attachClarify(r: SessionRuntime, ev: com.hermesapp.net.SseEvent) {
-        val cid = ev.data.optString("clarify_id", "")
-        val q = ev.data.optString("question", "")
+        notifyNeedAction(r.id, "需要你选一下", ev.data.optString("question", ""))
+        placeClarify(r, ev.data)
+    }
+
+    /**
+     * 把澄清卡片挂到该会话。挂载位置按「保守」原则：优先当前进行中的助手气泡
+     * （pending），没有就挂最后一条助手消息（重开 App 后本地消息的 pending 已归
+     * false），都没有才新建。同一 clarify_id 已挂且未作废的不重复挂。
+     */
+    private fun placeClarify(r: SessionRuntime, data: org.json.JSONObject) {
+        val cid = data.optString("clarify_id", "")
+        val q = data.optString("question", "")
+        if (cid.isEmpty() || q.isEmpty()) return
         val chs = mutableListOf<String>()
-        ev.data.optJSONArray("choices")?.let { a ->
+        data.optJSONArray("choices")?.let { a ->
             for (i in 0 until a.length()) chs.add(a.optString(i))
         }
-        if (cid.isEmpty() || q.isEmpty()) return
-        val card = ClarifyCard(cid, q, chs, ev.data.optBoolean("multi_select", false))
-        notifyNeedAction(r.id, "需要你选一下", q)
-        val list = r.messages.value.toMutableList()
-        val i = list.indexOfLast { it.role == "assistant" && it.pending }
+        val cur = r.messages.value
+        if (cur.any { it.clarify?.clarifyId == cid && it.clarify?.resolved?.isEmpty() == true }) return
+        val card = ClarifyCard(cid, q, chs, data.optBoolean("multi_select", false))
+        val list = cur.toMutableList()
+        var i = list.indexOfLast { it.role == "assistant" && it.pending }
+        if (i < 0) i = list.indexOfLast { it.role == "assistant" }
         if (i >= 0) list[i] = list[i].copy(clarify = card)
         else list.add(Msg("assistant", "", pending = true, ts = stamp(), clarify = card))
         setMsgs(r, list)
@@ -1615,21 +1635,63 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 审批请求：挂到该会话当前助手气泡上，等用户点按钮回执。 */
     private fun attachApproval(r: SessionRuntime, ev: com.hermesapp.net.SseEvent) {
-        val rid = ev.data.optString("request_id", "")
-        val cmd = ev.data.optString("command", "")
-        val desc = ev.data.optString("description", "")
+        notifyNeedAction(r.id, "需要你确认",
+            ev.data.optString("description", "").ifEmpty { ev.data.optString("command", "") })
+        placeApproval(r, ev.data)
+    }
+
+    /** 把审批卡片挂到该会话。位置与去重规则同 [placeClarify]。 */
+    private fun placeApproval(r: SessionRuntime, data: org.json.JSONObject) {
+        val rid = data.optString("request_id", "")
+        val cmd = data.optString("command", "")
+        val desc = data.optString("description", "")
         val chs = mutableListOf<String>()
-        ev.data.optJSONArray("choices")?.let { a ->
+        data.optJSONArray("choices")?.let { a ->
             for (i in 0 until a.length()) chs.add(a.optString(i))
         }
         if (rid.isEmpty() || chs.isEmpty()) return
+        val cur = r.messages.value
+        if (cur.any { it.approval?.requestId == rid && it.approval?.resolved?.isEmpty() == true }) return
         val card = ApprovalCard(rid, cmd, desc, chs)
-        notifyNeedAction(r.id, "需要你确认", desc.ifEmpty { cmd })
-        val list = r.messages.value.toMutableList()
-        val i = list.indexOfLast { it.role == "assistant" && it.pending }
+        val list = cur.toMutableList()
+        var i = list.indexOfLast { it.role == "assistant" && it.pending }
+        if (i < 0) i = list.indexOfLast { it.role == "assistant" }
         if (i >= 0) list[i] = list[i].copy(approval = card)
         else list.add(Msg("assistant", "", pending = true, ts = stamp(), approval = card))
         setMsgs(r, list)
+    }
+
+    /**
+     * 重开 App / 断流恢复：服务端 run 状态里若仍挂着待办卡片（waiting_for_clarify /
+     * waiting_for_approval），把卡片重新挂回会话。
+     *
+     * 这就是「重启后等你点头的卡片消失」的修法：老代码探测 run 只读了 status
+     * 字符串，把 run 状态里一并下发的 clarify/approval 载荷丢掉，卡片自然挂不上。
+     */
+    private fun restorePendingCard(r: SessionRuntime, payload: org.json.JSONObject?) {
+        val p = payload ?: return
+        when (p.optString("status", "")) {
+            "waiting_for_clarify" -> placeClarify(r, p.optJSONObject("clarify") ?: return)
+            "waiting_for_approval" -> placeApproval(r, p.optJSONObject("approval") ?: return)
+        }
+    }
+
+    /**
+     * run 已结束或不存在：清掉该会话里未作废的待办卡片（多为重启后从本地落盘读回的
+     * 过期卡片）。已作废（用户点过）的保留，让「已选择：…」留痕。
+     */
+    private fun clearStaleCards(r: SessionRuntime) {
+        val list = r.messages.value.toMutableList()
+        var changed = false
+        for (k in list.indices) {
+            val m = list[k]
+            if (m.approval?.resolved?.isEmpty() == true) {
+                list[k] = m.copy(approval = null); changed = true
+            } else if (m.clarify?.resolved?.isEmpty() == true) {
+                list[k] = m.copy(clarify = null); changed = true
+            }
+        }
+        if (changed) setMsgs(r, list)
     }
 
     /** 用户点了审批按钮：回执给服务端，并把卡片置为已选。 */
@@ -1859,11 +1921,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 is HermesApi.RunStatus.Known -> {
                     if (st.status in RUNNING_STATES) {
                         r.retryNote.value = ""
+                        // 断流期间服务端可能在等审批/澄清：续接前先把卡片挂回来。
+                        restorePendingCard(r, st.payload)
                         streamRun(a, sid)
                     } else {
                         // 服务端明确回答「已结束」：收尾并拉回产出。
                         r.retryNote.value = ""
                         r.finished = true
+                        clearStaleCards(r)
                         finishPending(r)
                         r.busy.value = false
                         prefs.removeActiveRun(sid)
@@ -1875,6 +1940,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 HermesApi.RunStatus.Missing -> {
                     r.retryNote.value = ""
                     r.finished = true
+                    clearStaleCards(r)
                     finishPending(r)
                     r.busy.value = false
                     prefs.removeActiveRun(sid)
@@ -2090,6 +2156,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun failPending(sid: String) {
         val r = rt(sid)
         r.recoveryJob?.cancel()
+        clearStaleCards(r)
         finishPending(r)
         r.busy.value = false
         r.runId = ""
@@ -2103,6 +2170,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.autoContinue = 0
         r.recoveryJob?.cancel()
         r.retryNote.value = ""
+        clearStaleCards(r)
         finishPending(r)
         r.busy.value = false
         r.runId = ""

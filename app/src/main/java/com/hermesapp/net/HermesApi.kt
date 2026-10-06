@@ -157,7 +157,7 @@ class HermesApi(
      */
     sealed class RunStatus {
         /** 服务端明确回答了状态（如 running / completed）。 */
-        data class Known(val status: String) : RunStatus()
+        data class Known(val status: String, val payload: JSONObject? = null) : RunStatus()
 
         /** 服务端明确说没有这个 run（HTTP 404）——可以判结束。 */
         object Missing : RunStatus()
@@ -181,7 +181,14 @@ class HermesApi(
                 else -> {
                     val text = resp.body?.string().orEmpty()
                     if (text.isEmpty()) RunStatus.Unknown
-                    else RunStatus.Known(JSONObject(text).optString("status", ""))
+                    else {
+                        val o = JSONObject(text)
+                        // payload 一并带回：等待审批/澄清时里面挂着卡片载荷（request_id /
+                        // clarify_id / question / choices 等），重开 App 靠它把待办卡片
+                        // 重新挂回去。老写法只取 status 字符串，载荷被丢掉，重启后那张
+                        // 等你点的卡片就没了。
+                        RunStatus.Known(o.optString("status", ""), o)
+                    }
                 }
             }
         }
