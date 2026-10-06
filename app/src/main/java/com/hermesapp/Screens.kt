@@ -17,7 +17,9 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -50,6 +52,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
@@ -87,8 +90,38 @@ fun ChatScreen(
         for (u in uris) vm.addFile(ctx, u)
     }
 
+    val quote by vm.quoteTarget.collectAsState()
+
     Column(Modifier.fillMaxSize()) {
         MessageList(vm, Modifier.weight(1f))
+        // 引用条：长按气泡选「引用」后出现，点 × 取消。发送时把片段拼在正文前。
+        if (quote != null) {
+            Row(
+                Modifier.fillMaxWidth().background(c.card).padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    Modifier.width(3.dp).height(28.dp)
+                        .background(c.accent, RoundedCornerShape(2.dp))
+                )
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("引用" + (if (quote!!.role == "user") "我的消息" else "助手消息"),
+                        color = c.accent, fontSize = 11.sp)
+                    Text(
+                        quote!!.text.replace(Regex("\\s+"), " ").trim().let {
+                            if (it.isEmpty()) "[图片或附件]" else if (it.length > 60) it.take(60) + "…" else it
+                        },
+                        color = c.dim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "×", color = c.dim, fontSize = 18.sp,
+                    modifier = Modifier.clickable { vm.clearQuote() }.padding(horizontal = 4.dp)
+                )
+            }
+        }
         // 待发送附件：图片显缩略图、其他显文件卡片，右上角 × 可单删
         if (pend.isNotEmpty() || note.isNotEmpty()) {
             Column(Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 10.dp, vertical = 6.dp)) {
@@ -268,6 +301,7 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
                     onReceiptTap = { vm.openReceiptMenu(it) },
                     onConfirmReceipt = { vm.confirmReceipt(it) },
                     onResendReceipt = { vm.resendReceipt(it) },
+                    onQuote = { vm.setQuote(it) },
                     highlight = hl,
                     hitQuery = if (hl) q else "",
                     selectionReset = selReset,
@@ -393,6 +427,7 @@ fun FullScreenInput(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun Bubble(
     m: Msg,
@@ -403,6 +438,8 @@ fun Bubble(
     onReceiptTap: (Long) -> Unit = {},
     onConfirmReceipt: (Long) -> Unit = {},
     onResendReceipt: (Long) -> Unit = {},
+    /** 长按气泡选「引用」：把这整条交给 ViewModel。 */
+    onQuote: (Msg) -> Unit = {},
     /** 该条是当前搜索命中：加一圈强调边框。 */
     highlight: Boolean = false,
     /** 命中词：正文里加黄底（空表示不高亮）。 */
@@ -413,6 +450,7 @@ fun Bubble(
     val c = LocalAppColors.current
     val isUser = m.role == "user"
     var traceOpen by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
@@ -422,12 +460,31 @@ fun Bubble(
             shape = RoundedCornerShape(10.dp),
             modifier = Modifier
                 .widthIn(max = 320.dp)
+                .combinedClickable(
+                    onClick = { onClearSelection() },
+                    onLongClick = { menuOpen = true },
+                )
                 .then(
                     if (highlight) Modifier.border(1.5.dp, c.accent, RoundedCornerShape(10.dp))
                     else Modifier
                 )
         ) {
             Column(Modifier.padding(10.dp)) {
+                // 引用片段：这条消息是引用发送时，先显示被引的一行（左侧竖条 + 灰字）
+                if (m.quote.isNotEmpty()) {
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))
+                            .background(c.card).padding(6.dp)
+                    ) {
+                        Box(Modifier.width(3.dp).height(26.dp).background(c.accent, RoundedCornerShape(2.dp)))
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            m.quote, color = c.dim, fontSize = 11.sp,
+                            maxLines = 2, overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Spacer(Modifier.height(6.dp))
+                }
                 // 用户发的图：气泡内缩略图回显
                 if (m.images.isNotEmpty()) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -642,6 +699,35 @@ fun Bubble(
                 if (m.ts > 0) {
                     Spacer(Modifier.height(4.dp))
                     Text(TimeFmt.hm(m.ts), color = c.dim, fontSize = 10.sp)
+                }
+            }
+        }
+    }
+    // 长按菜单：引用 / 复制正文。用轻量 Dialog 承载，点外面即关。
+    if (menuOpen) {
+        val ctx2 = LocalContext.current
+        Dialog(onDismissRequest = { menuOpen = false }) {
+            Surface(color = c.panel, shape = RoundedCornerShape(12.dp)) {
+                Column(Modifier.padding(vertical = 6.dp)) {
+                    Text(
+                        "引用回复", color = c.text, fontSize = 14.sp,
+                        modifier = Modifier.fillMaxWidth()
+                            .clickable { menuOpen = false; onQuote(m) }
+                            .padding(horizontal = 18.dp, vertical = 12.dp)
+                    )
+                    Text(
+                        "复制正文", color = c.text, fontSize = 14.sp,
+                        modifier = Modifier.fillMaxWidth()
+                            .clickable {
+                                menuOpen = false
+                                val cm = ctx2.getSystemService(Context.CLIPBOARD_SERVICE)
+                                    as? android.content.ClipboardManager
+                                cm?.setPrimaryClip(
+                                    android.content.ClipData.newPlainText("hermes", m.text)
+                                )
+                            }
+                            .padding(horizontal = 18.dp, vertical = 12.dp)
+                    )
                 }
             }
         }
