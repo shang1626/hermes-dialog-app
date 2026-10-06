@@ -296,6 +296,38 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         return who + "：" + body
     }
 
+    // ---------- 富卡片动作 ----------
+
+    /**
+     * 卡片按钮点击分发：
+     *   open_url      用浏览器打开 value（不动会话）
+     *   send_text     把 value 当一条消息发出去（默认）
+     *   slash_command 同 send_text，但原样带上斜杠命令（不走引用拼装）
+     */
+    fun dispatchCardAction(a: CardAction, ctx: android.content.Context) {
+        when (a.action) {
+            "open_url" -> {
+                if (a.value.isEmpty()) return
+                runCatching {
+                    ctx.startActivity(
+                        android.content.Intent(
+                            android.content.Intent.ACTION_VIEW,
+                            android.net.Uri.parse(a.value)
+                        ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                }
+            }
+            "slash_command" -> {
+                if (a.value.isEmpty()) return
+                send(a.value)
+            }
+            else -> {
+                if (a.value.isEmpty()) return
+                send(a.value)
+            }
+        }
+    }
+
     /** 模型是否支持原生图片（/v1/capabilities features.supports_vision）；未知按 true。 */
     private val _supportsVision = MutableStateFlow(true)
     val supportsVision = _supportsVision.asStateFlow()
