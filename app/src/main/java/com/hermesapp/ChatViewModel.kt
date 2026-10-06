@@ -797,7 +797,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * 回到前台时的即时体检：对每个仍在跑、且超过 25 秒没收到任何事件（含心跳帧）的会话，
-     * 判定为「流已被隧道假死卡住」，主动断开并走一次重连续接。
+     * 判定为「流已被链路假死卡住」，主动断开并走一次重连续接。
      *
      * 阈值 25 秒的由来：服务端每 10 秒必发一个 keepalive，25 秒 ≈ 连丢两拍，
      * 正常空闲绝不会误判；不这样做的话，息屏期间假死的流要等 30 秒读超时才断开。
@@ -866,22 +866,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 if (list.isEmpty()) return@launch
                 // 合并而不是覆盖：本地消息正文里带内联图片（data URL），而服务端存的是
                 // 原始 MEDIA: 路径——直接覆盖会把图片弄丢（用户报「更新后图片不见了」）。
-                // 规则：本地该条已有内容就保留本地（更完整、含图）；本地是空占位而服务端
-                // 有内容才用服务端；本地没有的尾部（后台任务产出）按服务端补上。
+                // 对齐方式不能用数组下标：服务端会滤掉「内容为空的助手行」与工具行，
+                // 本地却保留带工具轨迹的空助手行，两边长度天然不等（实测某会话差 236 行），
+                // 按下标对齐会从第一处差异起整体错位，把服务端回复贴到错误的气泡上。
+                // 改用两边都完整保留、且有序的「用户消息」做锚点，见 mergeByUserAnchor。
                 val local = r.messages.value
-                val merged = mutableListOf<Msg>()
-                val n = maxOf(local.size, list.size)
-                for (i in 0 until n) {
-                    val l = local.getOrNull(i)
-                    val s = list.getOrNull(i)
-                    when {
-                        l == null -> if (s != null) merged.add(s)
-                        s == null -> merged.add(l)
-                        l.pending && l.text.isEmpty() && l.trace.isEmpty() && s.text.isNotEmpty() ->
-                            merged.add(l.copy(text = s.text, pending = false))
-                        else -> merged.add(l)
-                    }
-                }
+                val merged = mergeByUserAnchor(local, list)
                 r.messages.value = merged
                 r.loaded = true
                 store.saveMessages(id, merged, maxHistory)
@@ -889,6 +879,59 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // 服务端无此会话或网络异常：保留本地内容
             }
         }
+    }
+
+    /**
+     * 服务端会话记录与本地消息的合并——按「用户消息」锚点对齐，不按数组下标。
+     *
+     * 为什么不能按下标：/api/sessions/{id}/messages 会滤掉空内容的助手行（本地保留，
+     * 它们带工具轨迹 trace），两边长度天然不等，按下标对齐会整体错位。
+     * 用户消息两边都完整保留、且有序，所以拿它当锚点：第 N 条用户消息到第 N+1 条之间
+     * 算一段，段内本地原样保留（带 trace/图片），仅当本地那条助手正文为空、而服务端
+     * 同段有内容时，用服务端正文补齐（保留本地 trace）。本地没有的段（别的端发的轮次）
+     * 整段取服务端。
+     */
+    private fun mergeByUserAnchor(local: List<Msg>, srv: List<Msg>): List<Msg> {
+        fun segs(ms: List<Msg>): Pair<MutableList<Msg>, MutableList<MutableList<Msg>>> {
+            val users = mutableListOf<Msg>()
+            val out = mutableListOf<MutableList<Msg>>()
+            out.add(mutableListOf())      // 第 0 段：第一条用户消息之前
+            for (m in ms) {
+                if (m.role == "user") { users.add(m); out.add(mutableListOf()) }
+                else out.last().add(m)
+            }
+            return users to out
+        }
+        val (lu, ls) = segs(local)
+        val (su, ss) = segs(srv)
+        val out = mutableListOf<Msg>()
+        val n = maxOf(lu.size, su.size)
+        for (k in 0..n) {
+            if (k > 0) {
+                val a = lu.getOrNull(k - 1)
+                val b = su.getOrNull(k - 1)
+                when {
+                    a != null -> out.add(a)      // 本地优先（含图片/回执/引用）
+                    b != null -> out.add(b)      // 本地没有（别的端发的轮次）
+                }
+            }
+            val lSeg = ls.getOrNull(k).orEmpty()
+            val sSeg = ss.getOrNull(k).orEmpty()
+            when {
+                lSeg.isEmpty() -> out.addAll(sSeg)
+                sSeg.isEmpty() -> out.addAll(lSeg)
+                else -> {
+                    val seg = lSeg.toMutableList()
+                    val li = seg.indexOfLast { it.role == "assistant" }
+                    val sText = sSeg.lastOrNull { it.role == "assistant" && it.text.isNotBlank() }?.text
+                    if (li >= 0 && seg[li].text.isEmpty() && !sText.isNullOrEmpty()) {
+                        seg[li] = seg[li].copy(text = sText, pending = false)
+                    }
+                    out.addAll(seg)
+                }
+            }
+        }
+        return out
     }
 
     private fun parseTs(s: String): Long = runCatching {
@@ -1653,7 +1696,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * 绝不伪造用户消息——只查同一 run 的状态，仍在跑就续接它的事件流；
      * 已结束就从服务端拉回结果。仅作用于该 run 所属的会话。
      *
-     * 重试用退避而非固定间隔：网络抖动（地铁、切基站、隧道重连）往往几秒内恢复，
+     * 重试用退避而非固定间隔：网络抖动（地铁、切基站、网络切换）往往几秒内恢复，
      * 原来的「固定 1.2 秒 × 3 次」会在 4 秒内烧完次数然后彻底放弃；现在
      * 1→2→4→8→16→30 秒封顶、最多 8 次，覆盖约 1 分钟的窗口，且首次仍只等 1 秒。
      */
