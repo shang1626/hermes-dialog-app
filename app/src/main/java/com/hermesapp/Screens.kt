@@ -324,6 +324,7 @@ fun ChatInputBar(
 ) {
     val c = LocalAppColors.current
     val busy by vm.busy.collectAsState()
+    val queued by vm.queuedCount.collectAsState()
     val input = inputState.value
     Row(
         Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 8.dp, vertical = 6.dp),
@@ -365,23 +366,33 @@ fun ChatInputBar(
             }
         }
         Spacer(Modifier.width(6.dp))
+        // 忙时也能发：本会话在跑就排队，等这轮结束自动发出去（不再把输入框锁死）。
+        if (queued > 0) {
+            Text("排队 " + queued, color = c.warn, fontSize = 11.sp)
+            Spacer(Modifier.width(6.dp))
+        }
+        OutlinedButton(
+            onClick = {
+                val t = input.trim()
+                if (t.isNotEmpty() || vm.pendingImages.value.isNotEmpty()) {
+                    vm.send(t); onInput("")
+                }
+            },
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+            shape = RoundedCornerShape(8.dp),
+        ) {
+            Text(
+                if (busy) "排队" else "发送",
+                color = if (busy) c.warn else c.accent, fontSize = 13.sp
+            )
+        }
         if (busy) {
+            Spacer(Modifier.width(6.dp))
             OutlinedButton(
                 onClick = { vm.stop() },
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                 shape = RoundedCornerShape(8.dp),
             ) { Text("停止", color = c.bad, fontSize = 13.sp) }
-        } else {
-            OutlinedButton(
-                onClick = {
-                    val t = input.trim()
-                    if (t.isNotEmpty() || vm.pendingImages.value.isNotEmpty()) {
-                        vm.send(t); onInput("")
-                    }
-                },
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                shape = RoundedCornerShape(8.dp),
-            ) { Text("发送", color = c.accent, fontSize = 13.sp) }
         }
     }
 }
@@ -658,17 +669,22 @@ fun Bubble(
                     ) {
                         val mark = when (rc.status) {
                             Receipt.SENDING -> "◌"
+                            Receipt.QUEUED -> "⋯"
                             Receipt.ACCEPTED -> "✓"
                             Receipt.UNCERTAIN -> "?"
                             else -> "!"
                         }
                         val col = when (rc.status) {
                             Receipt.UNCERTAIN -> c.warn
+                            Receipt.QUEUED -> c.warn
                             Receipt.FAILED -> c.bad
                             else -> c.dim
                         }
                         Text(mark, color = col, fontSize = 11.sp)
-                        if (rc.status == Receipt.UNCERTAIN) {
+                        if (rc.status == Receipt.QUEUED) {
+                            Spacer(Modifier.width(4.dp))
+                            Text("排队中，本轮结束后自动发送", color = c.warn, fontSize = 10.sp)
+                        } else if (rc.status == Receipt.UNCERTAIN) {
                             Spacer(Modifier.width(4.dp))
                             Text("发送结果不确定，点这里处理", color = c.warn, fontSize = 10.sp)
                         } else if (rc.status == Receipt.FAILED) {
