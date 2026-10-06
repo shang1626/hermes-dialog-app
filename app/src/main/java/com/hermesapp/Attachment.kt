@@ -152,3 +152,72 @@ object MediaFetch {
         null
     }
 }
+
+
+/**
+ * 附件落盘到 filesDir/attachments/（FileProvider 已声明该目录）并返回 File。
+ * 打开、分享、保存三处共用这一份落盘逻辑，避免各写一套。
+ */
+private fun persistAttachment(ctx: Context, name: String, data: DecodedData): File? = runCatching {
+    val dir = File(ctx.filesDir, "attachments").apply { mkdirs() }
+    val safe = sanitizeName(name)
+    val withExt = if (safe.contains('.')) safe else safe + extFor(data.mime)
+    val f = File(dir, withExt)
+    f.writeBytes(data.bytes)
+    f
+}.getOrNull()
+
+/**
+ * 分享附件：落盘 → FileProvider 换成 content:// → ACTION_SEND 弹系统分享面板
+ * （微信、QQ、邮件都在里面）。这是「收到的文件转发给别人」的正路。
+ */
+fun shareAttachment(ctx: Context, name: String, data: DecodedData) {
+    runCatching {
+        val f = persistAttachment(ctx, name, data) ?: return
+        val uri = FileProvider.getUriForFile(ctx, "com.hermesapp.fileprovider", f)
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = data.mime.ifBlank { "application/octet-stream" }
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, name)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        ctx.startActivity(Intent.createChooser(intent, "分享").apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        })
+    }
+}
+
+/**
+ * 保存附件到系统「下载」目录，返回保存后的文件名（失败返回 null）。
+ * API 29+ 走 MediaStore（无需存储权限）；API 26-28 写应用外部目录后扫描入册。
+ */
+fun saveAttachmentToDownloads(ctx: Context, name: String, data: DecodedData): String? = runCatching {
+    val safe = sanitizeName(name)
+    val display = if (safe.contains('.')) safe else safe + extFor(data.mime)
+    val mime = data.mime.ifBlank { "application/octet-stream" }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, display)
+            put(MediaStore.MediaColumns.MIME_TYPE, mime)
+            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Hermes")
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+        val resolver = ctx.contentResolver
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return null
+        resolver.openOutputStream(uri)?.use { it.write(data.bytes) } ?: return null
+        values.clear()
+        values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+        resolver.update(uri, values, null, null)
+        display
+    } else {
+        val dir = File(
+            ctx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: ctx.filesDir,
+            "Hermes"
+        ).apply { mkdirs() }
+        val f = File(dir, display)
+        f.writeBytes(data.bytes)
+        MediaScannerConnection.scanFile(ctx, arrayOf(f.absolutePath), arrayOf(mime), null)
+        display
+    }
+}.getOrNull()
