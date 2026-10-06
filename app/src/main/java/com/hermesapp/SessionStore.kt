@@ -105,12 +105,18 @@ class SessionStore(ctx: Context, private val profile: String) {
                 if (text.isEmpty() && trace.isEmpty() && imgs.isEmpty() && files.isEmpty()) continue
                 // 投递状态：老消息没有这个键 → 保持 null（界面不显示角标，不报错）。
                 val rc = o.optJSONObject("receipt")?.let { ro ->
+                    val arts = mutableListOf<String>()
+                    ro.optJSONArray("artifactIds")?.let { aa ->
+                        for (k in 0 until aa.length()) aa.optString(k)?.takeIf { it.isNotEmpty() }?.let { arts.add(it) }
+                    }
                     Receipt(
                         status = ro.optString("status", Receipt.ACCEPTED),
                         runId = ro.optString("runId", ""),
                         note = ro.optString("note", ""),
                         rawText = ro.optString("rawText", text.trim()),
                         priorUserCount = ro.optInt("priorUserCount", -1),
+                        idemKey = ro.optString("idemKey", ""),
+                        artifactIds = arts,
                     )
                 }
                 out.add(
@@ -155,15 +161,20 @@ class SessionStore(ctx: Context, private val profile: String) {
                 // sending 不落盘——重启后那个 POST 已经没了，留着会一直转圈；
                 // queued 同理——内存里的排队队列重启即丢，落盘会永远停在「排队中」。
                 m.receipt?.takeIf { it.status != Receipt.SENDING && it.status != Receipt.QUEUED }?.let { rc ->
-                    o.put(
-                        "receipt",
-                        JSONObject()
-                            .put("status", rc.status)
-                            .put("runId", rc.runId)
-                            .put("note", rc.note)
-                            .put("rawText", rc.rawText)
-                            .put("priorUserCount", rc.priorUserCount)
-                    )
+                    val rj = JSONObject()
+                        .put("status", rc.status)
+                        .put("runId", rc.runId)
+                        .put("note", rc.note)
+                        .put("rawText", rc.rawText)
+                        .put("priorUserCount", rc.priorUserCount)
+                        .put("idemKey", rc.idemKey)
+                    // 附件 id 也要落盘：重开 App 后重发同样要复用它们，否则指纹不符被拒。
+                    if (rc.artifactIds.isNotEmpty()) {
+                        val aa = JSONArray()
+                        for (s in rc.artifactIds) aa.put(s)
+                        rj.put("artifactIds", aa)
+                    }
+                    o.put("receipt", rj)
                 }
                 arr.put(o)
             }
