@@ -38,6 +38,13 @@ import coil.compose.SubcomposeAsyncImageContent
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.alpha
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
@@ -626,7 +633,7 @@ private fun MdAttachmentCard(name: String, dataUrl: String, token: String) {
 }
 
 /**
- * 语音附件的播放按钮：一个胶囊按钮，显示「▶ 播放语音」；正在播这条时变成「■ 停止播放」。
+ * 语音附件的播放按钮：极简迷你圆形图标，播完点一下可重播。
  * 不显示文件名（`tts_reply_xxx.mp3` 对用户没有意义），也不走「点击打开」那条文件路径。
  */
 @Composable
@@ -640,21 +647,20 @@ private fun MdVoiceButton(name: String, dataUrl: String, token: String) {
     }
     val playing by VoicePlayer.nowPlaying.collectAsState()
     val isThis = target.isNotEmpty() && playing == target
-    Row(
+    Box(
         Modifier
-            .widthIn(max = 300.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(c.card)
-            .border(0.5.dp, if (isThis) c.accent else c.dim, RoundedCornerShape(8.dp))
-            .clickable(enabled = target.isNotEmpty()) { VoicePlayer.toggle(ctx, target) }
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .size(30.dp)
+            .clip(CircleShape)
+            .background(if (isThis) c.accent.copy(alpha = 0.18f) else c.card)
+            .border(0.5.dp, if (isThis) c.accent else c.dim, CircleShape)
+            .clickable(enabled = target.isNotEmpty()) { VoicePlayer.toggle(ctx, target) },
+        contentAlignment = Alignment.Center
     ) {
-        Text(if (isThis) "\u25A0" else "\u25B6", color = c.accent, fontSize = 14.sp)
-        Spacer(Modifier.width(8.dp))
-        Text(
-            if (isThis) "停止播放" else "播放语音",
-            color = c.text, fontSize = 13.sp
+        Icon(
+            imageVector = if (isThis) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
+            contentDescription = if (isThis) "停止播放" else "播放语音",
+            tint = if (isThis) c.accent else c.dim,
+            modifier = Modifier.size(17.dp)
         )
     }
 }
