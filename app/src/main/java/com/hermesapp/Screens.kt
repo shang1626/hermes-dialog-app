@@ -1057,6 +1057,17 @@ fun JobCard(j: JobItem, onAction: (String) -> Unit) {
     }
 }
 
+/** 设置页分组小标题：左侧一条强调色竖线 + 标题，各区之间用它隔开。 */
+@Composable
+private fun SectionTitle(text: String) {
+    val c = LocalAppColors.current
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.width(3.dp).height(13.dp).background(c.accent, RoundedCornerShape(2.dp)))
+        Spacer(Modifier.width(6.dp))
+        Text(text, color = c.text, fontSize = 13.sp)
+    }
+}
+
 @Composable
 fun SettingsScreen(
     vm: ChatViewModel,
@@ -1076,6 +1087,8 @@ fun SettingsScreen(
     var notifyDone by remember { mutableStateOf(prefs.notifySessionCompletions) }
     var playVoice by remember { mutableStateOf(prefs.playCompletionVoice) }
     var showClear by remember { mutableStateOf(false) }
+    // 排查诊断区默认收起：运行日志/闪退记录平时用不上，展开才占屏幕。
+    var diagOpen by remember { mutableStateOf(false) }
     val cacheText by vm.cacheText.collectAsState()
     LaunchedEffect(Unit) { vm.refreshCache() }
     val vc = remember {
@@ -1091,191 +1104,26 @@ fun SettingsScreen(
     }
 
     Column(Modifier.fillMaxSize().padding(14.dp).verticalScroll(rememberScrollState())) {
-        Text("服务器地址", color = c.dim, fontSize = 12.sp)
+        // ───────── 一、服务器 ─────────
+        SectionTitle("服务器")
+        Spacer(Modifier.height(8.dp))
         OutlinedTextField(value = url, onValueChange = { url = it },
             modifier = Modifier.fillMaxWidth(), colors = fieldColors(c),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done))
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(8.dp))
         OutlinedButton(
             onClick = {
                 prefs.serverUrl = url
                 vm.onProfileChanged(prefs)
-            }, modifier = Modifier.fillMaxWidth()
-        ) { Text("保存", color = c.accent) }
-        Spacer(Modifier.height(24.dp))
-        val hasUpdate by vm.updateBadge.collectAsState()
-        Box(Modifier.fillMaxWidth()) {
-            OutlinedButton(
-                onClick = { vm.checkUpdate(vc, ctx) }, modifier = Modifier.fillMaxWidth()
-            ) { Text("检查更新", color = c.accent) }
-            // 有新版本时：按钮右上角（边框内）一个小绿点，与抽屉「设置」角标联动
-            if (hasUpdate) {
-                Box(
-                    Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(top = 6.dp, end = 8.dp)
-                        .size(7.dp)
-                        .background(c.ok, CircleShape)
-                )
-            }
-        }
-        if (updateNote.isNotEmpty()) {
-            Spacer(Modifier.height(8.dp))
-            Text(updateNote, color = c.dim, fontSize = 12.sp)
-        }
-        if (pct in 0..99) {
-            Spacer(Modifier.height(10.dp))
-            LinearProgressIndicator(
-                progress = { pct / 100f },
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(dtext, color = c.dim, fontSize = 12.sp)
-        }
-        Spacer(Modifier.height(6.dp))
-        Text(
-            if (vName.isNotEmpty()) "当前版本 " + vName + "（" + vc + "）" else "当前版本 " + vc,
-            color = c.dim, fontSize = 11.sp
-        )
+            },
+            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+            shape = RoundedCornerShape(8.dp),
+        ) { Text("保存", color = c.accent, fontSize = 13.sp) }
 
-        // 上次闪退记录：崩溃是进程被直接杀掉，界面和日志都留不下东西，只有落到这里才查得动。
-        // 复现一次后「复制全文」发出来即可定位到具体哪一行。
-        var crashText by remember { mutableStateOf(CrashLog.read(ctx)) }
-        if (crashText.isNotEmpty()) {
-            Spacer(Modifier.height(20.dp))
-            HorizontalDivider(color = c.card)
-            Spacer(Modifier.height(12.dp))
-            Text("上次闪退记录", color = c.bad, fontSize = 13.sp)
-            Spacer(Modifier.height(4.dp))
-            Text("点「复制全文」发给我，就能定位到出错的代码行。", color = c.dim, fontSize = 11.sp)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                crashText, color = c.text, fontSize = 10.sp,
-                fontFamily = FontFamily.Monospace,
-                modifier = Modifier.fillMaxWidth()
-                    .heightIn(max = 200.dp)
-                    .background(c.panel, RoundedCornerShape(8.dp))
-                    .verticalScroll(rememberScrollState())
-                    .padding(8.dp)
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                    onClick = {
-                        val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE)
-                            as? android.content.ClipboardManager
-                        cm?.setPrimaryClip(
-                            android.content.ClipData.newPlainText("hermes-crash", crashText)
-                        )
-                        android.widget.Toast.makeText(
-                            ctx, "已复制，粘贴发给我即可", android.widget.Toast.LENGTH_SHORT
-                        ).show()
-                    },
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                    shape = RoundedCornerShape(8.dp),
-                ) { Text("复制全文", color = c.accent, fontSize = 12.sp) }
-                OutlinedButton(
-                    onClick = { CrashLog.clear(ctx); crashText = "" },
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                    shape = RoundedCornerShape(8.dp),
-                ) { Text("清除", color = c.dim, fontSize = 12.sp) }
-            }
-        }
-
-        // 服务故障记录：前台服务启动失败这类错误被 catch 住了、进程不会死，
-        // 所以不会走「上次闪退记录」那条路，但它是闪退的真凶，得单独看。
-        var faultText by remember { mutableStateOf(CrashLog.readFault(ctx)) }
-        if (faultText.isNotEmpty()) {
-            Spacer(Modifier.height(20.dp))
-            HorizontalDivider(color = c.card)
-            Spacer(Modifier.height(12.dp))
-            Text("服务故障记录", color = c.bad, fontSize = 13.sp)
-            Spacer(Modifier.height(4.dp))
-            Text("前台服务启动失败的完整原因，点「复制全文」发给我。", color = c.dim, fontSize = 11.sp)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                faultText, color = c.text, fontSize = 10.sp,
-                fontFamily = FontFamily.Monospace,
-                modifier = Modifier.fillMaxWidth()
-                    .heightIn(max = 200.dp)
-                    .background(c.panel, RoundedCornerShape(8.dp))
-                    .verticalScroll(rememberScrollState())
-                    .padding(8.dp)
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                    onClick = {
-                        val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE)
-                            as? android.content.ClipboardManager
-                        cm?.setPrimaryClip(
-                            android.content.ClipData.newPlainText("hermes-fault", faultText)
-                        )
-                        android.widget.Toast.makeText(
-                            ctx, "已复制，粘贴发给我即可", android.widget.Toast.LENGTH_SHORT
-                        ).show()
-                    },
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                    shape = RoundedCornerShape(8.dp),
-                ) { Text("复制全文", color = c.accent, fontSize = 12.sp) }
-                OutlinedButton(
-                    onClick = { CrashLog.clearFault(ctx); faultText = "" },
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                    shape = RoundedCornerShape(8.dp),
-                ) { Text("清除", color = c.dim, fontSize = 12.sp) }
-            }
-        }
-        // 运行日志：连接/重连/发送/收流的关键节点留痕。排查「连不上」时复制全文发出来，
-        // 就能看到卡在哪一跳（DNS / TLS / 服务端码 / 探测超时 / 流被系统掐）。
-        var logText by remember { mutableStateOf(AppLog.tail(ctx, 200)) }
-        LaunchedEffect(Unit) {
-            while (true) {
-                delay(2000)
-                logText = AppLog.tail(ctx, 200)
-            }
-        }
-        Spacer(Modifier.height(20.dp))
-        HorizontalDivider(color = c.card)
-        Spacer(Modifier.height(12.dp))
-        Text("运行日志", color = c.text, fontSize = 13.sp)
-        Spacer(Modifier.height(4.dp))
-        Text("连接/重连/发送/收流的每一步都记在这里；出问题时点「复制全文」发给我。", color = c.dim, fontSize = 11.sp)
-        Spacer(Modifier.height(8.dp))
-        Text(
-            if (logText.isEmpty()) "（暂无日志）" else logText,
-            color = c.text, fontSize = 10.sp,
-            fontFamily = FontFamily.Monospace,
-            modifier = Modifier.fillMaxWidth()
-                .heightIn(max = 260.dp)
-                .background(c.panel, RoundedCornerShape(8.dp))
-                .verticalScroll(rememberScrollState())
-                .padding(8.dp)
-        )
-        Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(
-                onClick = {
-                    val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE)
-                        as? android.content.ClipboardManager
-                    cm?.setPrimaryClip(
-                        android.content.ClipData.newPlainText("hermes-log", AppLog.read(ctx))
-                    )
-                    android.widget.Toast.makeText(
-                        ctx, "已复制，粘贴发给我即可", android.widget.Toast.LENGTH_SHORT
-                    ).show()
-                },
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                shape = RoundedCornerShape(8.dp),
-            ) { Text("复制全文", color = c.accent, fontSize = 12.sp) }
-            OutlinedButton(
-                onClick = { AppLog.clear(ctx); logText = "" },
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                shape = RoundedCornerShape(8.dp),
-            ) { Text("清除", color = c.dim, fontSize = 12.sp) }
-        }
-        Spacer(Modifier.height(20.dp))
-        HorizontalDivider(color = c.card)
-        Spacer(Modifier.height(12.dp))
+        // ───────── 二、通知与语音 ─────────
+        Spacer(Modifier.height(22.dp))
+        SectionTitle("通知与语音")
+        Spacer(Modifier.height(10.dp))
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("后台运行", color = c.text, fontSize = 13.sp)
@@ -1321,9 +1169,50 @@ fun SettingsScreen(
                 vm.setPlayCompletionVoice(it)
             })
         }
-        Spacer(Modifier.height(24.dp))
-        HorizontalDivider(color = c.card)
-        Spacer(Modifier.height(12.dp))
+
+        // ───────── 三、版本更新 ─────────
+        Spacer(Modifier.height(22.dp))
+        SectionTitle("版本更新")
+        Spacer(Modifier.height(10.dp))
+        val hasUpdate by vm.updateBadge.collectAsState()
+        Box(Modifier.fillMaxWidth()) {
+            OutlinedButton(
+                onClick = { vm.checkUpdate(vc, ctx) }, modifier = Modifier.fillMaxWidth()
+            ) { Text("检查更新", color = c.accent) }
+            // 有新版本时：按钮右上角（边框内）一个小绿点，与抽屉「设置」角标联动
+            if (hasUpdate) {
+                Box(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 6.dp, end = 8.dp)
+                        .size(7.dp)
+                        .background(c.ok, CircleShape)
+                )
+            }
+        }
+        if (updateNote.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text(updateNote, color = c.dim, fontSize = 12.sp)
+        }
+        if (pct in 0..99) {
+            Spacer(Modifier.height(10.dp))
+            LinearProgressIndicator(
+                progress = { pct / 100f },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(dtext, color = c.dim, fontSize = 12.sp)
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            if (vName.isNotEmpty()) "当前版本 " + vName + "（" + vc + "）" else "当前版本 " + vc,
+            color = c.dim, fontSize = 11.sp
+        )
+
+        // ───────── 四、存储 ─────────
+        Spacer(Modifier.height(22.dp))
+        SectionTitle("存储")
+        Spacer(Modifier.height(10.dp))
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("清理缓存", color = c.text, fontSize = 13.sp)
@@ -1341,7 +1230,152 @@ fun SettingsScreen(
         }
         Spacer(Modifier.height(8.dp))
         Text("只清临时文件，不动聊天记录与设置", color = c.dim, fontSize = 11.sp)
-        Spacer(Modifier.height(24.dp))
+
+        // ───────── 五、排查诊断（默认折叠） ─────────
+        Spacer(Modifier.height(22.dp))
+        SectionTitle("排查诊断")
+        Spacer(Modifier.height(6.dp))
+        Text(
+            if (diagOpen) "▾ 收起（运行日志 / 闪退记录 / 服务故障记录）"
+            else "▸ 展开（出问题时才用：运行日志 / 闪退记录 / 服务故障记录）",
+            color = c.accent, fontSize = 12.sp,
+            modifier = Modifier.clickable { diagOpen = !diagOpen }
+        )
+        if (diagOpen) {
+            // 运行日志：连接/重连/发送/收流的关键节点留痕。排查「连不上」时复制全文发出来。
+            var logText by remember { mutableStateOf(AppLog.tail(ctx, 200)) }
+            LaunchedEffect(Unit) {
+                while (true) {
+                    delay(2000)
+                    logText = AppLog.tail(ctx, 200)
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            Text("运行日志", color = c.text, fontSize = 13.sp)
+            Spacer(Modifier.height(4.dp))
+            Text("连接/重连/发送/收流的每一步都记在这里；出问题时点「复制全文」发给我。", color = c.dim, fontSize = 11.sp)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                if (logText.isEmpty()) "（暂无日志）" else logText,
+                color = c.text, fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier.fillMaxWidth()
+                    .heightIn(max = 240.dp)
+                    .background(c.panel, RoundedCornerShape(8.dp))
+                    .verticalScroll(rememberScrollState())
+                    .padding(8.dp)
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE)
+                            as? android.content.ClipboardManager
+                        cm?.setPrimaryClip(
+                            android.content.ClipData.newPlainText("hermes-log", AppLog.read(ctx))
+                        )
+                        android.widget.Toast.makeText(
+                            ctx, "已复制，粘贴发给我即可", android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                    shape = RoundedCornerShape(8.dp),
+                ) { Text("复制全文", color = c.accent, fontSize = 12.sp) }
+                OutlinedButton(
+                    onClick = { AppLog.clear(ctx); logText = "" },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                    shape = RoundedCornerShape(8.dp),
+                ) { Text("清除", color = c.dim, fontSize = 12.sp) }
+            }
+
+            // 上次闪退记录：崩溃是进程被直接杀掉，只有落到这里才查得动。
+            var crashText by remember { mutableStateOf(CrashLog.read(ctx)) }
+            if (crashText.isNotEmpty()) {
+                Spacer(Modifier.height(16.dp))
+                Text("上次闪退记录", color = c.bad, fontSize = 13.sp)
+                Spacer(Modifier.height(4.dp))
+                Text("点「复制全文」发给我，就能定位到出错的代码行。", color = c.dim, fontSize = 11.sp)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    crashText, color = c.text, fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.fillMaxWidth()
+                        .heightIn(max = 200.dp)
+                        .background(c.panel, RoundedCornerShape(8.dp))
+                        .verticalScroll(rememberScrollState())
+                        .padding(8.dp)
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE)
+                                as? android.content.ClipboardManager
+                            cm?.setPrimaryClip(
+                                android.content.ClipData.newPlainText("hermes-crash", crashText)
+                            )
+                            android.widget.Toast.makeText(
+                                ctx, "已复制，粘贴发给我即可", android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                        shape = RoundedCornerShape(8.dp),
+                    ) { Text("复制全文", color = c.accent, fontSize = 12.sp) }
+                    OutlinedButton(
+                        onClick = { CrashLog.clear(ctx); crashText = "" },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                        shape = RoundedCornerShape(8.dp),
+                    ) { Text("清除", color = c.dim, fontSize = 12.sp) }
+                }
+            }
+
+            // 服务故障记录：前台服务启动失败这类错误被 catch 住了、进程不会死，
+            // 所以不会走「上次闪退记录」那条路，但它是闪退的真凶，得单独看。
+            var faultText by remember { mutableStateOf(CrashLog.readFault(ctx)) }
+            if (faultText.isNotEmpty()) {
+                Spacer(Modifier.height(16.dp))
+                Text("服务故障记录", color = c.bad, fontSize = 13.sp)
+                Spacer(Modifier.height(4.dp))
+                Text("前台服务启动失败的完整原因，点「复制全文」发给我。", color = c.dim, fontSize = 11.sp)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    faultText, color = c.text, fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.fillMaxWidth()
+                        .heightIn(max = 200.dp)
+                        .background(c.panel, RoundedCornerShape(8.dp))
+                        .verticalScroll(rememberScrollState())
+                        .padding(8.dp)
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE)
+                                as? android.content.ClipboardManager
+                            cm?.setPrimaryClip(
+                                android.content.ClipData.newPlainText("hermes-fault", faultText)
+                            )
+                            android.widget.Toast.makeText(
+                                ctx, "已复制，粘贴发给我即可", android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                        shape = RoundedCornerShape(8.dp),
+                    ) { Text("复制全文", color = c.accent, fontSize = 12.sp) }
+                    OutlinedButton(
+                        onClick = { CrashLog.clearFault(ctx); faultText = "" },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                        shape = RoundedCornerShape(8.dp),
+                    ) { Text("清除", color = c.dim, fontSize = 12.sp) }
+                }
+            }
+        }
+
+        // ───────── 退出登录 ─────────
+        Spacer(Modifier.height(26.dp))
+        HorizontalDivider(color = c.card)
+        Spacer(Modifier.height(14.dp))
         OutlinedButton(
             onClick = { prefs.loggedIn = false; onLogout() }, modifier = Modifier.fillMaxWidth()
         ) { Text("退出登录", color = c.bad) }
