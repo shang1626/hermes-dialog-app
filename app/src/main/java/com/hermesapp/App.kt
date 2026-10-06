@@ -449,6 +449,7 @@ fun DrawerPanel(
     onClose: () -> Unit,
 ) {
     val c = LocalAppColors.current
+    val ctx = LocalContext.current
     val sessions by vm.sessions.collectAsState()
     val currentId by vm.currentId.collectAsState()
     val updateBadge by vm.updateBadge.collectAsState()
@@ -567,6 +568,7 @@ fun DrawerPanel(
                                 onOpen = { vm.switchSession(s.id); onTab(0); onClose() },
                                 onArchive = { vm.archiveSession(s.id, !s.archived) },
                                 onDelete = { vm.deleteSession(s.id) },
+                                onExport = { vm.exportSession(ctx, s.id) },
                             )
                         }
                     }
@@ -641,6 +643,7 @@ fun SessionRow(
     onOpen: () -> Unit,
     onArchive: () -> Unit,
     onDelete: () -> Unit,
+    onExport: () -> Unit = {},
 ) {
     val c = LocalAppColors.current
     var menu by remember { mutableStateOf(false) }
@@ -677,6 +680,10 @@ fun SessionRow(
                 modifier = Modifier.clickable { menu = true }.padding(horizontal = 6.dp)
             )
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                DropdownMenuItem(
+                    text = { Text("导出为 Markdown", fontSize = 13.sp) },
+                    onClick = { menu = false; onExport() }
+                )
                 DropdownMenuItem(
                     text = { Text(if (archived) "恢复" else "归档", fontSize = 13.sp) },
                     onClick = { menu = false; onArchive() }

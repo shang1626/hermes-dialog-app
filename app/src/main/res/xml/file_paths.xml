@@ -3,4 +3,5 @@
     <external-files-path name="apk" path="apk/" />
     <files-path name="outbox" path="outbox/" />
     <files-path name="attachments" path="attachments/" />
+    <files-path name="exports" path="exports/" />
 </paths>

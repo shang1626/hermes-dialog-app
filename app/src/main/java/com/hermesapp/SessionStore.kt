@@ -230,6 +230,48 @@ class SessionStore(ctx: Context, private val profile: String) {
     }
 
     /**
+     * 把一个会话导出成 Markdown 文本（只读本地记录，不碰网络、不改任何数据）。
+     *
+     * 工具轨迹默认用 <details> 折叠——手机上看着乱，但导出给同事时想留着还能展开。
+     * 正文里的 data URL 图片换成一行占位说明（base64 塞进 md 没有意义、还容易撑爆文件）。
+     */
+    fun exportMarkdown(id: String, title: String): String {
+        val msgs = loadMessages(id)
+        val sb = StringBuilder()
+        sb.append("# ").append(title.ifBlank { "对话" }).append("\n\n")
+        sb.append("- 会话 ID：`").append(id).append("`\n")
+        sb.append("- 导出时间：").append(TimeFmt.mdhm(System.currentTimeMillis())).append("\n")
+        sb.append("- 消息条数：").append(msgs.size).append("\n\n---\n\n")
+        for (m in msgs) {
+            val who = if (m.role == "user") "我" else "助手"
+            sb.append("**").append(who).append("**")
+            if (m.ts > 0) sb.append(" · ").append(TimeFmt.mdhm(m.ts))
+            sb.append("\n\n")
+            val body = stripDataUrls(m.text)
+            if (body.isNotBlank()) sb.append(body.trim()).append("\n\n")
+            if (m.images.isNotEmpty() && body.isBlank()) sb.append("（图片 ×").append(m.images.size).append("）\n\n")
+            if (m.files.isNotEmpty()) {
+                sb.append("附件：")
+                sb.append(m.files.joinToString("、"))
+                sb.append("\n\n")
+            }
+            if (m.trace.isNotBlank()) {
+                sb.append("<details><summary>工具轨迹</summary>\n\n```\n")
+                sb.append(m.trace.trim()).append("\n```\n\n</details>\n\n")
+            }
+            sb.append("---\n\n")
+        }
+        return sb.toString()
+    }
+
+    /** 去掉正文里的 data URL（图片/附件内联体），换成人能读的占位。 */
+    private fun stripDataUrls(s: String): String {
+        if (s.isEmpty() || !s.contains("data:")) return s
+        return s.replace(Regex("!\\[[^\\]]*\\]\\(data:image/[^)]+\\)"), "（图片）")
+            .replace(Regex("\\[[^\\]]*\\]\\(data:[^)]+\\)"), "（附件）")
+    }
+
+    /**
      * 跨会话搜索：扫全部会话的本地消息（正文与工具轨迹），按词命中返回结果。
      *
      * 会话按更新时间从新到旧扫，单条只取第一处命中；上限 limit 条（默认 60），

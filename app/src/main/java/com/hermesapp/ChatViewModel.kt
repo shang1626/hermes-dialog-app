@@ -721,6 +721,47 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (id == _currentId.value) selectNextOrEmpty()
     }
 
+    /**
+     * 把一个会话导出成 Markdown 文件并调系统分享面板发出去（发同事/存网盘）。
+     *
+     * 落在 App 私有目录 exports/（FileProvider 已声明），只读本地记录，不碰服务端。
+     * 失败只在日志里记一行，不弹错——导出是附加功能，坏了不该打扰正常对话。
+     */
+    fun exportSession(ctx: Context, id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val meta = _sessions.value.firstOrNull { it.id == id }
+                val title = meta?.title ?: "对话"
+                val md = store.exportMarkdown(id, title)
+                if (md.isBlank()) {
+                    AppLog.log("export", "会话为空，跳过导出 id=" + id.take(8))
+                    return@launch
+                }
+                val dir = File(ctx.filesDir, "exports").apply { mkdirs() }
+                val safe = title.replace(Regex("[\\\\/:*?\"<>|\\s]+"), "_").take(40).ifBlank { "对话" }
+                val f = File(dir, safe + "_" + TimeFmt.mdhm(System.currentTimeMillis())
+                    .replace(Regex("[^0-9]"), "") + ".md")
+                f.writeText(md)
+                AppLog.log("export", "已导出 " + f.name + " " + md.length + " 字")
+                withContext(Dispatchers.Main) {
+                    val uri = FileProvider.getUriForFile(ctx, "com.hermesapp.fileprovider", f)
+                    val it = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/markdown"
+                        putExtra(Intent.EXTRA_STREAM, uri)
+                        putExtra(Intent.EXTRA_SUBJECT, title)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    ctx.startActivity(Intent.createChooser(it, "导出对话").apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    })
+                }
+            } catch (e: Exception) {
+                AppLog.err("export", "导出失败", e)
+            }
+        }
+    }
+
     /** 当前会话被删/归档后：优先切到下一个未归档会话；没有则清空进入空态（输入即新建）。 */
     private fun selectNextOrEmpty() {
         val next = _sessions.value.firstOrNull { !it.archived }
