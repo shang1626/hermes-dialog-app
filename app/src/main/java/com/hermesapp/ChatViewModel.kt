@@ -2224,7 +2224,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         _downloadText.value = "0%"
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val f = a.downloadApk(info.url, ctx) { done, total ->
+                val f = a.downloadApk(info.url, ctx, info.versionName, info.md5) { done, total ->
                     if (total > 0) {
                         val pct = ((done * 100) / total).toInt().coerceIn(0, 100)
                         _downloadPct.value = pct
@@ -2234,16 +2234,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
                 if (f == null) {
-                    _updateNote.value = "下载失败"
+                    _updateNote.value = "下载失败（安装包校验没过或链路中断，请重试）"
+                    AppLog.log("update", "下载/校验失败，未交给安装器")
                     _downloadPct.value = -1
                     return@launch
                 }
                 _downloadPct.value = 100
                 _downloadText.value = "100%"
                 _updateNote.value = "下载完成，请在弹出的提示中安装"
+                AppLog.log("update", "拉起安装器 " + f.absolutePath)
                 launch(Dispatchers.Main) { installApk(ctx, f) }
             } catch (e: Exception) {
                 _updateNote.value = "下载失败：" + (e.message ?: "?")
+                AppLog.log("update", "下载异常：" + (e.message ?: "?"))
                 _downloadPct.value = -1
             }
         }

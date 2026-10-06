@@ -17,4 +17,6 @@ data class UpdateInfo(
     val url: String,
     val notes: String,
     val size: Long,
+    /** version.json 里登记的安装包 md5：下载后校验用，对不上就不交给安装器。 */
+    val md5: String,
 )

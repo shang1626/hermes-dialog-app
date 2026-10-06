@@ -1,6 +1,7 @@
 package com.hermesapp.net
 
 import android.content.Context
+import com.hermesapp.AppLog
 import com.hermesapp.Keys
 import com.hermesapp.UpdateInfo
 import okhttp3.Call
@@ -227,7 +228,11 @@ class HermesApi(
     }.getOrDefault(false)
 
     fun checkUpdate(): UpdateInfo? {
-        val req = Request.Builder().url(Keys.UPDATE_URL).get().build()
+        // 带时间戳绕开 EdgeOne 边缘缓存：否则刚发的新版本可能被旧缓存糊弄。
+        val sep = if (Keys.UPDATE_URL.contains("?")) "&" else "?"
+        val req = Request.Builder()
+            .url(Keys.UPDATE_URL + sep + "t=" + System.currentTimeMillis())
+            .get().build()
         client.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) return null
             val o = JSONObject(resp.body?.string().orEmpty())
@@ -236,24 +241,46 @@ class HermesApi(
                 o.optString("versionName", ""),
                 o.optString("url", ""),
                 o.optString("notes", ""),
-                o.optLong("size", 0L)
+                o.optLong("size", 0L),
+                o.optString("md5", "")
             )
         }
     }
 
-    /** 下载 APK，onProgress(downloaded, total)；total <= 0 表示服务器未给长度。 */
-    fun downloadApk(url: String, ctx: Context, onProgress: (Long, Long) -> Unit): File? {
+    /**
+     * 下载 APK，onProgress(downloaded, total)；total <= 0 表示服务器未给长度。
+     *
+     * 两条纪律（修「内置下载完提示已安装相同版本」）：
+     * 1. 文件名带版本号、先写 .part 再改名、交付前清掉目录里其它旧包——
+     *    原来固定写 hermes-update.apk 且装完不删，某次下载写失败后安装器打开的还是旧包。
+     * 2. [expectMd5] 非空时下完核对指纹，对不上直接丢弃，绝不把残包交给安装器。
+     */
+    fun downloadApk(
+        url: String,
+        ctx: Context,
+        versionName: String,
+        expectMd5: String,
+        onProgress: (Long, Long) -> Unit,
+    ): File? {
         val req = Request.Builder().url(url).get().build()
         client.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) return null
+            if (!resp.isSuccessful) {
+                AppLog.log("update", "下载失败 HTTP " + resp.code)
+                return null
+            }
             val body = resp.body ?: return null
             val total = body.contentLength()
             val dir = File(ctx.getExternalFilesDir(null), "apk")
             dir.mkdirs()
-            val f = File(dir, "hermes-update.apk")
+            val safeVer = versionName.replace(Regex("[^0-9A-Za-z._-]"), "_")
+            val part = File(dir, "hermes-" + safeVer + ".apk.part")
+            val f = File(dir, "hermes-" + safeVer + ".apk")
+            runCatching { f.delete() }
+            runCatching { part.delete() }
+            AppLog.log("update", "开始下载 " + f.name + " 期望大小=" + total + " 期望md5=" + expectMd5)
             var done = 0L
             body.byteStream().use { input ->
-                f.outputStream().use { out ->
+                part.outputStream().use { out ->
                     val buf = ByteArray(64 * 1024)
                     while (true) {
                         val n = input.read(buf)
@@ -264,8 +291,48 @@ class HermesApi(
                     }
                 }
             }
+            // 长度对不上 = 残包（链路中途被掐），丢弃。
+            if (total > 0 && done != total) {
+                AppLog.log("update", "大小不符，丢弃 done=" + done + " total=" + total)
+                runCatching { part.delete() }
+                return null
+            }
+            if (expectMd5.isNotEmpty()) {
+                val got = md5(part)
+                if (!got.equals(expectMd5, ignoreCase = true)) {
+                    AppLog.log("update", "md5 不符，丢弃 got=" + got + " 期望=" + expectMd5)
+                    runCatching { part.delete() }
+                    return null
+                }
+            } else {
+                AppLog.log("update", "version.json 未给 md5，只核对了大小")
+            }
+            if (!part.renameTo(f)) {
+                AppLog.log("update", "重命名失败 " + part.name)
+                runCatching { part.delete() }
+                return null
+            }
+            // 清掉目录里其它旧包：安装器扫到旧包正是「已安装相同版本」的来源。
+            runCatching { dir.listFiles()?.forEach { if (it.name != f.name) it.delete() } }
+            AppLog.log("update", "下载完成 " + f.name + " size=" + done)
             return f
         }
+    }
+
+    /** 文件 md5（小写十六进制）；出错返回空串。 */
+    private fun md5(f: File): String = try {
+        val md = java.security.MessageDigest.getInstance("MD5")
+        f.inputStream().use { input ->
+            val buf = ByteArray(64 * 1024)
+            while (true) {
+                val n = input.read(buf)
+                if (n <= 0) break
+                md.update(buf, 0, n)
+            }
+        }
+        md.digest().joinToString("") { "%02x".format(it) }
+    } catch (_: Exception) {
+        ""
     }
 
     fun streamEvents(
