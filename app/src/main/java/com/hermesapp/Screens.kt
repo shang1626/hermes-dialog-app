@@ -1058,7 +1058,7 @@ fun SettingsScreen(
             Column(Modifier.weight(1f)) {
                 Text("后台运行", color = c.text, fontSize = 13.sp)
                 Text(
-                    if (keepAlive) "任务期间保持连接，通知栏会有一条最小化常驻条目（Android 强制）"
+                    if (keepAlive) "常驻通知栏保持连接（一条静默条目，安卓强制）；关掉开关通知才消失"
                     else "不起前台服务，无任何常驻通知；任务仍在服务端跑，重开自动拉回结果",
                     color = c.dim, fontSize = 11.sp
                 )

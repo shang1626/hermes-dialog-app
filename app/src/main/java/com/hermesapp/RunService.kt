@@ -75,7 +75,7 @@ class RunService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Hermes")
+            .setContentTitle("Hermes 在线")
             .setContentText("")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentIntent(tap)

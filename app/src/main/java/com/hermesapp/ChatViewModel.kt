@@ -2085,18 +2085,26 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         drainQueue(sid)   // 本轮结束：把排队的下一条发出去
     }
 
-    /** 只要有任意会话在跑任务就保持前台服务；全部结束才停（通知随之消失）。 */
+    /**
+     * 「后台运行」开着就保持前台服务与常驻通知，跟有没有任务在跑无关；关掉才停。
+     * 原来判据是「有任务才起、跑完就停」，所以没任务时切后台，状态栏一条通知都不剩。
+     */
     private fun updateRunService() {
         val running = runtimes.filterValues { it.busy.value }.keys.toSet()
         _runningIds.value = running
-        if (running.isNotEmpty()) {
-            // Android 12+ 禁止从后台启动前台服务：后台硬启会撞墙，反而触发
-            // ForegroundServiceDidNotStartInTime 崩溃。任务在服务端照跑，
-            // 切回前台时 onAppForeground 会再调一次这里把服务补上。
-            if (prefs.keepAlive && AppForeground.isForeground) RunService.start(getApplication())
-        } else {
+        if (!prefs.keepAlive) {
             RunService.stop(getApplication())
+            return
         }
+        // Android 12+ 禁止从后台启动前台服务：后台硬启会撞墙，反而触发
+        // ForegroundServiceDidNotStartInTime 崩溃。切回前台时 onAppForeground
+        // 会再调一次这里把服务补上。
+        if (AppForeground.isForeground) RunService.start(getApplication())
+    }
+
+    /** 进主界面时调一次：开关开着但还没发过消息，也要把常驻通知挂上。 */
+    fun ensureRunService() {
+        updateRunService()
     }
 
     /**

@@ -353,7 +353,12 @@ fun MainScaffold(
     val draftJob = remember { mutableStateOf<Job?>(null) }
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    LaunchedEffect(prefs.profile) { vm.onProfileChanged(prefs) }
+    LaunchedEffect(prefs.profile) {
+        vm.onProfileChanged(prefs)
+        // 进主界面就确保前台服务与常驻通知挂着：开关开着但还没发过消息时，
+        // 原来要等第一次发消息或回前台才起，期间切后台状态栏是空的。
+        vm.ensureRunService()
+    }
 
     // 返回键/侧滑返回：抽屉开着先收抽屉（不再直接退出软件）；否则先回对话页；已在对话页则交给系统退出
     BackHandler(enabled = drawer.isOpen) { scope.launch { drawer.close() } }
