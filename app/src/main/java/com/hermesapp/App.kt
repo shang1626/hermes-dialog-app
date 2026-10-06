@@ -475,11 +475,6 @@ fun DrawerPanel(
             }
             Spacer(Modifier.height(10.dp))
 
-            // 页面切换（对话通过点会话/标题进入，不单列按钮）
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                NavChip("状态", tab == 1, Modifier.weight(1f)) { onTab(1) }
-                NavChip("设置", tab == 2, Modifier.weight(1f), badge = updateBadge) { onTab(2) }
-            }
             Spacer(Modifier.height(12.dp))
             HorizontalDivider(color = c.card)
             Spacer(Modifier.height(8.dp))
@@ -579,6 +574,15 @@ fun DrawerPanel(
             }
 
             Spacer(Modifier.height(8.dp))
+            HorizontalDivider(color = c.card)
+            Spacer(Modifier.height(8.dp))
+
+            // 页面切换（对话通过点会话/标题进入，不单列按钮）
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                NavChip("状态", tab == 1, Modifier.weight(1f)) { onTab(1) }
+                NavChip("设置", tab == 2, Modifier.weight(1f), badge = updateBadge) { onTab(2) }
+            }
+            Spacer(Modifier.height(12.dp))
             HorizontalDivider(color = c.card)
             Spacer(Modifier.height(8.dp))
 
