@@ -176,6 +176,18 @@ data class StatusItem(val label: String, val value: String)
 /** 状态页的一个分组：标题 + 若干行。 */
 data class StatusSection(val title: String, val items: List<StatusItem>)
 
+/** 定时任务页的一条（来自服务端 /api/jobs）。 */
+data class JobItem(
+    val id: String,
+    val name: String,
+    val schedule: String,
+    val enabled: Boolean,
+    val state: String,
+    val lastStatus: String,
+    val lastRun: String,
+    val nextRun: String,
+)
+
 /** SSE 断流后的最大自动重连次数（退避等待，见 ChatViewModel.backoffDelayMs）。 */
 private const val MAX_RECONNECT_ATTEMPTS = 8
 
@@ -1149,6 +1161,79 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 if (tick % 6 == 0) checkUpdateSilently()
                 delay(5000)
             }
+        }
+    }
+
+    // ---------- 定时任务（服务端 /api/jobs） ----------
+
+    private val _jobs = MutableStateFlow<List<JobItem>>(emptyList())
+    val jobs = _jobs.asStateFlow()
+
+    private val _jobsErr = MutableStateFlow("")
+    val jobsErr = _jobsErr.asStateFlow()
+
+    private val _jobsNote = MutableStateFlow("")
+    val jobsNote = _jobsNote.asStateFlow()
+
+    /** 上次列表用的过滤口径：动作完成后按同一口径重拉，避免刚暂停的任务凭空消失。 */
+    private var jobsIncludeDisabled = false
+
+    fun refreshJobs(includeDisabled: Boolean = jobsIncludeDisabled) {
+        jobsIncludeDisabled = includeDisabled
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val resp = api?.listJobs(includeDisabled) ?: return@launch
+                val arr = resp.optJSONArray("jobs") ?: org.json.JSONArray()
+                val out = mutableListOf<JobItem>()
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val sch = o.optJSONObject("schedule")
+                    out.add(
+                        JobItem(
+                            id = o.optString("id", ""),
+                            name = o.optString("name", "(未命名)"),
+                            schedule = sch?.optString("display", "") ?: "",
+                            enabled = o.optBoolean("enabled", true),
+                            state = o.optString("state", ""),
+                            lastStatus = o.optString("last_status", ""),
+                            lastRun = TimeFmt.isoToBj(o.optString("last_run_at", "")),
+                            nextRun = TimeFmt.isoToBj(o.optString("next_run_at", "")),
+                        )
+                    )
+                }
+                _jobs.value = out
+                _jobsErr.value = ""
+            } catch (e: Exception) {
+                _jobsErr.value = "获取失败：" + (e.message ?: "?")
+            }
+        }
+    }
+
+    /** 定时任务动作：pause / resume / run。成功后按原过滤口径重拉列表。 */
+    fun jobAction(jobId: String, action: String) {
+        if (jobId.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val label = when (action) {
+                "pause" -> "已暂停"
+                "resume" -> "已恢复"
+                "run" -> "已触发执行"
+                else -> "完成"
+            }
+            try {
+                val a = api ?: return@launch
+                when (action) {
+                    "pause" -> a.pauseJob(jobId)
+                    "resume" -> a.resumeJob(jobId)
+                    "run" -> a.runJob(jobId)
+                }
+                _jobsNote.value = label
+                _jobsErr.value = ""
+            } catch (e: Exception) {
+                _jobsNote.value = ""
+                _jobsErr.value = "操作失败：" + (e.message ?: "?")
+            }
+            delay(400)
+            refreshJobs()
         }
     }
 

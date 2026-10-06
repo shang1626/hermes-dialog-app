@@ -891,6 +891,115 @@ fun StatusCard(s: StatusSection) {
     }
 }
 
+/**
+ * 定时任务页：列出服务端 /api/jobs 的任务，支持暂停 / 恢复 / 立即执行。
+ * 只看得到本机器人的任务（两个机器人各用各的 key，服务端按档案隔离）。
+ */
+@Composable
+fun JobsScreen(vm: ChatViewModel, prefs: Prefs) {
+    val c = LocalAppColors.current
+    val jobs by vm.jobs.collectAsState()
+    val err by vm.jobsErr.collectAsState()
+    val note by vm.jobsNote.collectAsState()
+    var showDisabled by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { vm.refreshJobs(showDisabled) }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("定时任务", color = c.text, fontSize = 13.sp)
+            Spacer(Modifier.weight(1f))
+            Text(
+                if (showDisabled) "隐藏已停用" else "显示已停用",
+                color = c.accent, fontSize = 11.sp,
+                modifier = Modifier.clickable {
+                    showDisabled = !showDisabled
+                    vm.refreshJobs(showDisabled)
+                }
+            )
+            Spacer(Modifier.width(10.dp))
+            OutlinedButton(
+                onClick = { vm.refreshJobs(showDisabled) },
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                shape = RoundedCornerShape(8.dp),
+            ) { Text("刷新", fontSize = 12.sp, color = c.accent) }
+        }
+        if (note.isNotEmpty()) {
+            Text(note, color = c.ok, fontSize = 11.sp,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp))
+        }
+        if (err.isNotEmpty()) {
+            Text(err, color = c.bad, fontSize = 12.sp,
+                modifier = Modifier.fillMaxWidth().padding(14.dp))
+        }
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(12.dp)) {
+            if (jobs.isEmpty() && err.isEmpty()) {
+                Text("（没有定时任务）", color = c.dim, fontSize = 12.sp,
+                    modifier = Modifier.padding(vertical = 8.dp))
+            }
+            for (j in jobs) {
+                JobCard(j) { action -> vm.jobAction(j.id, action) }
+                Spacer(Modifier.height(10.dp))
+            }
+            Text("数据来自服务端 /api/jobs，只列出本机器人的任务",
+                color = c.dim, fontSize = 10.sp,
+                modifier = Modifier.fillMaxWidth().padding(top = 2.dp))
+        }
+    }
+}
+
+/** 单条定时任务卡片：名称 + 排期 + 上次/下次 + 三个动作按钮。 */
+@Composable
+fun JobCard(j: JobItem, onAction: (String) -> Unit) {
+    val c = LocalAppColors.current
+    val stateColor = when {
+        !j.enabled -> c.dim
+        j.lastStatus == "ok" -> c.ok
+        j.lastStatus.isEmpty() -> c.dim
+        else -> c.warn
+    }
+    Surface(color = c.panel, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    j.name, color = c.text, fontSize = 13.sp,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    if (!j.enabled) "已停用" else j.state,
+                    color = stateColor, fontSize = 11.sp
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            if (j.schedule.isNotEmpty()) Text("排期  " + j.schedule, color = c.dim, fontSize = 11.sp)
+            if (j.lastRun.isNotEmpty()) {
+                Text(
+                    "上次  " + j.lastRun + (if (j.lastStatus.isNotEmpty()) " · " + j.lastStatus else ""),
+                    color = c.dim, fontSize = 11.sp
+                )
+            }
+            if (j.nextRun.isNotEmpty()) Text("下次  " + j.nextRun, color = c.dim, fontSize = 11.sp)
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedButton(
+                    onClick = { onAction(if (j.enabled) "pause" else "resume") },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                    shape = RoundedCornerShape(8.dp),
+                ) { Text(if (j.enabled) "暂停" else "恢复", color = c.accent, fontSize = 12.sp) }
+                OutlinedButton(
+                    onClick = { onAction("run") },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                    shape = RoundedCornerShape(8.dp),
+                ) { Text("立即执行", color = c.accent, fontSize = 12.sp) }
+            }
+        }
+    }
+}
+
 @Composable
 fun SettingsScreen(
     vm: ChatViewModel,
