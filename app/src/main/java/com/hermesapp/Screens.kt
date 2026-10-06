@@ -938,6 +938,50 @@ fun SettingsScreen(
                 ) { Text("清除", color = c.dim, fontSize = 12.sp) }
             }
         }
+
+        // 服务故障记录：前台服务启动失败这类错误被 catch 住了、进程不会死，
+        // 所以不会走「上次闪退记录」那条路，但它是闪退的真凶，得单独看。
+        var faultText by remember { mutableStateOf(CrashLog.readFault(ctx)) }
+        if (faultText.isNotEmpty()) {
+            Spacer(Modifier.height(20.dp))
+            HorizontalDivider(color = c.card)
+            Spacer(Modifier.height(12.dp))
+            Text("服务故障记录", color = c.bad, fontSize = 13.sp)
+            Spacer(Modifier.height(4.dp))
+            Text("前台服务启动失败的完整原因，点「复制全文」发给我。", color = c.dim, fontSize = 11.sp)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                faultText, color = c.text, fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier.fillMaxWidth()
+                    .heightIn(max = 200.dp)
+                    .background(c.panel, RoundedCornerShape(8.dp))
+                    .verticalScroll(rememberScrollState())
+                    .padding(8.dp)
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE)
+                            as? android.content.ClipboardManager
+                        cm?.setPrimaryClip(
+                            android.content.ClipData.newPlainText("hermes-fault", faultText)
+                        )
+                        android.widget.Toast.makeText(
+                            ctx, "已复制，粘贴发给我即可", android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                    shape = RoundedCornerShape(8.dp),
+                ) { Text("复制全文", color = c.accent, fontSize = 12.sp) }
+                OutlinedButton(
+                    onClick = { CrashLog.clearFault(ctx); faultText = "" },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                    shape = RoundedCornerShape(8.dp),
+                ) { Text("清除", color = c.dim, fontSize = 12.sp) }
+            }
+        }
         Spacer(Modifier.height(20.dp))
         HorizontalDivider(color = c.card)
         Spacer(Modifier.height(12.dp))
