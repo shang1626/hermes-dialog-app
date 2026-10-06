@@ -369,6 +369,13 @@ fun TopBar(vm: ChatViewModel, prefs: Prefs, tab: Int, onMenu: () -> Unit) {
         Spacer(Modifier.width(8.dp))
         Text(prefs.profile, color = c.dim, fontSize = 11.sp)
         Spacer(Modifier.weight(1f))
+        if (tab == 0) {
+            Text(
+                "搜索", color = c.accent, fontSize = 13.sp,
+                modifier = Modifier.clickable { vm.toggleSearch() }.padding(horizontal = 8.dp, vertical = 2.dp)
+            )
+            Spacer(Modifier.width(6.dp))
+        }
         Text(if (online) "● 在线" else "● 离线", color = if (online) c.ok else c.bad, fontSize = 12.sp)
     }
 }

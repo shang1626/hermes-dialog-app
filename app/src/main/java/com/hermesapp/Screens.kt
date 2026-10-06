@@ -16,6 +16,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
@@ -175,6 +176,10 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
     val c = LocalAppColors.current
     val msgs by vm.messages.collectAsState()
     val note by vm.retryNote.collectAsState()
+    val searchOn by vm.searchActive.collectAsState()
+    val q by vm.searchQuery.collectAsState()
+    val hits by vm.searchIds.collectAsState()
+    val hitIdx by vm.searchIdx.collectAsState()
     val listState = rememberLazyListState()
     val focus = LocalFocusManager.current
     val ctx = LocalContext.current
@@ -184,7 +189,14 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
 
     // 末尾放一个 1dp 占位项，永远滚到它 = 永远贴底（正文增长也能跟上）
     LaunchedEffect(msgs.size, msgs.lastOrNull()?.id, msgs.lastOrNull()?.text, msgs.lastOrNull()?.pending) {
-        if (msgs.isNotEmpty()) listState.animateScrollToItem(msgs.size)
+        if (msgs.isNotEmpty() && !searchOn) listState.animateScrollToItem(msgs.size)
+    }
+
+    // 跳到命中：当前命中项一变就滚到那条消息（搜索时自动贴底让位）。
+    LaunchedEffect(hitIdx, hits) {
+        val id = hits.getOrNull(hitIdx) ?: return@LaunchedEffect
+        val pos = msgs.indexOfFirst { it.id == id }
+        if (pos >= 0) listState.animateScrollToItem(pos)
     }
 
     Column(
@@ -203,6 +215,44 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
             Text(note, color = c.warn, fontSize = 12.sp,
                 modifier = Modifier.fillMaxWidth().background(c.panel).padding(8.dp))
         }
+        // 会话内搜索栏：输入即搜（去抖），显示「第几/共几」，上下跳、× 收起
+        if (searchOn) {
+            val total = hits.size
+            Row(
+                Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 8.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = q,
+                    onValueChange = { vm.setSearchQuery(it) },
+                    singleLine = true,
+                    placeholder = { Text("搜索本会话", fontSize = 13.sp) },
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    when {
+                        q.isBlank() -> ""
+                        total == 0 -> "无结果"
+                        else -> (hitIdx + 1).toString() + "/" + total
+                    },
+                    color = c.dim, fontSize = 12.sp
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    "↑", color = c.accent, fontSize = 18.sp,
+                    modifier = Modifier.clickable { vm.searchNavigate(-1) }.padding(horizontal = 4.dp, vertical = 2.dp)
+                )
+                Text(
+                    "↓", color = c.accent, fontSize = 18.sp,
+                    modifier = Modifier.clickable { vm.searchNavigate(1) }.padding(horizontal = 4.dp, vertical = 2.dp)
+                )
+                Text(
+                    "×", color = c.dim, fontSize = 18.sp,
+                    modifier = Modifier.clickable { vm.clearSearch() }.padding(horizontal = 4.dp, vertical = 2.dp)
+                )
+            }
+        }
         LazyColumn(
             state = listState,
             modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 10.dp),
@@ -210,8 +260,11 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
             contentPadding = PaddingValues(vertical = 10.dp)
         ) {
             items(msgs, key = { it.id }) { m ->
+                val hl = hits.getOrNull(hitIdx) == m.id
                 Bubble(
                     m, vm::respondApproval, vm::respondClarify,
+                    highlight = hl,
+                    hitQuery = if (hl) q else "",
                     selectionReset = selReset,
                     onClearSelection = { selReset++ },
                 )
@@ -340,6 +393,10 @@ fun Bubble(
     m: Msg,
     onApproval: (Long, String) -> Unit = { _, _ -> },
     onClarify: (Long, String) -> Unit = { _, _ -> },
+    /** 该条是当前搜索命中：加一圈强调边框。 */
+    highlight: Boolean = false,
+    /** 命中词：正文里加黄底（空表示不高亮）。 */
+    hitQuery: String = "",
     selectionReset: Int = 0,
     onClearSelection: () -> Unit = {},
 ) {
@@ -353,7 +410,12 @@ fun Bubble(
         Surface(
             color = if (isUser) c.userBubble else c.panel,
             shape = RoundedCornerShape(10.dp),
-            modifier = Modifier.widthIn(max = 320.dp)
+            modifier = Modifier
+                .widthIn(max = 320.dp)
+                .then(
+                    if (highlight) Modifier.border(1.5.dp, c.accent, RoundedCornerShape(10.dp))
+                    else Modifier
+                )
         ) {
             Column(Modifier.padding(10.dp)) {
                 // 用户发的图：气泡内缩略图回显
@@ -478,6 +540,7 @@ fun Bubble(
                         color = if (m.pending) c.dim else if (isUser) c.userText else c.text,
                         fontSize = 16.sp,
                         modifier = Modifier.fillMaxWidth(),
+                        hitQuery = hitQuery,
                         selectionReset = selectionReset,
                         onClearSelection = onClearSelection,
                     )

@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.Call
 import org.json.JSONObject
 import java.io.File
@@ -220,6 +221,75 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val _imageNote = MutableStateFlow("")
     val imageNote = _imageNote.asStateFlow()
 
+    // ---------- 会话内搜索（只搜当前会话的本地消息） ----------
+
+    /** 搜索栏是否展开。 */
+    private val _searchActive = MutableStateFlow(false)
+    val searchActive = _searchActive.asStateFlow()
+
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery = _searchQuery.asStateFlow()
+
+    /** 命中的消息 id，按会话顺序。 */
+    private val _searchIds = MutableStateFlow<List<Long>>(emptyList())
+    val searchIds = _searchIds.asStateFlow()
+
+    /** 当前跳到第几条（0 基）；无命中为 -1。 */
+    private val _searchIdx = MutableStateFlow(-1)
+    val searchIdx = _searchIdx.asStateFlow()
+
+    private var searchJob: Job? = null
+
+    /** 打开/收起搜索栏。收起时清掉全部搜索态。 */
+    fun toggleSearch() {
+        if (_searchActive.value) clearSearch() else {
+            _searchActive.value = true
+            _searchQuery.value = ""
+            _searchIds.value = emptyList()
+            _searchIdx.value = -1
+        }
+    }
+
+    /**
+     * 输入即搜：去抖 150 毫秒（快速连打只算一次扫描），匹配放后台线程算，不卡界面。
+     * 只搜当前会话的本地消息（最多 300 条）。
+     */
+    fun setSearchQuery(q: String) {
+        _searchQuery.value = q
+        searchJob?.cancel()
+        val sid = _currentId.value
+        if (q.isBlank()) {
+            _searchIds.value = emptyList()
+            _searchIdx.value = -1
+            return
+        }
+        searchJob = viewModelScope.launch {
+            delay(150)
+            val msgs = rt(sid).messages.value
+            val ids = withContext(Dispatchers.Default) { ChatSearch.matchIds(msgs, q) }
+            // 结果回来时用户可能已改词或切走会话：过期的结果不落地。
+            if (_currentId.value != sid || _searchQuery.value != q) return@launch
+            _searchIds.value = ids
+            _searchIdx.value = if (ids.isEmpty()) -1 else 0
+        }
+    }
+
+    /** 上下跳转：dir 为 +1 / -1，到头绕回。 */
+    fun searchNavigate(dir: Int) {
+        val n = _searchIds.value.size
+        if (n == 0) return
+        val cur = _searchIdx.value
+        _searchIdx.value = (((cur + dir) % n) + n) % n
+    }
+
+    fun clearSearch() {
+        searchJob?.cancel()
+        _searchActive.value = false
+        _searchQuery.value = ""
+        _searchIds.value = emptyList()
+        _searchIdx.value = -1
+    }
+
     private var api: HermesApi? = null
     private var pingStarted = false
 
@@ -303,6 +373,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 切到某个会话（网关 session_id 同步指过去）。不再停止任何正在跑的任务。 */
     fun switchSession(id: String) {
         if (id == _currentId.value) return
+        clearSearch()   // 搜索只作用于当前会话：切走即收起
         saveCurrent()
         _currentId.value = id
         prefs.sessionId = id
@@ -700,17 +771,38 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.priorUserCount = r.messages.value.count { it.role == "user" }
         r.pendingSendText = text.trim()
         r.recoveryJob?.cancel()
+        // 发出去的图先落进 App 私有「已发送」目录再进气泡：相册给的 content:// 会被系统
+        // 回收（换机/清数据/授权到期），而 outbox 会被「清理缓存」清掉——两者都会让历史
+        // 里的图变白框。sent/ 既不参与清理、又是私有文件，重开、清缓存后都还在。
+        val durableImgs = imgs.filter { it.isImage }.map { persistOutgoing(it) }
         setMsgs(
             r,
             r.messages.value + Msg(
                 "user", text, ts = stamp(),
-                images = imgs.filter { it.isImage }.map { it.uri },
+                images = durableImgs,
                 files = imgs.filter { !it.isImage }.map { it.file.name },
             )
         )
         touchSession(if (wasEmpty) text else null)
         _pendingImages.value = emptyList()
         startRunWith(a, sid, text, imgs.map { it.file })
+    }
+
+    /**
+     * 把待发图片从 outbox 挪进「已发送」目录，返回气泡要存的 file:// 地址。
+     * 落盘失败时退回原地址（至少本次还能看），不阻断发送。
+     */
+    private fun persistOutgoing(p: PendingImage): String {
+        val app = getApplication<Application>()
+        return try {
+            val dir = File(app.filesDir, "sent").apply { mkdirs() }
+            val dst = File(dir, p.file.name)
+            if (!dst.exists()) p.file.copyTo(dst, overwrite = true)
+            p.file.delete()
+            android.net.Uri.fromFile(dst).toString()
+        } catch (_: Exception) {
+            p.uri
+        }
     }
 
     /** 把选中的图片拷进 App 沙盒，加入待发列表。 */

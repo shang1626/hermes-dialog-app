@@ -1,5 +1,19 @@
 # 变更记录
 
+## 2.23 — versionCode 34
+图片留存与查找三项（参考 Hy4ri/hermes-mobile 的 ReconciledImages / 图片失败重试 / ChatSearchDelegate）：
+- 用户图可靠留存：发出去的图先落进 App 私有「已发送」目录（sent/）再进气泡。原来存的是相册给的
+  content:// 地址，会被系统回收（换机/清数据/授权到期）；而备用副本放在 outbox，会被「清理缓存」
+  一起删掉——两者都会让历史里的图变白框。sent/ 不参与清理，重开、清缓存后都还在。
+- 图片加载三态：正文内联图与用户气泡里的图改成「加载中占位 / 失败可见可重试 / 成功渲染」。
+  原来直接渲染，网络一抖或链接过期就是一片空白，分不清「在加载」还是「坏了」。本地图读不到字节时
+  显示「图片不可用」小灰块，不再静默变白框。
+- 会话内搜索：对话页顶栏新增「搜索」，展开后在当前会话的本地消息里搜（含正文与工具轨迹）。
+  输入去抖 150 毫秒、后台线程匹配；显示「第几/共几」，上下箭头跳转并自动滚到该条；命中气泡加
+  强调边框、命中词加黄底。只搜当前会话（本地上限 300 条），跨会话搜索不在此版。
+- 新增文件 ChatSearch.kt。
+（ChatViewModel.kt、ChatSearch.kt、Screens.kt、Markdown.kt、App.kt、app/build.gradle.kts）
+
 ## 2.22 — versionCode 33
 断流兜底与流式观感两补（参考 Codename-11/hermes-relay 的 ChatStreamRecovery / StreamDeltaCoalescer）：
 - 断流翻历史兜底：重连退避用尽（8 次、约 1 分钟）后不再把回合判死。手机 SSE 常被系统
