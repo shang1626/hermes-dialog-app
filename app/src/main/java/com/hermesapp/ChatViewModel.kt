@@ -252,58 +252,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = Prefs(app)
     private var store = SessionStore(app, prefs.profile)
 
-    /**
-     * 一个会话的运行态。多会话并行：每个会话各自持有消息、忙闲、当前 run，
-     * 切换会话只换「正在看的」id，后台会话的流照常接收、写进它自己的缓冲。
-     */
-    private class SessionRuntime(val id: String) {
-        val messages = MutableStateFlow<List<Msg>>(emptyList())
-        val busy = MutableStateFlow(false)
-        val retryNote = MutableStateFlow("")
-        var runId: String = ""
-        var call: Call? = null
-        /**
-         * 流的代际号：每起一条新流就 +1。被新流取代的旧流，其回调据此自我作废——
-         * 否则两条流会同时收 run.completed，正文、通知与语音都执行两遍（实测 2.81 回前台重复播报）。
-         */
-        var streamGen: Int = 0
-        var lastSeq: Int = -1
-        var autoContinue: Int = 0
-        /**
-         * 退避探测单飞位：同一会话同时只允许一条退避链在等。
-         * 多口子（onClosed / onError / 回前台体检）并发进来时，只有一个能排上重试。
-         */
-        val probing = java.util.concurrent.atomic.AtomicBoolean(false)
-        var finished: Boolean = false
-        /** 这条 run 是重开 App 后从落盘标记恢复的（没有本地发送上下文，拿不到位置锚点）。 */
-        var resumed: Boolean = false
-        var startedAt: Long = 0L
-        var loaded: Boolean = false
-        var saveJob: Job? = null
-        /** 最近一次收到事件的墙钟时间，用于「回到前台」判断流是否已假死。 */
-        var lastEventAt: Long = 0L
-        /** 流式攒帧器：把碎字按帧放送，避免一大块一大块地跳。 */
-        var coalescer: StreamDeltaCoalescer? = null
-        /** 本轮发送前该会话已有多少条用户消息：断流翻历史时的位置锚点。 */
-        var priorUserCount: Int = 0
-        /** 本轮待发正文（trim 过）：锚点的内容校验用。 */
-        var pendingSendText: String = ""
-        /** 最近一条用户消息的 id：投递回执按它认领。 */
-        var lastUserMsgId: Long = 0L
-        /** 「确认送达」进行中要回写的用户消息 id；0 表示没有。 */
-        var confirmingMsgId: Long = 0L
-        /** 断流翻历史的轮询任务；收到正常事件或任务结束时取消。 */
-        var recoveryJob: Job? = null
-        /** 本会话排队待发的消息（跑着任务时用户又发的那些），按先后顺序，本轮结束依次发。 */
-        val queue = mutableListOf<QueuedSend>()
-        /** 队列长度：输入栏显示「排队 N 条」。 */
-        val queued = MutableStateFlow(0)
-        /** 用户按过停止后置真：待发队列暂停，等「继续」再走。 */
-        val queuePaused = MutableStateFlow(false)
+    init {
+        // 留一行证据：同一个进程里 ViewModel 重建会打多行，
+        // 用于确认「切后台回来进度丢」是不是被系统重建引起。
+        AppLog.log("vm", "ChatViewModel 新建 pid=" + android.os.Process.myPid())
     }
 
-    private val runtimes = ConcurrentHashMap<String, SessionRuntime>()
-    private fun rt(id: String): SessionRuntime = runtimes.computeIfAbsent(id) { SessionRuntime(it) }
+    // 会话运行态改放进程级单例（见 RuntimeHub.kt）：重建接回同一份，不再分叉。
+    private val runtimes get() = RuntimeHub.runtimes
+    private fun rt(id: String): SessionRuntime = RuntimeHub.rt(id)
 
     private val _currentId = MutableStateFlow("")
     val currentId = _currentId.asStateFlow()
@@ -639,7 +596,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun scheduleSave(r: SessionRuntime) {
         r.saveJob?.cancel()
-        r.saveJob = viewModelScope.launch(Dispatchers.IO) {
+        r.saveJob = RuntimeHub.scope.launch(Dispatchers.IO) {
             delay(400)
             saveRuntime(r)
         }
@@ -951,7 +908,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             if (rt(sid).busy.value) continue
             // 同一会话的探测不许叠（两个前台事件可能并发进来）。
             if (!resumingSids.add(sid)) continue
-            viewModelScope.launch(Dispatchers.IO) {
+            RuntimeHub.scope.launch(Dispatchers.IO) {
                 // 开机时网络往往还没就绪，探测失败不能当成「任务已结束」——
                 // 那样会把活跃标记删掉，这条任务就永远回不来了。重试几次，
                 // 实在探不出来就保留标记，等下次进前台/切身份再试。
@@ -2533,7 +2490,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         AppLog.log("stream", "起流 run=" + rid.take(12) + " lastSeq=" + r.lastSeq + " 第" + r.autoContinue + "次续接 gen=" + gen)
         // 每轮流一个攒帧器：碎字按帧放送。重起流时丢弃上一轮的残余。
         r.coalescer?.discard()
-        r.coalescer = StreamDeltaCoalescer(viewModelScope, onFlush = { s -> appendDelta(r, s) })
+        r.coalescer = StreamDeltaCoalescer(RuntimeHub.scope, onFlush = { s -> appendDelta(r, s) })
         r.call = a.streamEvents(
             runId = rid,
             lastSeq = r.lastSeq,
@@ -2669,7 +2626,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val waitMs = backoffDelayMs(attempt)
         r.retryNote.value = "连接中断，${waitMs / 1000} 秒后重试（$attempt/$MAX_RECONNECT_ATTEMPTS）"
         AppLog.log("retry", "第 $attempt/$MAX_RECONNECT_ATTEMPTS 次重试，${waitMs / 1000}s 后探 run=" + rid.take(12))
-        viewModelScope.launch(Dispatchers.IO) {
+        RuntimeHub.scope.launch(Dispatchers.IO) {
             delay(waitMs)
             // 退出前必须留一行：这条退避链可能已被别的路径（切回前台的体检、
             // 翻历史取回、手动停止）抢先收尾。静默 return 会让日志里只剩
@@ -2771,7 +2728,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         r.retryNote.value = "连接中断，正在从服务端取回结果…"
-        r.recoveryJob = viewModelScope.launch(Dispatchers.IO) {
+        r.recoveryJob = RuntimeHub.scope.launch(Dispatchers.IO) {
             var delayMs = 5_000L
             var elapsed = 0L
             var lastSig: String? = null
@@ -2968,7 +2925,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun updateRunService() {
         val running = runtimes.filterValues { it.busy.value }.keys.toSet()
         _runningIds.value = running
-        if (!prefs.keepAlive) {
+        // 治本：只要有任务在跑就举牌保活（抄 relay 的「活跃轮次登记」），
+        // 不再只看「后台运行」开关：开关关着时切后台照样会被系统冻结，
+        // 进度与完成通知都丢。
+        if (!prefs.keepAlive && running.isEmpty()) {
             RunService.stop(getApplication())
             return
         }
@@ -3036,7 +2996,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 设置页切换「后台运行」时调用：关掉立即停掉前台服务，常驻通知随之消失。 */
     fun setKeepAlive(on: Boolean) {
         prefs.keepAlive = on
-        if (!on) RunService.stop(getApplication()) else updateRunService()
+        // 关掉开关也不能直接停：还有任务在跑就得继续举牌。
+        updateRunService()
     }
 
     /** 设置页「其它会话完成也提醒」：需一条活连接才能观察到别的会话收尾。 */
