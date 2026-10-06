@@ -278,7 +278,9 @@ class HermesApi(
                 o.optInt("versionCode", 0),
                 o.optString("versionName", ""),
                 o.optString("url", ""),
-                o.optString("notes", ""),
+                // 发布文件里版本说明的键名历史上两种都出现过（notes / changelog），
+                // 只认一种就会让弹窗空白——两个都认，notes 优先。
+                o.optString("notes", "").ifEmpty { o.optString("changelog", "") },
                 o.optLong("size", 0L),
                 o.optString("md5", "")
             )
