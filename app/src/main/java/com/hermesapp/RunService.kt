@@ -3,6 +3,7 @@ package com.hermesapp
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -64,10 +65,20 @@ class RunService : Service() {
             ch.enableVibration(false)
             mgr.createNotificationChannel(ch)
         }
+        // 点常驻条目要把 App 拉到前台。原来漏挂 contentIntent，点了完全没反应
+        // （另两条通知都挂了，所以只有这条点不动）。用各自的 requestCode 避免覆盖。
+        val tap = PendingIntent.getActivity(
+            this, 3,
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Hermes")
             .setContentText("")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setContentIntent(tap)
             .setOngoing(true)
             .setSilent(true)
             .setPriority(NotificationCompat.PRIORITY_MIN)
