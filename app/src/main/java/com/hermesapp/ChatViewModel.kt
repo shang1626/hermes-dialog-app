@@ -1612,6 +1612,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (mTotal > 0) mem.add(it("已用/总量", mUsed.toString() + " MB / " + mTotal.toString() + " MB"))
         val pmem = h.optInt("proc_memory_mb", 0)
         if (pmem > 0) mem.add(it("网关进程", pmem.toString() + " MB"))
+        // 交换分区：内存满了靠 swap 顶，swap 也快满才是真要 OOM，故与内存同区显示。
+        // 服务端未打 sysinfo swap 补丁时不回这三个字段，optDouble 取到 -1 / optInt 取到 0，整行自动不显示。
+        val swPct = h.optDouble("swap_percent", -1.0)
+        if (swPct >= 0) mem.add(it("Swap 使用率", String.format("%.1f%%", swPct)))
+        val swUsed = h.optInt("swap_used_mb", 0)
+        val swTotal = h.optInt("swap_total_mb", 0)
+        if (swTotal > 0) mem.add(it("Swap 已用/总量", swUsed.toString() + " MB / " + swTotal.toString() + " MB"))
         sec("内存", mem)
 
         val disk = mutableListOf<StatusItem>()

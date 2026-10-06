@@ -1,3 +1,13 @@
+## 2.80 — versionCode 91
+
+状态页「内存」区新增交换分区（Swap）用量。
+
+1. **新增两行**：「Swap 使用率」（百分比）与「Swap 已用/总量」（MB / MB），排在网关进程下面。
+2. **数据来源**：服务端 `/health/sysinfo` 新增 `swap_total_mb` / `swap_used_mb` / `swap_percent`（配套服务端补丁 apply_sysinfo_swap_patch.py）。
+3. **兼容旧服务端**：字段缺失时两行自动不显示，不会报错也不会显示 0。
+
+（ChatViewModel.kt buildStatus）
+
 ## 2.79 — versionCode 90
 
 「定时任务」页的「已触发执行」不再是一句看不出结果的话。
