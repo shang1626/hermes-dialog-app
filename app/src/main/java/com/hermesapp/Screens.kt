@@ -1005,7 +1005,7 @@ fun JobsScreen(vm: ChatViewModel, prefs: Prefs) {
                     modifier = Modifier.padding(vertical = 8.dp))
             }
             for (j in jobs) {
-                JobCard(j) { action -> vm.jobAction(j.id, action) }
+                JobCard(j) { action -> vm.jobAction(j.id, action, j.zhName.ifEmpty { j.name }) }
                 Spacer(Modifier.height(10.dp))
             }
             Text("数据来自服务端 /api/jobs，只列出本机器人的任务",
@@ -1013,6 +1013,16 @@ fun JobsScreen(vm: ChatViewModel, prefs: Prefs) {
                 modifier = Modifier.fillMaxWidth().padding(top = 2.dp))
         }
     }
+}
+
+/** 执行记录状态翻译（latest_execution.status），与 ViewModel 内那份保持一致。 */
+private fun jobZhExecStatusLocal(s: String): String = when (s) {
+    "claimed" -> "已排入队列"
+    "running" -> "执行中"
+    "completed" -> "已完成"
+    "failed" -> "失败"
+    "unknown" -> "状态未知"
+    else -> s
 }
 
 /** 单条定时任务卡片：名称 + 排期 + 上次/下次 + 三个动作按钮。 */
@@ -1054,6 +1064,29 @@ fun JobCard(j: JobItem, onAction: (String) -> Unit) {
                 )
             }
             if (j.nextRun.isNotEmpty()) Text("下次  " + j.nextRun, color = c.dim, fontSize = 11.sp)
+            // 最近一次执行明细：状态 + 耗时 / 失败原因。
+            // 这一段回答的是「刚才点『立即执行』到底跑了哪条、跑成没成」——
+            // 以前 App 把服务端返回的 latest_execution 整个丢掉，界面上只剩一句
+            // 不带任务名的「已触发执行」，看不出任何结果。
+            if (j.execStatus.isNotEmpty()) {
+                Spacer(Modifier.height(2.dp))
+                val execCol = when (j.execStatus) {
+                    "completed" -> c.ok
+                    "failed", "unknown" -> c.bad
+                    "running", "claimed" -> c.accent
+                    else -> c.dim
+                }
+                val line = StringBuilder("最近执行  ")
+                line.append(jobZhExecStatusLocal(j.execStatus))
+                if (j.execDuration.isNotEmpty()) line.append(" · 耗时 ").append(j.execDuration)
+                Text(line.toString(), color = execCol, fontSize = 11.sp)
+                if (j.execError.isNotEmpty()) {
+                    Text(
+                        "原因  " + j.execError.replace(Regex("\\s+"), " ").trim().take(160),
+                        color = c.bad, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 OutlinedButton(

@@ -196,6 +196,15 @@ data class JobItem(
     val lastOk: Boolean,
     val lastRun: String,
     val nextRun: String,
+    // ---- 最近一次执行明细（服务端 /api/jobs 每条都带的 latest_execution）----
+    /** 执行记录 id：用来判断「立即执行」后是否真的出现了新的一次执行。 */
+    val execId: String = "",
+    /** claimed / running / completed / failed / unknown。 */
+    val execStatus: String = "",
+    /** 执行耗时文案（已算好）；拿不到起止时间时为空。 */
+    val execDuration: String = "",
+    /** 失败原因（仅 failed 时有值）。 */
+    val execError: String = "",
 )
 
 /** SSE 断流后的最大自动重连次数（退避等待，见 ChatViewModel.backoffDelayMs）。 */
@@ -1297,6 +1306,37 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         else -> s
     }
 
+    /** 执行记录状态翻译（latest_execution.status）。 */
+    private fun jobZhExecStatus(s: String): String = when (s) {
+        "claimed" -> "已排入队列"
+        "running" -> "执行中"
+        "completed" -> "已完成"
+        "failed" -> "失败"
+        "unknown" -> "状态未知"
+        else -> s
+    }
+
+    /**
+     * 执行耗时文案：优先 finished-claimed 的墙钟差，跑着就 started-claimed。
+     * 时间戳是带时区的 ISO 串，用 OffsetDateTime 解析再相减；解析失败返回空串。
+     */
+    private fun execDurationText(ex: JSONObject?): String {
+        val e = ex ?: return ""
+        fun ts(k: String): java.time.OffsetDateTime? = runCatching {
+            val v = e.optString(k, "")
+            if (v.isEmpty()) null else java.time.OffsetDateTime.parse(v)
+        }.getOrNull()
+        val claimed = ts("claimed_at") ?: return ""
+        val end = ts("finished_at") ?: ts("started_at") ?: return ""
+        val ms = java.time.Duration.between(claimed, end).toMillis()
+        if (ms < 0) return ""
+        return when {
+            ms < 1000 -> "不到 1 秒"
+            ms < 60_000 -> String.format("%.1f 秒", ms / 1000.0)
+            else -> String.format("%.1f 分", ms / 60_000.0)
+        }
+    }
+
     /** 排期翻译：interval / cron / once 三类分别转中文。 */
     private fun jobZhSchedule(sch: JSONObject?): String {
         if (sch == null) return ""
@@ -1349,30 +1389,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         jobsIncludeDisabled = includeDisabled
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val resp = api?.listJobs(includeDisabled) ?: return@launch
-                val arr = resp.optJSONArray("jobs") ?: org.json.JSONArray()
-                val out = mutableListOf<JobItem>()
-                for (i in 0 until arr.length()) {
-                    val o = arr.optJSONObject(i) ?: continue
-                    val sch = o.optJSONObject("schedule")
-                    val rawName = o.optString("name", "(未命名)")
-                    val rawLast = o.optString("last_status", "")
-                    out.add(
-                        JobItem(
-                            id = o.optString("id", ""),
-                            name = rawName,
-                            zhName = jobZhName(rawName),
-                            note = jobZhNote(rawName),
-                            schedule = jobZhSchedule(sch),
-                            enabled = o.optBoolean("enabled", true),
-                            state = jobZhState(o.optString("state", "")),
-                            lastStatus = jobZhStatus(rawLast),
-                            lastOk = rawLast == "ok",
-                            lastRun = TimeFmt.isoToBj(o.optString("last_run_at", "")),
-                            nextRun = TimeFmt.isoToBj(o.optString("next_run_at", "")),
-                        )
-                    )
-                }
+                val out = fetchJobs(includeDisabled) ?: return@launch
                 _jobs.value = out
                 _jobsErr.value = ""
             } catch (e: Exception) {
@@ -1381,24 +1398,67 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 拉一次任务列表并解析成 JobItem（纯读取，不写 _jobs）。失败抛异常，由调用方兜。 */
+    private suspend fun fetchJobs(includeDisabled: Boolean): List<JobItem>? {
+        val resp = api?.listJobs(includeDisabled) ?: return null
+        val arr = resp.optJSONArray("jobs") ?: org.json.JSONArray()
+        val out = mutableListOf<JobItem>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val sch = o.optJSONObject("schedule")
+            val rawName = o.optString("name", "(未命名)")
+            val rawLast = o.optString("last_status", "")
+            // 最近一次执行明细：服务端每条 job 都带 latest_execution，
+            // 以前 App 整个丢掉，于是「已触发执行」之后看不出跑成没成。
+            val ex = o.optJSONObject("latest_execution")
+            out.add(
+                JobItem(
+                    id = o.optString("id", ""),
+                    name = rawName,
+                    zhName = jobZhName(rawName),
+                    note = jobZhNote(rawName),
+                    schedule = jobZhSchedule(sch),
+                    enabled = o.optBoolean("enabled", true),
+                    state = jobZhState(o.optString("state", "")),
+                    lastStatus = jobZhStatus(rawLast),
+                    lastOk = rawLast == "ok",
+                    lastRun = TimeFmt.isoToBj(o.optString("last_run_at", "")),
+                    nextRun = TimeFmt.isoToBj(o.optString("next_run_at", "")),
+                    execId = ex?.optString("id", "").orEmpty(),
+                    execStatus = ex?.optString("status", "").orEmpty(),
+                    execDuration = execDurationText(ex),
+                    execError = ex?.optString("error", "").orEmpty(),
+                )
+            )
+        }
+        return out
+    }
+
     /** 定时任务动作：pause / resume / run。成功后按原过滤口径重拉列表。 */
-    fun jobAction(jobId: String, action: String) {
+    fun jobAction(jobId: String, action: String, jobLabel: String = "") {
         if (jobId.isEmpty()) return
+        val who = jobLabel.ifEmpty { jobId }
         viewModelScope.launch(Dispatchers.IO) {
-            val label = when (action) {
-                "pause" -> "已暂停"
-                "resume" -> "已恢复"
-                "run" -> "已触发执行"
-                else -> "完成"
-            }
+            val a = api ?: return@launch
             try {
-                val a = api ?: return@launch
                 when (action) {
-                    "pause" -> a.pauseJob(jobId)
-                    "resume" -> a.resumeJob(jobId)
-                    "run" -> a.runJob(jobId)
+                    "pause" -> { a.pauseJob(jobId); _jobsNote.value = "已暂停：" + who }
+                    "resume" -> { a.resumeJob(jobId); _jobsNote.value = "已恢复：" + who }
+                    "run" -> {
+                        // 立即执行：POST 只是「排上队」，服务端返回 {"ok":true} 没有 run_id。
+                        // 先记下当前这次执行记录 id，触发后轮询等它变成一次新的执行，
+                        // 才能知道触发的是哪条、跑成没成、产出是什么。
+                        val before = _jobs.value.firstOrNull { it.id == jobId }?.execId.orEmpty()
+                        a.runJob(jobId)
+                        _jobsNote.value = "已触发执行：" + who
+                        _jobsErr.value = ""
+                        followRunToCompletion(a, jobId, who, before)
+                        delay(400)
+                        refreshJobs()
+                        return@launch
+                    }
+                    else -> _jobsNote.value = "完成"
                 }
-                _jobsNote.value = label
                 _jobsErr.value = ""
             } catch (e: Exception) {
                 _jobsNote.value = ""
@@ -1406,6 +1466,100 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
             delay(400)
             refreshJobs()
+        }
+    }
+
+    /**
+     * 「立即执行」后盯住这次执行直到结束，并把产出摘要回显到提示行。
+     *
+     * 为什么要轮询：POST /api/jobs/{id}/run 的语义是「下一轮 tick 排上队」，返回体只有
+     * {"ok":true}，没有 run_id，也没有产出。唯一能看结果的途径是列表里那条
+     * latest_execution（claimed→running→completed/failed），所以轮询它。
+     *
+     * 产出摘要：cron 任务跑起来会在服务端建一个会话，id 形如
+     * cron_<job.id>_<yyyymmdd_HHMMSS>（job.id 与 latest_execution.job_id 一致）。
+     * 跑完去 /api/sessions 里找到这次新出现的那个会话，拉最后一条助手消息即可。
+     * 拿不到就只报「已完成」，绝不编造。
+     */
+    private suspend fun followRunToCompletion(
+        a: HermesApi, jobId: String, who: String, beforeExecId: String,
+    ) {
+        var lastStatus = ""
+        for (i in 1..40) {   // 每 3 秒一轮，最多盯 2 分钟
+            delay(3_000)
+            val out = try { fetchJobs(true) } catch (_: Exception) { null } ?: continue
+            _jobs.value = out
+            val job = out.firstOrNull { it.id == jobId } ?: continue
+            val ex = job.execId
+            // 还没出现新的执行记录：可能还在等下一轮 tick，继续等。
+            if (ex.isEmpty() || ex == beforeExecId) continue
+            lastStatus = job.execStatus
+            when (job.execStatus) {
+                "completed" -> {
+                    val tail = job.execDuration
+                    _jobsNote.value = "已完成：" + who + (if (tail.isEmpty()) "" else "（耗时 " + tail + "）")
+                    val summary = fetchRunSummary(a, jobId)
+                    if (summary.isNotEmpty()) {
+                        _jobsNote.value = _jobsNote.value + "\n产出：" + summary
+                    }
+                    return
+                }
+                "failed" -> {
+                    val why = job.execError.ifEmpty { "未知原因" }
+                    _jobsNote.value = ""
+                    _jobsErr.value = "执行失败：" + who + " — " + why.take(200)
+                    return
+                }
+                "unknown" -> {
+                    _jobsNote.value = ""
+                    _jobsErr.value = "执行状态未知：" + who + "（进程可能异常退出，请查服务端）"
+                    return
+                }
+                else -> { /* claimed / running：继续等 */ }
+            }
+        }
+        // 盯满 2 分钟还没结束：如实说还在跑，不谎报完成。
+        val still = if (lastStatus == "running") "仍在执行中" else "已排入队列，仍在等待"
+        _jobsNote.value = who + "：已触发，" + still + "（超过 2 分钟，可稍后刷新查看）"
+    }
+
+    /**
+     * 取本次 cron 执行的产出摘要：找该任务最新一次运行会话，取最后一条助手消息。
+     * 认不出会话或没有正文就返回空串（绝不编造）。
+     */
+    private suspend fun fetchRunSummary(a: HermesApi, jobId: String): String {
+        return try {
+            val resp = a.listSessions(limit = 50)
+            val arr = resp.optJSONArray("data") ?: return ""
+            val prefix = "cron_" + jobId + "_"
+            var best: JSONObject? = null
+            var bestTs = Double.NEGATIVE_INFINITY
+            for (i in 0 until arr.length()) {
+                val s = arr.optJSONObject(i) ?: continue
+                val sid = s.optString("id", "")
+                if (!sid.startsWith(prefix)) continue
+                val ts = s.optDouble("started_at", 0.0)
+                if (ts > bestTs) { bestTs = ts; best = s }
+            }
+            val sid = best?.optString("id", "").orEmpty()
+            if (sid.isEmpty()) return ""
+            val m = a.sessionMessages(sid)
+            val msgs = m.optJSONArray("data") ?: return ""
+            var text = ""
+            for (i in 0 until msgs.length()) {
+                val o = msgs.optJSONObject(i) ?: continue
+                if (o.optString("role", "") != "assistant") continue
+                val c = o.optString("content", "")
+                if (c.isNotBlank()) text = c
+            }
+            val one = text.replace(Regex("\\s+"), " ").trim()
+            when {
+                one.isEmpty() -> ""
+                one.length > 160 -> one.take(160) + "…"
+                else -> one
+            }
+        } catch (_: Exception) {
+            ""
         }
     }
 
