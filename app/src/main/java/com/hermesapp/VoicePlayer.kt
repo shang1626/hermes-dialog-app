@@ -31,6 +31,12 @@ object VoicePlayer {
 
     fun isAudio(name: String): Boolean = AUDIO_EXT.containsMatchIn(name)
 
+    /** 从一条消息正文里取出第一个音频附件的来源（data URL 或 hermes-media://token）；没有则返回空串。 */
+    fun audioTarget(text: String): String {
+        val m = AUDIO_ATT_RE.find(text) ?: return ""
+        return m.groupValues[2]
+    }
+
     /** 音频附件：data URL 内联，或走网关托管 token。 */
     private val AUDIO_ATT_RE = Regex(
         "\\[\\uD83D\\uDCCE ([^\\]]+\\.(?:mp3|m4a|aac|wav|ogg|opus))\\]\\(((?:data:|hermes-media://)[^)]+)\\)",
