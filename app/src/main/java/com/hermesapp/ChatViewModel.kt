@@ -610,6 +610,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun stamp(): Long = System.currentTimeMillis()
 
+    /** 本轮计时起点：优先会话级的（整轮唯一、不会被气泡重建冲掉），没有才取当下。 */
+    private fun turnStart(r: SessionRuntime): Long = if (r.startedAt > 0) r.startedAt else stamp()
+
     private fun setMsgs(r: SessionRuntime, list: List<Msg>) {
         r.messages.value = list
         scheduleSave(r)
@@ -653,18 +656,25 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 上次从服务端同步标题的时间：节流用，避免每个轮末都打一次接口。 */
     private var lastTitleSyncAt = 0L
 
+    /** 只列「用户真正聊过」的来源：App(api_server)、微信(weixin)、CLI(cli)。
+     *  定时任务(cron)、子智能体(subagent)、一次性(oneshot)等机器会话不进历史列表。 */
+    private val userFacingSources = setOf("api_server", "weixin", "cli")
+
     /**
-     * 把服务端生成的正式标题同步回本地会话索引。
+     * 从服务端拉会话列表，合并进本地索引。
      *
-     * 为什么需要：本地标题只有一条生成路径（touchSession：首条用户文本截 20 字），
-     * 且只在「本地还没有任何用户消息」时触发——重开 App 先拉回服务端消息、排队发送、
-     * 别的端建的会话都会错过，于是标题永远停在「新对话」。服务端其实一直在用
-     * 小模型生成 3~7 词的正式标题（title_source=llm），历史会话也有，直接取来覆盖即可。
+     * 为什么需要两件事：
+     * 1) 标题。本地标题只有一条生成路径（touchSession：首条用户文本截 20 字），且只在
+     *    「本地还没有任何用户消息」时触发——重开 App 先拉回服务端消息、排队发送、别的端
+     *    建的会话都会错过，标题永远停在「新对话」。服务端一直用小模型生成 3~7 词正式标题。
+     * 2) 自愈与跨端。本地索引是历史列表的唯一来源，一旦被清（重装 / 清应用数据 / 换机）
+     *    列表就整个空掉，服务端还有全部记录却回不来；且微信端、CLI 端建的会话永远不出现。
+     *    现在启动时拉一次服务端列表，把服务端独有的用户会话补进本地索引。
      *
-     * 只改 title 字段：不动 updatedAt（避免列表顺序与「上次停留」突变）、不增删行；
-     * 服务端没有的本地行（新建未发消息的会话）保持原样。
+     * 只增不删：本地行（含尚未落服务端的新对话）一律保留，绝不因服务端没有而移除；
+     * 本地已有的行只更新标题，不动 updatedAt（避免列表顺序突变）。
      */
-    fun syncServerTitles(throttleMs: Long = 0L) {
+    fun syncFromServer(throttleMs: Long = 0L) {
         val a = api ?: return
         val now = System.currentTimeMillis()
         if (throttleMs > 0 && now - lastTitleSyncAt < throttleMs) return
@@ -673,28 +683,47 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val resp = a.listSessions()
                 val arr = resp.optJSONArray("data") ?: return@launch
-                val byId = HashMap<String, String>()
+                val list = _sessions.value.toMutableList()
+                var changed = false
+                var added = 0
                 for (i in 0 until arr.length()) {
                     val o = arr.optJSONObject(i) ?: continue
                     val id = o.optString("id", "")
                     if (id.isEmpty()) continue
-                    val t = o.optString("title", "").trim()
-                    if (t.isNotEmpty()) byId[id] = t
+                    // 委派子会话（子智能体）不进历史列表。
+                    if (o.optBoolean("is_internal_child", false)) continue
+                    val title = o.optString("title", "").trim()
+                    val idx = list.indexOfFirst { it.id == id }
+                    if (idx >= 0) {
+                        if (title.isNotEmpty() && list[idx].title != title) {
+                            list[idx] = list[idx].copy(title = title); changed = true
+                        }
+                        continue
+                    }
+                    // 服务端独有：只补用户来源、未归档未隐藏、且有消息的会话。
+                    if (o.optString("source", "") !in userFacingSources) continue
+                    if (o.optBoolean("archived", false) || o.optBoolean("hidden", false)) continue
+                    if (o.optInt("message_count", 0) <= 0) continue
+                    val ts = (o.optDouble("last_active", 0.0) * 1000.0).toLong()
+                    list.add(SessionMeta(id, title.ifEmpty { "对话" }, if (ts > 0) ts else stamp(), false))
+                    changed = true; added++
                 }
-                if (byId.isEmpty()) return@launch
-                val list = _sessions.value.toMutableList()
-                var changed = false
-                for (k in list.indices) {
-                    val s = list[k]
-                    val t = byId[s.id] ?: continue
-                    if (s.title != t) { list[k] = s.copy(title = t); changed = true }
+                if (!changed) return@launch
+                val sorted = list.sortedByDescending { it.updatedAt }
+                _sessions.value = sorted
+                store.saveIndex(sorted)
+                // 空态自愈：列表原本是空的（索引丢失），补进来后落到最近一个会话。
+                if (_currentId.value.isEmpty() && sorted.isNotEmpty()) {
+                    val target = sorted.firstOrNull { !it.archived } ?: sorted.first()
+                    withContext(Dispatchers.Main) {
+                        _currentId.value = target.id
+                        prefs.sessionId = target.id
+                        ensureLoaded(target.id)
+                    }
                 }
-                if (changed) {
-                    _sessions.value = list.sortedByDescending { it.updatedAt }
-                    store.saveIndex(_sessions.value)
-                }
+                if (added > 0) AppLog.log("session-sync", "从服务端补回 " + added + " 个会话")
             } catch (_: Exception) {
-                // 离线 / 接口异常：保留本地标题，不影响使用
+                // 离线 / 接口异常：保留本地列表，不影响使用
             }
         }
     }
@@ -851,7 +880,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val a0 = api
         MediaFetch.handler = { token -> a0?.downloadMedia(token) }
         bootstrapSessions(p.sessionId)
-        syncServerTitles()
+        syncFromServer()
         pingLoop()
         refreshStatus()
         refreshFromServer()
@@ -944,7 +973,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                                 r.messages.value = m
                             } else {
                                 r.messages.value = r.messages.value +
-                                    Msg("assistant", "", pending = true, ts = System.currentTimeMillis(), startedAt = System.currentTimeMillis())
+                                    Msg("assistant", "", pending = true, ts = System.currentTimeMillis(), startedAt = turnStart(r))
                             }
                             r.busy.value = true
                             updateRunService()
@@ -1004,7 +1033,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 顺带刷一次在线状态，别让角标停在离线
         viewModelScope.launch(Dispatchers.IO) { refreshStatus() }
         // 回前台顺带同步一次服务端标题（节流 30 秒，避免频繁切前后台狂打接口）
-        syncServerTitles(30_000L)
+        syncFromServer(30_000L)
     }
 
     /** 拉一次服务端能力：是否支持原生图片（决定图片是原生附图还是先转文字）。 */
@@ -1764,7 +1793,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             r.busy.value = true
             r.finished = false
             r.retryNote.value = "已确认送达，正在取回结果…"
-            setMsgs(r, r.messages.value + Msg("assistant", "", pending = true, ts = stamp(), startedAt = stamp()))
+            setMsgs(r, r.messages.value + Msg("assistant", "", pending = true, ts = stamp(), startedAt = turnStart(r)))
             updateRunService()
             startHistoryRecovery(sid, "")
         }
@@ -1969,12 +1998,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         autoRetryLeft: Int = 1,
     ) {
         val r = rt(sid)
-        setMsgs(r, r.messages.value + Msg("assistant", "", pending = true, ts = stamp(), startedAt = stamp()))
+        // 本轮计时起点先定好：气泡与最终耗时都锚在它上面，中途气泡被重建也不会漂。
+        r.startedAt = stamp()
+        setMsgs(r, r.messages.value + Msg("assistant", "", pending = true, ts = stamp(), startedAt = r.startedAt))
         r.busy.value = true
         r.finished = false
         r.lastSeq = -1
         r.autoContinue = 0
-        r.startedAt = System.currentTimeMillis()
         updateRunService()
         val ids = mutableListOf<String>()
         var uploadsDone = reuseArtifacts.isNotEmpty()
@@ -2066,7 +2096,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         var i = list.indexOfLast { it.role == "assistant" && it.pending }
         if (i < 0) i = list.indexOfLast { it.role == "assistant" }
         if (i >= 0) list[i] = list[i].copy(clarify = card)
-        else list.add(Msg("assistant", "", pending = true, ts = stamp(), startedAt = stamp(), clarify = card))
+        else list.add(Msg("assistant", "", pending = true, ts = stamp(), startedAt = turnStart(r), clarify = card))
         setMsgs(r, list)
     }
 
@@ -2112,7 +2142,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         var i = list.indexOfLast { it.role == "assistant" && it.pending }
         if (i < 0) i = list.indexOfLast { it.role == "assistant" }
         if (i >= 0) list[i] = list[i].copy(approval = card)
-        else list.add(Msg("assistant", "", pending = true, ts = stamp(), startedAt = stamp(), approval = card))
+        else list.add(Msg("assistant", "", pending = true, ts = stamp(), startedAt = turnStart(r), approval = card))
         setMsgs(r, list)
     }
 
@@ -2170,10 +2200,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 轮末 token 用量：挂到该会话最后一条助手消息上。 */
     private fun attachUsage(r: SessionRuntime, ev: com.hermesapp.net.SseEvent) {
         val u = ev.data.optJSONObject("usage") ?: return
-        // 耗时起点与界面实时计时同源：用该助手气泡自己的 startedAt。
-        // 不混用 r.startedAt——它会被「建 run / 传附件」的往返推移。
+        // 耗时起点与界面实时计时同源：优先用会话级的本轮起点 r.startedAt
+        // （整轮唯一、不会被气泡重建冲掉），它没有才回落气泡自己的。
         val bubbleStart = r.messages.value.lastOrNull { it.role == "assistant" }?.startedAt ?: 0L
-        val baseStart = if (bubbleStart > 0) bubbleStart else r.startedAt
+        // 优先用会话级的本轮起点（整轮唯一、不会被气泡重建冲掉）；它没有才回落气泡的。
+        val baseStart = if (r.startedAt > 0) r.startedAt else bubbleStart
         val usage = Usage(
             input = u.optInt("input_tokens", 0),
             output = u.optInt("output_tokens", 0),
@@ -2599,7 +2630,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val list = r.messages.value.toMutableList()
         val i = list.indexOfLast { it.role == "assistant" && it.pending }
         if (i >= 0) list[i] = list[i].copy(trace = list[i].trace + d)
-        else list.add(Msg("assistant", "", pending = true, ts = stamp(), startedAt = stamp(), trace = d))
+        else list.add(Msg("assistant", "", pending = true, ts = stamp(), startedAt = turnStart(r), trace = d))
         setMsgs(r, list)
     }
 
@@ -2608,7 +2639,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val list = r.messages.value.toMutableList()
         val i = list.indexOfLast { it.role == "assistant" && it.pending }
         if (i >= 0) list[i] = list[i].copy(text = list[i].text + d)
-        else list.add(Msg("assistant", d, pending = true, ts = stamp(), startedAt = stamp()))
+        else list.add(Msg("assistant", d, pending = true, ts = stamp(), startedAt = turnStart(r)))
         setMsgs(r, list)
     }
 
@@ -2652,7 +2683,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (sid == _currentId.value) drainPendingReply()
         drainQueue(sid)   // 本轮结束：把排队的下一条发出去
         // 本轮跑完：服务端此刻多半已生成了正式标题，同步一次（节流 5 秒）。
-        syncServerTitles(5_000L)
+        syncFromServer(5_000L)
     }
 
     /**
