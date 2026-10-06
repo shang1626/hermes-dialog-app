@@ -1,5 +1,19 @@
 # 变更记录
 
+## 2.22 — versionCode 33
+断流兜底与流式观感两补（参考 Codename-11/hermes-relay 的 ChatStreamRecovery / StreamDeltaCoalescer）：
+- 断流翻历史兜底：重连退避用尽（8 次、约 1 分钟）后不再把回合判死。手机 SSE 常被系统
+  掐死而服务端仍在跑，跑完会把答案写进会话记录——改为轮询 `/api/sessions/{id}/messages`
+  等答案落盘，首次 5 秒、逐次翻倍到 30 秒封顶，最多盯 30 分钟。认锚点靠位置不靠文字
+  （发送前记下用户消息条数 N，第 N+1 条即本次发送，再用正文二次校验），答案须连续两次
+  读到一致才算定（签名带记录总条数，服务端还在追加工具记录时会变）；认不出锚点连续两次
+  即放弃，宁可报错不认错答案。
+- 流式攒帧：收到的碎字先进缓冲，每 16 毫秒放一小段，放多少跟积压自适应（每帧 8~48 字），
+  避免模型吐字「憋一下、然后一大块」地跳。切分时避开中文/emoji 半个字；工具事件、回合
+  结束、中断等节点先 flush 再走，保证顺序与末段不丢。
+- 新增文件 StreamDeltaCoalescer.kt。
+（ChatViewModel.kt、StreamDeltaCoalescer.kt、app/build.gradle.kts）
+
 ## 2.21 — versionCode 32
 断线恢复三个洞一起补（参考 Hy4ri/hermes-mobile 的重连+补播实现）：
 - 隧道假死看门狗：SSE 事件流改用独立 client（读超时 30 秒）。原来那条流 readTimeout=0，
