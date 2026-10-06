@@ -100,6 +100,8 @@ data class Receipt(
         const val FAILED = "failed"
         /** 排队中：本会话还在跑上一轮，这条等它结束自动发（不是发送中，别转圈）。 */
         const val QUEUED = "queued"
+        /** 用户已确认忽略「不确定」：收掉角标与提示，不再反复提醒，也不自动重发。 */
+        const val ACKED = "acked"
     }
 }
 
@@ -1240,6 +1242,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun closeReceiptMenu() {
         _receiptMenu.value = 0L
+    }
+
+    /**
+     * 「知道了，不重发」：把「不确定」标成已确认忽略。
+     *
+     * 原来这条消息卡在黄问号时只有「点这里处理」，用户想收掉角标就只能选「重新发送」——
+     * 等于拿一句话去赌会不会发两遍。现在确认收到即可，角标与提示一起收起，不动网络。
+     */
+    fun acknowledgeReceipt(msgId: Long) {
+        val sid = _currentId.value
+        _receiptMenu.value = 0L
+        advanceReceipt(sid, msgId, Receipt.ACKED, note = "")
     }
 
     /**
