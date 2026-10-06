@@ -1635,7 +1635,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val rid = r.runId
         if (rid.isEmpty()) return
         appendTrace(r, "\n[插话] " + t)
-        viewModelScope.launch(Dispatchers.IO) { runCatching { a.steer(rid, t) } }
+        // 插话结果要可见：200 才算送进本轮；409/其它说明本轮已收尾、这句没赶上。
+        // 原来 runCatching 把返回整个吞了，用户看不到任何反应，才觉得「插不进去」。
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = a.steer(rid, t)
+            withContext(Dispatchers.Main) {
+                r.retryNote.value = if (ok) "插话已送达，本轮会读到"
+                else "插话没送达：本轮可能已收尾，这句话没赶上"
+            }
+        }
     }
 
     /** 按消息 id 改投递状态（找不到就忽略——消息可能已被「清理缓存」截掉）。 */
@@ -2268,6 +2276,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         if (out.isNotEmpty()) setPendingText(r, out) else finishPending(r)
                         attachUsage(r, ev)
                         doneOk(sid)
+                        // 插话没赶上本轮：服务端把未送达的插话文本随终态放在 pending_steer 里下发。
+                        // 不静默丢——放回输入框（若为空）并提示，用户点发送即可重发。
+                        // 放在 doneOk 之后，避免被它的 retryNote 清空覆盖。
+                        val ps = ev.data.optString("pending_steer", "").trim()
+                        if (ps.isNotEmpty()) {
+                            if (prefs.draftInput.isEmpty()) prefs.draftInput = ps
+                            r.retryNote.value = "上一句插话没赶上本轮，已放回输入框，点发送重发"
+                        }
                         notifyCompletion(sid, out)
                         // 完成语音：服务端把整段回复合成音频随 output 下发，这里自动播一遍。
                         if (out.isNotEmpty()) {
