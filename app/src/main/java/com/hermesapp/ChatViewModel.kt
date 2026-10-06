@@ -60,6 +60,8 @@ data class Msg(
      * 重发不再有「可能发两遍」的风险，还能拿回原来那轮的 run_id 直接接上。
      */
     val idemKey: String = "",
+    /** 插话气泡：用户在本轮运行中追加的一句，界面按用户气泡显示并标「插话」。 */
+    val steer: Boolean = false,
 ) {
     companion object {
         private val counter = java.util.concurrent.atomic.AtomicLong(0)
@@ -1634,7 +1636,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val r = rt(sid)
         val rid = r.runId
         if (rid.isEmpty()) return
-        appendTrace(r, "\n[插话] " + t)
+        // 插话要在聊天界面看得见：直接插一条用户气泡（标「插话」），
+        // 不再只往折叠的过程里塞一行——那样用户以为没发出去。
+        run {
+            val list = r.messages.value.toMutableList()
+            list.add(Msg("user", t, pending = false, ts = stamp(), steer = true))
+            setMsgs(r, list)
+        }
         // 插话结果要可见：200 才算送进本轮；409/其它说明本轮已收尾、这句没赶上。
         // 原来 runCatching 把返回整个吞了，用户看不到任何反应，才觉得「插不进去」。
         viewModelScope.launch(Dispatchers.IO) {
