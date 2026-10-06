@@ -1,5 +1,15 @@
 # 变更记录
 
+## 2.39 — versionCode 50
+修「点通知栏常驻条目没反应」：
+- 那条常驻条目是任务运行期间的前台服务通知（RunService，通知 id 1001，标题就一个
+  「Hermes」）。它建通知时只设了标题与图标，**漏挂 contentIntent** —— 安卓里通知要点得动
+  必须挂 PendingIntent 指明拉起谁，没挂就是点了完全没反应。
+- 另两条通知（新消息 2001、审批/澄清 2002）都挂了 contentIntent，所以只有这条点不动。
+- 改法：补上指向 MainActivity 的 PendingIntent（NEW_TASK + CLEAR_TOP，requestCode=3
+  与另两条区分，避免互相覆盖）。点它即把 App 拉到前台。
+（RunService.kt、app/build.gradle.kts）
+
 ## 2.38 — versionCode 49
 新增**运行日志**，用来定位「一直重连、连不上」卡在哪一跳：
 - 动机：报「连不上」时界面上只有一行 retryNote，看不出是 DNS 解析失败、TLS 握手失败、
