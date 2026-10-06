@@ -125,8 +125,9 @@ class SessionStore(ctx: Context, private val profile: String) {
                     o.put("images", ia)
                 }
                 // 投递状态要落盘：重开 App 后「不确定/失败」的消息还得能处置。
-                // 发送中(sending)不落盘——重启后那个 POST 已经没了，留着会一直转圈。
-                m.receipt?.takeIf { it.status != Receipt.SENDING }?.let { rc ->
+                // sending 不落盘——重启后那个 POST 已经没了，留着会一直转圈；
+                // queued 同理——内存里的排队队列重启即丢，落盘会永远停在「排队中」。
+                m.receipt?.takeIf { it.status != Receipt.SENDING && it.status != Receipt.QUEUED }?.let { rc ->
                     o.put(
                         "receipt",
                         JSONObject()

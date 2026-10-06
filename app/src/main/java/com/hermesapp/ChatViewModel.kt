@@ -83,6 +83,8 @@ data class Receipt(
         const val ACCEPTED = "accepted"
         const val UNCERTAIN = "uncertain"
         const val FAILED = "failed"
+        /** 排队中：本会话还在跑上一轮，这条等它结束自动发（不是发送中，别转圈）。 */
+        const val QUEUED = "queued"
     }
 }
 
@@ -133,6 +135,20 @@ data class PendingImage(
     val file: java.io.File,
     /** 是否图片：决定待发区显示缩略图还是文件卡片。 */
     val isImage: Boolean = true,
+)
+
+/**
+ * 排队待发的一条消息（本会话正在跑任务时用户又发的那条）。
+ * 用户消息此刻已经进了气泡，只是 POST 还没发出去；等本轮结束自动发。
+ * text 是发往服务端的完整正文（含引用片段），files 是已拷进沙盒的附件。
+ */
+data class QueuedSend(
+    val text: String,
+    val files: List<java.io.File>,
+    /** 对应的用户消息 id：发送时按它更新投递回执。 */
+    val msgId: Long,
+    /** 入队时该会话已有的用户消息条数：翻历史认锚点要用。 */
+    val priorUserCount: Int,
 )
 
 /** 状态页的一行：标签 + 值。value 为空则该行不显示。 */
@@ -188,6 +204,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         var confirmingMsgId: Long = 0L
         /** 断流翻历史的轮询任务；收到正常事件或任务结束时取消。 */
         var recoveryJob: Job? = null
+        /** 本会话排队待发的消息（跑着任务时用户又发的那些），按先后顺序，本轮结束依次发。 */
+        val queue = mutableListOf<QueuedSend>()
+        /** 队列长度：输入栏显示「排队 N 条」。 */
+        val queued = MutableStateFlow(0)
     }
 
     private val runtimes = ConcurrentHashMap<String, SessionRuntime>()
@@ -208,6 +228,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     val retryNote: StateFlow<String> = _currentId
         .flatMapLatest { id -> if (id.isEmpty()) flowOf("") else rt(id).retryNote }
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
+
+    /** 当前会话排队待发的条数：输入栏显示「排队 N 条」。 */
+    val queuedCount: StateFlow<Int> = _currentId
+        .flatMapLatest { id -> if (id.isEmpty()) flowOf(0) else rt(id).queued }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
 
     private val _sessions = MutableStateFlow<List<SessionMeta>>(emptyList())
     val sessions = _sessions.asStateFlow()
@@ -822,7 +847,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
         val sid = _currentId.value
         val r = rt(sid)
-        if (r.busy.value) return   // 同一会话正在跑才拦；其它会话照发
+        // 同一会话正在跑：不再直接拦下，改为排队（气泡先落下，本轮结束自动发）。
+        // 其它会话照发，不受影响。
+        val willQueue = r.busy.value
         ensureLoaded(sid)
         val wasEmpty = r.messages.value.none { it.role == "user" }
         // 引用回复：长按选中的那条，压成一行片段。发往服务端的正文前拼上「> 引用」，
@@ -847,7 +874,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             images = durableImgs,
             files = imgs.filter { !it.isImage }.map { it.file.name },
             receipt = Receipt(
-                status = Receipt.SENDING,
+                status = if (willQueue) Receipt.QUEUED else Receipt.SENDING,
                 rawText = sendText.trim(),
                 priorUserCount = prior,
             ),
@@ -858,7 +885,30 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         touchSession(if (wasEmpty) text else null)
         _pendingImages.value = emptyList()
         _quoteTarget.value = null
+        if (willQueue) {
+            // 排队：气泡先落下（回执标「排队中」），本轮一结束由 drainQueue 自动发。
+            r.queue.add(QueuedSend(sendText, imgs.map { it.file }, userMsg.id, prior))
+            r.queued.value = r.queue.size
+            return
+        }
         startRunWith(a, sid, sendText, imgs.map { it.file }, receiptMsgId = userMsg.id)
+    }
+
+    /**
+     * 排空队列：本会话空闲且队列非空时，取出最早的一条发出去。
+     * 在每处「本轮结束」（doneOk / failPending / stopSession / 翻历史收尾）后调用。
+     */
+    private fun drainQueue(sid: String) {
+        val a = api ?: return
+        val r = rt(sid)
+        if (r.busy.value || r.queue.isEmpty()) return
+        val next = r.queue.removeAt(0)
+        r.queued.value = r.queue.size
+        r.priorUserCount = next.priorUserCount
+        r.pendingSendText = next.text.trim()
+        r.recoveryJob?.cancel()
+        advanceReceipt(sid, next.msgId, Receipt.SENDING, note = "")
+        startRunWith(a, sid, next.text, next.files, receiptMsgId = next.msgId)
     }
 
     /** 按消息 id 改投递状态（找不到就忽略——消息可能已被「清理缓存」截掉）。 */
@@ -1543,6 +1593,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         prefs.removeActiveRun(sid)
         updateRunService()
         refreshFromServerFor(sid)
+        drainQueue(sid)   // 翻历史取回结果后，队列接着走
     }
 
     /** 翻历史也没捞到：明确收尾，不留一个永远转圈的空气泡。 */
@@ -1576,6 +1627,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.runId = ""
         prefs.removeActiveRun(sid)
         updateRunService()
+        drainQueue(sid)   // 停止的是当前这轮，排队的下一条接着发
     }
 
     /** 工具轨迹追加到该会话当前 assistant 消息的 trace（界面默认折叠，不进正文）。 */
@@ -1619,6 +1671,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.runId = ""
         prefs.removeActiveRun(sid)
         updateRunService()
+        drainQueue(sid)   // 本轮失败也要把排队的下一条发出去，别把队列卡死
     }
 
     private fun doneOk(sid: String) {
@@ -1632,6 +1685,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         prefs.removeActiveRun(sid)
         updateRunService()
         if (sid == _currentId.value) drainPendingReply()
+        drainQueue(sid)   // 本轮结束：把排队的下一条发出去
     }
 
     /** 只要有任意会话在跑任务就保持前台服务；全部结束才停（通知随之消失）。 */
