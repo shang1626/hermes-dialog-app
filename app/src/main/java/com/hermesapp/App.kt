@@ -434,6 +434,11 @@ fun DrawerPanel(
                 )
                 Spacer(Modifier.weight(1f))
                 Text(
+                    "搜索", color = c.accent, fontSize = 12.sp,
+                    modifier = Modifier.clickable { vm.toggleGlobalSearch() }
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
                     if (showArchived) "返回" else "已归档",
                     color = c.accent, fontSize = 12.sp,
                     modifier = Modifier.clickable { showArchived = !showArchived }
@@ -441,24 +446,76 @@ fun DrawerPanel(
             }
             Spacer(Modifier.height(6.dp))
 
-            val list = sessions.filter { it.archived == showArchived }
-            if (list.isEmpty()) {
-                Text(
-                    if (showArchived) "（无归档）" else "（无历史对话）",
-                    color = c.dim, fontSize = 12.sp, modifier = Modifier.padding(vertical = 8.dp)
+            val gActive by vm.globalActive.collectAsState()
+            val gQuery by vm.globalQuery.collectAsState()
+            val gHits by vm.globalHits.collectAsState()
+
+            if (gActive) {
+                // 跨会话搜索：搜本地全部会话，点结果跳到那个会话并定位到该条
+                OutlinedTextField(
+                    value = gQuery,
+                    onValueChange = { vm.setGlobalQuery(it) },
+                    singleLine = true,
+                    placeholder = { Text("搜索全部会话", fontSize = 13.sp) },
+                    colors = fieldColors(c),
+                    modifier = Modifier.fillMaxWidth(),
                 )
-            } else {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    when {
+                        gQuery.isBlank() -> "输入关键词，搜所有会话的正文与工具轨迹"
+                        gHits.isEmpty() -> "无结果"
+                        else -> "共 " + gHits.size + " 条"
+                    },
+                    color = c.dim, fontSize = 11.sp
+                )
+                Spacer(Modifier.height(6.dp))
                 Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-                    for (s in list) {
-                        SessionRow(
-                            meta = s,
-                            selected = s.id == currentId && !showArchived,
-                            archived = showArchived,
-                            running = s.id in runningIds,
-                            onOpen = { vm.switchSession(s.id); onTab(0); onClose() },
-                            onArchive = { vm.archiveSession(s.id, !s.archived) },
-                            onDelete = { vm.deleteSession(s.id) },
-                        )
+                    for (h in gHits) {
+                        Column(
+                            Modifier.fillMaxWidth()
+                                .clickable { vm.openGlobalHit(h); onTab(0); onClose() }
+                                .padding(horizontal = 6.dp, vertical = 6.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    (if (h.role == "user") "我" else "助手") + " · " + h.sessionTitle,
+                                    color = c.accent, fontSize = 11.sp,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                                Spacer(Modifier.weight(1f))
+                                Text(TimeFmt.mdhm(h.ts), color = c.dim, fontSize = 10.sp)
+                            }
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                h.snippet, color = c.text, fontSize = 12.sp,
+                                maxLines = 3, overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        HorizontalDivider(color = c.card)
+                    }
+                }
+            } else {
+                val list = sessions.filter { it.archived == showArchived }
+                if (list.isEmpty()) {
+                    Text(
+                        if (showArchived) "（无归档）" else "（无历史对话）",
+                        color = c.dim, fontSize = 12.sp, modifier = Modifier.padding(vertical = 8.dp)
+                    )
+                } else {
+                    Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+                        for (s in list) {
+                            SessionRow(
+                                meta = s,
+                                selected = s.id == currentId && !showArchived,
+                                archived = showArchived,
+                                running = s.id in runningIds,
+                                onOpen = { vm.switchSession(s.id); onTab(0); onClose() },
+                                onArchive = { vm.archiveSession(s.id, !s.archived) },
+                                onDelete = { vm.deleteSession(s.id) },
+                            )
+                        }
                     }
                 }
             }

@@ -373,6 +373,71 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         _searchIdx.value = -1
     }
 
+    // ---------- 跨会话搜索（扫本地全部会话） ----------
+
+    /** 全局搜索面板是否展开（抽屉里）。 */
+    private val _globalActive = MutableStateFlow(false)
+    val globalActive = _globalActive.asStateFlow()
+
+    private val _globalQuery = MutableStateFlow("")
+    val globalQuery = _globalQuery.asStateFlow()
+
+    private val _globalHits = MutableStateFlow<List<GlobalHit>>(emptyList())
+    val globalHits = _globalHits.asStateFlow()
+
+    private var globalJob: Job? = null
+
+    fun toggleGlobalSearch() {
+        if (_globalActive.value) clearGlobalSearch() else {
+            _globalActive.value = true
+            _globalQuery.value = ""
+            _globalHits.value = emptyList()
+        }
+    }
+
+    fun clearGlobalSearch() {
+        globalJob?.cancel()
+        _globalActive.value = false
+        _globalQuery.value = ""
+        _globalHits.value = emptyList()
+    }
+
+    /** 输入即搜（去抖 200 毫秒），扫本地全部会话文件，放后台线程算。 */
+    fun setGlobalQuery(q: String) {
+        _globalQuery.value = q
+        globalJob?.cancel()
+        if (q.isBlank()) {
+            _globalHits.value = emptyList()
+            return
+        }
+        globalJob = viewModelScope.launch {
+            delay(200)
+            val hits = withContext(Dispatchers.IO) { store.searchAll(q) }
+            if (_globalQuery.value != q) return@launch
+            _globalHits.value = hits
+        }
+    }
+
+    /**
+     * 点一条跨会话命中：切到那个会话，并让本会话内的搜索栏定位到这条消息。
+     * 命中靠正文认（本地消息 id 不落盘），取该会话里第一条正文一致的消息。
+     */
+    fun openGlobalHit(hit: GlobalHit) {
+        clearGlobalSearch()
+        if (hit.sessionId != _currentId.value) switchSession(hit.sessionId)
+        ensureLoaded(hit.sessionId)
+        viewModelScope.launch {
+            delay(80)   // 等会话消息装载完
+            val msgs = rt(hit.sessionId).messages.value
+            val idx = msgs.indexOfFirst { it.text == hit.text }
+            if (idx < 0) return@launch
+            _searchActive.value = true
+            _searchQuery.value = hit.text
+            _searchIds.value = listOf(msgs[idx].id)
+            _searchIdx.value = 0
+        }
+    }
+
     private var api: HermesApi? = null
     private var pingStarted = false
 

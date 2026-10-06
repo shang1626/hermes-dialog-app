@@ -15,6 +15,19 @@ data class SessionMeta(
 )
 
 /**
+ * 跨会话搜索的一条命中。
+ * text 存整条正文：跳到那个会话后靠它把这条从本地消息里认出来（消息 id 不落盘，不能靠 id 认）。
+ */
+data class GlobalHit(
+    val sessionId: String,
+    val sessionTitle: String,
+    val role: String,
+    val text: String,
+    val snippet: String,
+    val ts: Long,
+)
+
+/**
  * 会话索引 + 逐会话消息的本地存储。
  * 全部落在 App 私有目录，不动服务器/引擎任何数据。
  *
@@ -146,6 +159,61 @@ class SessionStore(ctx: Context, private val profile: String) {
 
     fun deleteMessages(id: String) {
         runCatching { msgFile(id).delete() }
+    }
+
+    /**
+     * 跨会话搜索：扫全部会话的本地消息（正文与工具轨迹），按词命中返回结果。
+     *
+     * 会话按更新时间从新到旧扫，单条只取第一处命中；上限 limit 条（默认 60），
+     * 结果再按消息时间从新到旧排。纯本地文件读，不碰网络。
+     */
+    fun searchAll(query: String, limit: Int = 60): List<GlobalHit> {
+        val needle = query.trim().lowercase()
+        if (needle.isEmpty()) return emptyList()
+        val out = ArrayList<GlobalHit>()
+        val metas = loadIndex().sortedByDescending { it.updatedAt }
+        for (meta in metas) {
+            if (out.size >= limit) break
+            val f = msgFile(meta.id)
+            if (!f.exists()) continue
+            runCatching {
+                val arr = JSONArray(f.readText())
+                for (i in 0 until arr.length()) {
+                    if (out.size >= limit) break
+                    val o = arr.optJSONObject(i) ?: continue
+                    val text = o.optString("text", "")
+                    val trace = o.optString("trace", "")
+                    val hitText = when {
+                        text.lowercase().contains(needle) -> text
+                        trace.isNotEmpty() && trace.lowercase().contains(needle) -> trace
+                        else -> null
+                    } ?: continue
+                    out.add(
+                        GlobalHit(
+                            sessionId = meta.id,
+                            sessionTitle = meta.title,
+                            role = o.optString("role", "assistant"),
+                            text = text,
+                            snippet = hitSnippet(hitText, needle),
+                            ts = o.optLong("ts", 0L),
+                        )
+                    )
+                }
+            }
+        }
+        return out.sortedByDescending { it.ts }
+    }
+
+    /** 命中处的上下文片段：截命中词前后一小段，两头加省略号。 */
+    private fun hitSnippet(text: String, needle: String): String {
+        val one = text.replace(Regex("\\s+"), " ").trim()
+        if (one.isEmpty()) return ""
+        val k = one.lowercase().indexOf(needle)
+        if (k < 0) return if (one.length > 80) one.take(80) + "…" else one
+        val start = (k - 20).coerceAtLeast(0)
+        val end = (k + needle.length + 40).coerceAtMost(one.length)
+        return (if (start > 0) "…" else "") + one.substring(start, end) +
+            (if (end < one.length) "…" else "")
     }
 
     /**
