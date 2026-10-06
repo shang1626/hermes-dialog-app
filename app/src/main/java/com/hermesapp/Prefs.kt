@@ -56,9 +56,25 @@ class Prefs(ctx: Context) {
         sp.edit().putString("run:" + sessionId, runId).apply()
     }
 
+    /**
+     * 已收到的最后一个事件序号（SSE 的 id / seq），与消息一起落盘。
+     * 重开 App 恢复任务时用它做 Last-Event-ID，只补断线之后的事件；不存的话续接
+     * 只能从 0 全量重放，工具轨迹（trace）会被二次追加——表现就是「重开后过程重复显示」。
+     */
+    fun putLastSeq(sessionId: String, seq: Int) {
+        if (sessionId.isEmpty()) return
+        sp.edit().putInt("seq:" + sessionId, seq).apply()
+    }
+
+    fun lastSeq(sessionId: String): Int {
+        if (sessionId.isEmpty()) return -1
+        return sp.getInt("seq:" + sessionId, -1)
+    }
+
+    /** 清活跃标记时连续接序号一起清——run 结束后留着会污染下一轮。 */
     fun removeActiveRun(sessionId: String) {
         if (sessionId.isEmpty()) return
-        sp.edit().remove("run:" + sessionId).apply()
+        sp.edit().remove("run:" + sessionId).remove("seq:" + sessionId).apply()
     }
 
     /**

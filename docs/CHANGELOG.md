@@ -1,5 +1,19 @@
 # 变更记录
 
+## 2.32 — versionCode 43
+修「重开 App 后同一轮的『过程』重复显示」——续接序号没落盘，恢复时从 0 全量重放：
+- 根因：重开 App 恢复进行中的任务时，续接序号 `lastSeq` 被重置成 -1，于是向服务端
+  请求事件流时带上 `Last-Event-ID: -1` → 服务端从 seq 0 全量重放。重放出来的
+  `tool.completed` 事件又被追加进工具轨迹（trace 是累加），同一轮的过程整段重复；
+  正文因为按覆盖写所以看不出重复，只有「过程」露馅。
+- 改法：把续接序号与消息一起落盘（`saveRuntime` 里写 `seq:<session>`），重开时按它
+  续接，只补断线之后的事件；新 run 开始时重置该序号；run 结束清理时一并清掉。
+- 配套修一处气泡归属：本地消息读回后 `pending` 一律是 false，恢复时必须把这一轮的
+  助手气泡重新标成「进行中」，否则续接的增量会另起一条气泡、同一轮回复显示两次。
+  判据用续接序号区分——断线前收到过事件（lastSeq>=0）就复用本地气泡，否则（本轮
+  还一个字都没收到）新起空气泡，避免把新内容挂到上一轮的回复上。
+（Prefs.kt、ChatViewModel.kt、app/build.gradle.kts）
+
 ## 2.31 — versionCode 42
 修「前台服务启动超时」崩溃（ForegroundServiceDidNotStartInTimeException）：
 - 根因：RunService.onStartCommand 里 `runCatching { startForeground(...) }` 把异常
