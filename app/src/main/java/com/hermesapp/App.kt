@@ -402,6 +402,7 @@ fun MainScaffold(
                         }
                     }
                     1 -> StatusScreen(vm, prefs)
+                    3 -> JobsScreen(vm, prefs)
                     else -> SettingsScreen(vm, prefs, mode, onMode, onLogout)
                 }
             }
@@ -413,7 +414,7 @@ fun MainScaffold(
 fun TopBar(vm: ChatViewModel, prefs: Prefs, tab: Int, onMenu: () -> Unit) {
     val c = LocalAppColors.current
     val online by vm.online.collectAsState()
-    val title = when (tab) { 0 -> "对话"; 1 -> "状态"; else -> "设置" }
+    val title = when (tab) { 0 -> "对话"; 1 -> "状态"; 3 -> "定时任务"; else -> "设置" }
     Row(
         Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -582,6 +583,7 @@ fun DrawerPanel(
             // 页面切换（对话通过点会话/标题进入，不单列按钮）
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 NavChip("状态", tab == 1, Modifier.weight(1f)) { onTab(1) }
+                NavChip("任务", tab == 3, Modifier.weight(1f)) { onTab(3) }
                 NavChip("设置", tab == 2, Modifier.weight(1f), badge = updateBadge) { onTab(2) }
             }
             Spacer(Modifier.height(12.dp))

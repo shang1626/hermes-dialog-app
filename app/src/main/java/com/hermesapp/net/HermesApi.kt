@@ -234,6 +234,26 @@ class HermesApi(
         }
     }
 
+    // ---------- 定时任务（服务端 /api/jobs） ----------
+
+    /** 定时任务列表；includeDisabled=true 时连已停用的一起返回。 */
+    fun listJobs(includeDisabled: Boolean = false): JSONObject =
+        sync(base("/api/jobs?include_disabled=" + includeDisabled).get().build())
+
+    private fun postJob(path: String) {
+        val req = base(path).post("{}".toRequestBody(jsonType)).build()
+        client.newCall(req).execute().use { resp ->
+            val text = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) throw IOException("HTTP " + resp.code + ": " + text.take(200))
+        }
+    }
+
+    fun pauseJob(jobId: String) = postJob("/api/jobs/" + jobId + "/pause")
+
+    fun resumeJob(jobId: String) = postJob("/api/jobs/" + jobId + "/resume")
+
+    fun runJob(jobId: String) = postJob("/api/jobs/" + jobId + "/run")
+
     fun sysinfo(): JSONObject = sync(base("/health/sysinfo").get().build())
 
     fun healthDetailed(): JSONObject = sync(base("/health/detailed").get().build())
