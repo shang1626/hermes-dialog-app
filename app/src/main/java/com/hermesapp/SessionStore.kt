@@ -251,6 +251,13 @@ class SessionStore(ctx: Context, private val profile: String) {
         }
     }
 
+    /** 本地是否已有该会话的消息（非空）。清理「从服务端补进来、用户从没打开过」的空壳行要用。 */
+    fun hasMessages(id: String): Boolean {
+        val f = msgFile(id)
+        if (!f.exists() || f.length() < 3L) return false
+        return runCatching { JSONArray(f.readText()).length() > 0 }.getOrDefault(false)
+    }
+
     fun deleteMessages(id: String) {
         runCatching { msgFile(id).delete() }
     }
