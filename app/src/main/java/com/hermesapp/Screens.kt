@@ -302,6 +302,7 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
                     onConfirmReceipt = { vm.confirmReceipt(it) },
                     onResendReceipt = { vm.resendReceipt(it) },
                     onQuote = { vm.setQuote(it) },
+                    onCardAction = { vm.dispatchCardAction(it, ctx) },
                     highlight = hl,
                     hitQuery = if (hl) q else "",
                     selectionReset = selReset,
@@ -451,6 +452,8 @@ fun Bubble(
     onResendReceipt: (Long) -> Unit = {},
     /** 长按气泡选「引用」：把这整条交给 ViewModel。 */
     onQuote: (Msg) -> Unit = {},
+    /** 富卡片按钮点击：交给 ViewModel 分发（发消息 / 开链接）。 */
+    onCardAction: (CardAction) -> Unit = {},
     /** 该条是当前搜索命中：加一圈强调边框。 */
     highlight: Boolean = false,
     /** 命中词：正文里加黄底（空表示不高亮）。 */
@@ -621,6 +624,7 @@ fun Bubble(
                         hitQuery = hitQuery,
                         selectionReset = selectionReset,
                         onClearSelection = onClearSelection,
+                        onCardAction = { a -> onCardAction(a) },
                     )
                 }
                 // 过程轨迹（工具调用等）：默认折叠一行，点开才展开，不占屏幕

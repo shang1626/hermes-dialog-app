@@ -73,7 +73,68 @@ sealed class MdBlock {
         /** 大文件网关托管：非空时按需带鉴权下载。 */
         val token: String = "",
     ) : MdBlock()
+
+    /** 富卡片：助手正文里独占一行的 CARD:{json} 解析而来。 */
+    data class Card(val card: HermesCard) : MdBlock()
 }
+
+/**
+ * 富卡片模型。与 hermes-relay 的 HermesCard 对齐但精简：
+ * 标题 / 副标题 / 正文（纯文本，仍按段落渲染）/ 字段表 / 按钮 / 页脚 / 强调色。
+ * 未知字段一律忽略（对方加新字段不炸旧包）。
+ */
+data class HermesCard(
+    val title: String = "",
+    val subtitle: String = "",
+    val body: String = "",
+    /** 字段表：name → value，按顺序显示成两列。 */
+    val fields: List<Pair<String, String>> = emptyList(),
+    val actions: List<CardAction> = emptyList(),
+    val footer: String = "",
+    /** 强调色：info / success / warning / danger，其余按 info。 */
+    val accent: String = "info",
+)
+
+/** 卡片上的一个按钮。action 决定点了做什么。 */
+data class CardAction(
+    val label: String,
+    /** send_text（默认，把 value 当消息发出去）/ open_url（浏览器打开）/ slash_command（当斜杠命令发）。 */
+    val action: String = "send_text",
+    val value: String = "",
+)
+
+/**
+ * 解析一行 CARD:{json}。容错：字段缺失用默认值，JSON 坏了返回 null（当普通文本）。
+ */
+fun parseCard(json: String): HermesCard? = runCatching {
+    val o = org.json.JSONObject(json)
+    val fields = mutableListOf<Pair<String, String>>()
+    o.optJSONObject("fields")?.let { fo ->
+        val keys = fo.keys()
+        while (keys.hasNext()) {
+            val k = keys.next()
+            fields.add(k to fo.optString(k, ""))
+        }
+    }
+    val actions = mutableListOf<CardAction>()
+    o.optJSONArray("actions")?.let { ao ->
+        for (i in 0 until ao.length()) {
+            val a = ao.optJSONObject(i) ?: continue
+            val label = a.optString("label", "")
+            if (label.isEmpty()) continue
+            actions.add(CardAction(label, a.optString("action", "send_text"), a.optString("value", "")))
+        }
+    }
+    HermesCard(
+        title = o.optString("title", ""),
+        subtitle = o.optString("subtitle", ""),
+        body = o.optString("body", ""),
+        fields = fields,
+        actions = actions,
+        footer = o.optString("footer", ""),
+        accent = o.optString("accent", "info"),
+    )
+}.getOrNull()
 
 private val URL_RE = Regex("https?://[^\\s<>()\\[\\]{}\"'\\uFF0C\\u3002\\u3001\\uFF09\\u3011]+")
 
@@ -119,8 +180,15 @@ fun parseMdBlocks(src: String): List<MdBlock> {
             val s = line.trim()
             val img = MD_IMG_LINE_RE.matchEntire(s)
             val att = MD_ATT_LINE_RE.matchEntire(s)
+            val cardJson = if (s.startsWith("CARD:")) s.removePrefix("CARD:").trim() else null
             when {
                 img != null -> { flushPending(); out.add(MdBlock.Image(img.groupValues[1], img.groupValues[2])) }
+                cardJson != null -> {
+                    // 富卡片：解析成功才成卡片，坏了就当普通段落（绝不吞掉正文）
+                    val card = parseCard(cardJson)
+                    if (card != null) { flushPending(); out.add(MdBlock.Card(card)) }
+                    else pending.append(line).append("\n")
+                }
                 att != null -> {
                     flushPending()
                     val name = att.groupValues[1]
@@ -222,6 +290,8 @@ fun RichText(
     onClearSelection: () -> Unit = {},
     /** 搜索命中的词：非空时正文里给它加黄底。 */
     hitQuery: String = "",
+    /** 富卡片按钮点击回调：由外层把它变成一条消息 / 打开链接。 */
+    onCardAction: (CardAction) -> Unit = {},
 ) {
     val c = LocalAppColors.current
     val uri = LocalUriHandler.current
@@ -233,6 +303,7 @@ fun RichText(
             when (b) {
                 is MdBlock.Image -> MdImage(b.dataUrl, b.alt)
                 is MdBlock.Attachment -> MdAttachmentCard(b.name, b.dataUrl, b.token)
+                is MdBlock.Card -> HermesCardView(b.card, onCardAction)
                 is MdBlock.Para -> {
                     val ann = remember(b.text, c.accent, hitQuery) {
                         highlightHits(linkAnnotated(b.text, c.accent), hitQuery)
@@ -518,6 +589,69 @@ private fun MdAttachmentCard(name: String, dataUrl: String, token: String) {
         Column(Modifier.weight(1f, fill = false)) {
             Text(name, color = c.text, fontSize = 13.sp, maxLines = 2)
             Text(sub, color = c.dim, fontSize = 11.sp)
+        }
+    }
+}
+
+/**
+ * 富卡片渲染：左侧一条强调色竖条 + 标题/副标题 + 正文 + 字段表 + 按钮行 + 页脚。
+ * 色板按 accent（info/success/warning/danger）取主题色，其余按 info。
+ */
+@Composable
+fun HermesCardView(card: HermesCard, onAction: (CardAction) -> Unit) {
+    val c = LocalAppColors.current
+    val accent = when (card.accent) {
+        "success" -> c.ok
+        "warning" -> c.warn
+        "danger" -> c.bad
+        else -> c.accent
+    }
+    Row(
+        Modifier
+            .widthIn(max = 320.dp)
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(c.card)
+            .border(0.5.dp, c.dim, RoundedCornerShape(10.dp))
+    ) {
+        Box(Modifier.width(4.dp).fillMaxHeight().background(accent))
+        Column(Modifier.padding(10.dp)) {
+            if (card.title.isNotEmpty()) {
+                Text(card.title, color = c.text, fontSize = 14.sp)
+            }
+            if (card.subtitle.isNotEmpty()) {
+                if (card.title.isNotEmpty()) Spacer(Modifier.height(2.dp))
+                Text(card.subtitle, color = c.dim, fontSize = 11.sp)
+            }
+            if (card.body.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text(card.body, color = c.text, fontSize = 12.sp)
+            }
+            if (card.fields.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                for ((k, v) in card.fields) {
+                    Row(Modifier.fillMaxWidth().padding(vertical = 1.dp)) {
+                        Text(k, color = c.dim, fontSize = 11.sp, modifier = Modifier.width(76.dp))
+                        Text(v, color = c.text, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                    }
+                }
+            }
+            if (card.actions.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    for (a in card.actions) {
+                        OutlinedButton(
+                            onClick = { onAction(a) },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                            shape = RoundedCornerShape(8.dp),
+                        ) { Text(a.label, color = accent, fontSize = 12.sp) }
+                    }
+                }
+            }
+            if (card.footer.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text(card.footer, color = c.dim, fontSize = 10.sp)
+            }
         }
     }
 }
