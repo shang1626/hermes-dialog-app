@@ -78,6 +78,35 @@ object Notifier {
         runCatching { NotificationManagerCompat.from(ctx).notify(NOTIF_ID, n) }
     }
 
+    /**
+     * 审批/澄清提醒：任务停下来等人点头，但 App 不在前台。
+     * 用独立通知 id（不覆盖「新消息」那条），点开拉 App 并切到对应会话。
+     */
+    fun notifyAction(ctx: Context, title: String, text: String, sessionId: String) {
+        ensureChannel(ctx)
+        val tap = PendingIntent.getActivity(
+            ctx, 2,
+            Intent(ctx, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra(EXTRA_OPEN_SESSION, sessionId)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val n = NotificationCompat.Builder(ctx, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_warning)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setAutoCancel(true)
+            .setContentIntent(tap)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
+        runCatching { NotificationManagerCompat.from(ctx).notify(ACTION_NOTIF_ID, n) }
+    }
+
+    const val ACTION_NOTIF_ID = 2002
+    const val EXTRA_OPEN_SESSION = "hermes_open_session"
+
     const val KEY_TEXT_REPLY = "hermes_reply_text"
     const val ACTION_REPLY = "com.hermesapp.REPLY"
     const val EXTRA_SESSION_ID = "hermes_reply_session"
