@@ -2171,8 +2171,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (card.resolved.isNotEmpty()) return
         list[i] = list[i].copy(clarify = card.copy(resolved = choice))
         setMsgs(r, list)
+        // 回执结果要可见：没送到时说清，别让卡片标着「已选择」而服务端根本没收到。
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching { a.respondClarify(rid, card.clarifyId, choice) }
+            val ok = a.respondClarify(rid, card.clarifyId, choice)
+            withContext(Dispatchers.Main) {
+                r.retryNote.value = if (ok) "已选择「" + choice + "」，已送达服务端"
+                else "回执没送到：本轮可能已收尾，可重试"
+            }
         }
     }
 
@@ -2250,8 +2255,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (card.resolved.isNotEmpty()) return
         list[i] = list[i].copy(approval = card.copy(resolved = choice))
         setMsgs(r, list)
+        // 同 respondClarify：回执没送到必须可见，不静默吞。
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching { a.respondApproval(rid, card.requestId, choice) }
+            val ok = a.respondApproval(rid, card.requestId, choice)
+            withContext(Dispatchers.Main) {
+                r.retryNote.value = if (ok) "已选择「" + choice + "」，已送达服务端"
+                else "回执没送到：本轮可能已收尾，可重试"
+            }
         }
     }
 
