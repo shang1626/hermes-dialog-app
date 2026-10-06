@@ -365,9 +365,35 @@ private fun MdTable(rows: List<List<String>>, color: Color, fontSize: TextUnit) 
 /** 内联图片（正文里的 data URL）：点击 App 内放大查看，长按保存到相册。 */
 @Composable
 private fun MdImage(dataUrl: String, alt: String) {
-    val decoded = remember(dataUrl) { decodeDataUrl(dataUrl) }
+    val c = LocalAppColors.current
+    // 解码失败时给一个重试出口：原来只显示一行「[图片解析失败]」就没了，
+    // 用户分不清是「数据坏了」还是「这一下没解出来」，也没有任何补救动作。
+    var retry by remember { mutableStateOf(0) }
+    val decoded = remember(dataUrl, retry) { decodeDataUrl(dataUrl) }
     if (decoded == null) {
-        Text("[图片解析失败]", color = LocalAppColors.current.dim, fontSize = 12.sp)
+        Box(
+            Modifier.clip(RoundedCornerShape(8.dp)).background(c.card)
+                .border(0.5.dp, c.dim, RoundedCornerShape(8.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                Modifier.padding(10.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text("图片加载失败", color = c.warn, fontSize = 11.sp)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "点此重试",
+                    color = c.accent, fontSize = 11.sp,
+                    modifier = Modifier.clickable { retry++ }
+                )
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    "数据 " + dataUrl.length + " 字节",
+                    color = c.dim, fontSize = 9.sp
+                )
+            }
+        }
         return
     }
     ZoomableImage(
