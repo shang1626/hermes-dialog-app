@@ -102,6 +102,7 @@ class SessionStore(ctx: Context, private val profile: String) {
                         images = imgs,
                         trace = trace,
                         receipt = rc,
+                        quote = o.optString("quote", ""),
                     )
                 )
             }
@@ -117,6 +118,7 @@ class SessionStore(ctx: Context, private val profile: String) {
             for (m in tail) {
                 val o = JSONObject().put("role", m.role).put("text", m.text).put("ts", m.ts)
                 if (m.trace.isNotEmpty()) o.put("trace", m.trace)
+                if (m.quote.isNotEmpty()) o.put("quote", m.quote)
                 if (m.images.isNotEmpty()) {
                     val ia = JSONArray()
                     for (u in m.images) ia.put(u)

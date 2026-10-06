@@ -51,6 +51,8 @@ data class Msg(
     val id: Long = nextMsgId(),
     /** 投递状态：只有用户消息有；老消息/服务端拉回的消息为 null。 */
     val receipt: Receipt? = null,
+    /** 引用回复：被引用的上一条消息正文片段（空表示不是引用发送）。 */
+    val quote: String = "",
 ) {
     companion object {
         private val counter = java.util.concurrent.atomic.AtomicLong(0)
@@ -244,6 +246,30 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 待发送图片（选好未发送）。 */
     private val _pendingImages = MutableStateFlow<List<PendingImage>>(emptyList())
     val pendingImages = _pendingImages.asStateFlow()
+
+    // ---------- 引用回复 ----------
+
+    /** 当前待引用的一条消息（长按气泡选「引用」后非空，输入栏上方显示引用条）。 */
+    private val _quoteTarget = MutableStateFlow<Msg?>(null)
+    val quoteTarget = _quoteTarget.asStateFlow()
+
+    /** 长按某条消息选「引用」：记下它，输入栏显示引用条，发送时把片段带上。 */
+    fun setQuote(m: Msg) {
+        _quoteTarget.value = m
+    }
+
+    /** 取消引用。 */
+    fun clearQuote() {
+        _quoteTarget.value = null
+    }
+
+    /** 被引正文压缩成一行片段（最多 80 字），服务端与气泡共用。 */
+    private fun quoteSnippet(m: Msg): String {
+        val one = m.text.replace(Regex("\\s+"), " ").trim()
+        val who = if (m.role == "user") "我" else "助手"
+        val body = if (one.isEmpty()) "[图片或附件]" else if (one.length > 80) one.take(80) + "…" else one
+        return who + "：" + body
+    }
 
     /** 模型是否支持原生图片（/v1/capabilities features.supports_vision）；未知按 true。 */
     private val _supportsVision = MutableStateFlow(true)
@@ -799,10 +825,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (r.busy.value) return   // 同一会话正在跑才拦；其它会话照发
         ensureLoaded(sid)
         val wasEmpty = r.messages.value.none { it.role == "user" }
+        // 引用回复：长按选中的那条，压成一行片段。发往服务端的正文前拼上「> 引用」，
+        // 让模型知道在回应哪一句；气泡里只回显片段，不重复整段。
+        val quoted = _quoteTarget.value
+        val quoteSnip = if (quoted != null) quoteSnippet(quoted) else ""
+        val sendText = if (quoteSnip.isNotEmpty()) "> " + quoteSnip + "\n" + text else text
         // 记下发送前的用户消息条数（翻历史时的位置锚点）与本轮正文（内容校验）。
+        // 锚点用拼好引用的 sendText：服务端记录里存的就是这一版，才能对上。
         val prior = r.messages.value.count { it.role == "user" }
         r.priorUserCount = prior
-        r.pendingSendText = text.trim()
+        r.pendingSendText = sendText.trim()
         r.recoveryJob?.cancel()
         // 发出去的图先落进 App 私有「已发送」目录再进气泡：相册给的 content:// 会被系统
         // 回收（换机/清数据/授权到期），而 outbox 会被「清理缓存」清掉——两者都会让历史
@@ -816,15 +848,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             files = imgs.filter { !it.isImage }.map { it.file.name },
             receipt = Receipt(
                 status = Receipt.SENDING,
-                rawText = text.trim(),
+                rawText = sendText.trim(),
                 priorUserCount = prior,
             ),
+            quote = quoteSnip,
         )
         r.lastUserMsgId = userMsg.id
         setMsgs(r, r.messages.value + userMsg)
         touchSession(if (wasEmpty) text else null)
         _pendingImages.value = emptyList()
-        startRunWith(a, sid, text, imgs.map { it.file }, receiptMsgId = userMsg.id)
+        _quoteTarget.value = null
+        startRunWith(a, sid, sendText, imgs.map { it.file }, receiptMsgId = userMsg.id)
     }
 
     /** 按消息 id 改投递状态（找不到就忽略——消息可能已被「清理缓存」截掉）。 */
