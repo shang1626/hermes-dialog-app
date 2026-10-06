@@ -660,38 +660,73 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      *  定时任务(cron)、子智能体(subagent)、一次性(oneshot)等机器会话不进历史列表。 */
     private val userFacingSources = setOf("api_server", "weixin", "cli")
 
+    /** 「从服务端拉取」的反馈文字：拉完显示几秒再清掉。 */
+    private val _pullNote = MutableStateFlow("")
+    val pullNote: StateFlow<String> = _pullNote.asStateFlow()
+
+    /** 自动回填门槛：只补最近这些天、且消息数达到这么多的会话。 */
+    private val AUTO_BACKFILL_DAYS = 7L
+    private val AUTO_BACKFILL_MIN_MSGS = 6
+    /** 手动拉取门槛：不限时间，但要有实际对话（滤掉一问一答的探针会话）。 */
+    private val MANUAL_BACKFILL_MIN_MSGS = 4
+
     /**
      * 从服务端拉会话列表，合并进本地索引。
      *
-     * 为什么需要两件事：
-     * 1) 标题。本地标题只有一条生成路径（touchSession：首条用户文本截 20 字），且只在
-     *    「本地还没有任何用户消息」时触发——重开 App 先拉回服务端消息、排队发送、别的端
-     *    建的会话都会错过，标题永远停在「新对话」。服务端一直用小模型生成 3~7 词正式标题。
-     * 2) 自愈与跨端。本地索引是历史列表的唯一来源，一旦被清（重装 / 清应用数据 / 换机）
-     *    列表就整个空掉，服务端还有全部记录却回不来；且微信端、CLI 端建的会话永远不出现。
-     *    现在启动时拉一次服务端列表，把服务端独有的用户会话补进本地索引。
+     * 为什么需要：本地标题只有一条生成路径（touchSession：首条用户文本截 20 字），重开 App
+     * 先拉回服务端消息、排队发送、别的端建的会话都会错过，标题永远停在「新对话」；服务端
+     * 一直用小模型生成 3~7 词正式标题，取来覆盖即可。
      *
-     * 只增不删：本地行（含尚未落服务端的新对话）一律保留，绝不因服务端没有而移除；
-     * 本地已有的行只更新标题，不动 updatedAt（避免列表顺序突变）。
+     * 关于「补行」的边界（2026-10-06 收紧）：此前把服务端全部会话都倒灌进本地列表，一次灌进
+     * 六十多条测试会话与几十天前的老会话，用户当场反馈「历史对话召回太多了」。现在改成：
+     * - 自动路径：**只在本地列表为空时才补**（索引被清 / 重装 / 换机），且只补最近 7 天、
+     *   消息数 ≥6 的；平时一条都不灌。
+     * - 手动路径（[pullFromServer]）：用户点「拉取」才补，不限时间，但要有实际对话。
+     * - 两种路径都只补用户来源（App / 微信 / CLI），定时任务、子智能体不进列表。
+     * - 只增不删（相对用户数据）：本地已有行（含尚未落服务端的新对话）一律保留；已有的只更新标题，不动排序。
+     * - 顺手清理：把「服务端有、本地却没聊天记录、又不达标」的空壳行删掉——正是上一版灌进来的那些。
      */
-    fun syncFromServer(throttleMs: Long = 0L) {
+    fun syncFromServer(throttleMs: Long = 0L, force: Boolean = false) {
         val a = api ?: return
         val now = System.currentTimeMillis()
         if (throttleMs > 0 && now - lastTitleSyncAt < throttleMs) return
         lastTitleSyncAt = now
+        // 只有「列表为空」或用户手动拉取时，才允许往列表里补行；其余情况仅同步标题。
+        val mayAdd = force || _sessions.value.isEmpty()
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val resp = a.listSessions()
                 val arr = resp.optJSONArray("data") ?: return@launch
                 val list = _sessions.value.toMutableList()
-                var changed = false
-                var added = 0
+                val serverIds = HashSet<String>()
+                val keepIds = HashSet<String>()
+                val maxAgeMs = AUTO_BACKFILL_DAYS * 86_400_000L
                 for (i in 0 until arr.length()) {
                     val o = arr.optJSONObject(i) ?: continue
                     val id = o.optString("id", "")
                     if (id.isEmpty()) continue
-                    // 委派子会话（子智能体）不进历史列表。
-                    if (o.optBoolean("is_internal_child", false)) continue
+                    serverIds.add(id)
+                    val isChild = o.optBoolean("is_internal_child", false)
+                    val src = o.optString("source", "")
+                    val archived = o.optBoolean("archived", false)
+                    val hidden = o.optBoolean("hidden", false)
+                    val msgs = o.optInt("message_count", 0)
+                    val ts = (o.optDouble("last_active", 0.0) * 1000.0).toLong()
+                    // 达标集合：手动路径不限时间，自动路径限最近 N 天。
+                    if (!isChild && src in userFacingSources && !archived && !hidden &&
+                        msgs >= (if (force) MANUAL_BACKFILL_MIN_MSGS else AUTO_BACKFILL_MIN_MSGS) &&
+                        (force || (ts > 0 && now - ts <= maxAgeMs))) {
+                        keepIds.add(id)
+                    }
+                }
+                var changed = false
+                var added = 0
+                var pruned = 0
+                // 1) 已有行同步标题；服务端独有且达标的行按需补进来。
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val id = o.optString("id", "")
+                    if (id.isEmpty() || o.optBoolean("is_internal_child", false)) continue
                     val title = o.optString("title", "").trim()
                     val idx = list.indexOfFirst { it.id == id }
                     if (idx >= 0) {
@@ -700,15 +735,27 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         }
                         continue
                     }
-                    // 服务端独有：只补用户来源、未归档未隐藏、且有消息的会话。
-                    if (o.optString("source", "") !in userFacingSources) continue
-                    if (o.optBoolean("archived", false) || o.optBoolean("hidden", false)) continue
-                    if (o.optInt("message_count", 0) <= 0) continue
+                    if (!mayAdd || id !in keepIds) continue
                     val ts = (o.optDouble("last_active", 0.0) * 1000.0).toLong()
                     list.add(SessionMeta(id, title.ifEmpty { "对话" }, if (ts > 0) ts else stamp(), false))
                     changed = true; added++
                 }
-                if (!changed) return@launch
+                // 2) 清理上一版灌进来的空壳行：服务端有、本地没聊天记录、又不达标的。
+                if (mayAdd) {
+                    val kept = list.filter { meta ->
+                        if (store.hasMessages(meta.id)) true          // 本地真有聊天记录：永久保留
+                        else if (meta.id !in serverIds) true          // 本地新建、还没落服务端：保留
+                        else meta.id in keepIds                       // 服务端会话：只留达标的
+                    }
+                    if (kept.size != list.size) {
+                        pruned = list.size - kept.size
+                        list.clear(); list.addAll(kept); changed = true
+                    }
+                }
+                if (!changed) {
+                    if (force) _pullNote.value = "拉取完成：无新会话"
+                    return@launch
+                }
                 val sorted = list.sortedByDescending { it.updatedAt }
                 _sessions.value = sorted
                 store.saveIndex(sorted)
@@ -721,11 +768,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         ensureLoaded(target.id)
                     }
                 }
-                if (added > 0) AppLog.log("session-sync", "从服务端补回 " + added + " 个会话")
+                if (force) _pullNote.value = "拉取完成：补回 " + added + " 个、清理 " + pruned + " 个"
+                if (added > 0 || pruned > 0) {
+                    AppLog.log("session-sync", "补回 " + added + " 个、清理 " + pruned + " 个会话")
+                }
             } catch (_: Exception) {
                 // 离线 / 接口异常：保留本地列表，不影响使用
+                if (force) _pullNote.value = "拉取失败：网络或接口异常"
             }
         }
+    }
+
+    /** 列表顶部「拉取」按钮：手动从服务端合并一次会话（不限时间，但要有实际对话）。 */
+    fun pullFromServer() {
+        _pullNote.value = "拉取中…"
+        syncFromServer(force = true)
+        viewModelScope.launch { delay(4000); _pullNote.value = "" }
     }
 
     /** 切到某个会话（网关 session_id 同步指过去）。不再停止任何正在跑的任务。 */
