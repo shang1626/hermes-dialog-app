@@ -702,5 +702,7 @@ class HermesApplication : android.app.Application() {
     override fun onCreate() {
         super.onCreate()
         CrashLog.install(this)
+        // 运行日志：连接/重连/发送/收流的关键节点留痕，设置页可查看与复制。
+        AppLog.install(this)
     }
 }
