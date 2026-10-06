@@ -92,6 +92,9 @@ data class SubagentLine(
     val summary: String = "",
 )
 
+/** 服务端会话记录的一行（翻历史兜底时用来认锚点、认答案）。 */
+private data class HistRow(val role: String, val text: String, val id: String)
+
 /** 待发送的附件：uri 用于展示（图片缩略图），file 是拷进沙盒后的真实文件。 */
 data class PendingImage(
     val id: Long,
@@ -112,6 +115,12 @@ private const val MAX_RECONNECT_ATTEMPTS = 8
 
 /** 断线丢事件时补进正文的提示行。 */
 private const val TRUNCATED_NOTICE = "\n[提示] 断线期间有内容未收到，已从服务端补拉最新结果\n"
+
+/**
+ * 断流翻历史的盯梢窗口：重连退避用尽后，改为轮询服务端会话记录等答案落盘。
+ * 首次等 5 秒，逐次翻倍到 30 秒封顶，最多盯 30 分钟。
+ */
+private const val HISTORY_RECOVERY_WINDOW_MS = 30L * 60_000L
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
@@ -136,6 +145,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         var saveJob: Job? = null
         /** 最近一次收到事件的墙钟时间，用于「回到前台」判断流是否已假死。 */
         var lastEventAt: Long = 0L
+        /** 流式攒帧器：把碎字按帧放送，避免一大块一大块地跳。 */
+        var coalescer: StreamDeltaCoalescer? = null
+        /** 本轮发送前该会话已有多少条用户消息：断流翻历史时的位置锚点。 */
+        var priorUserCount: Int = 0
+        /** 本轮待发正文（trim 过）：锚点的内容校验用。 */
+        var pendingSendText: String = ""
+        /** 断流翻历史的轮询任务；收到正常事件或任务结束时取消。 */
+        var recoveryJob: Job? = null
     }
 
     private val runtimes = ConcurrentHashMap<String, SessionRuntime>()
@@ -491,9 +508,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 重开 App 时从服务端拉当前会话消息：后台跑完的任务产出据此补回。 */
-    fun refreshFromServer() {
+    fun refreshFromServer() = refreshFromServerFor(_currentId.value)
+
+    /** 指定会话的服务端消息拉取与合并（翻历史兜底也复用）。 */
+    private fun refreshFromServerFor(id: String) {
         val a = api ?: return
-        val id = _currentId.value
         if (id.isEmpty()) return
         val r = rt(id)
         if (r.busy.value) return
@@ -510,8 +529,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     if (content.isEmpty()) continue
                     list.add(Msg(role, content, pending = false, ts = parseTs(o.optString("timestamp", ""))))
                 }
-                // 守卫：请求发出后用户可能已切走会话（或该会话已在跑任务）。
-                if (_currentId.value != id || r.busy.value) return@launch
+                // 守卫：该会话此刻已在跑任务则不覆盖（切换会话不影响——只写它自己的缓冲）。
+                if (r.busy.value) return@launch
                 if (list.isEmpty()) return@launch
                 // 合并而不是覆盖：本地消息正文里带内联图片（data URL），而服务端存的是
                 // 原始 MEDIA: 路径——直接覆盖会把图片弄丢（用户报「更新后图片不见了」）。
@@ -677,6 +696,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (r.busy.value) return   // 同一会话正在跑才拦；其它会话照发
         ensureLoaded(sid)
         val wasEmpty = r.messages.value.none { it.role == "user" }
+        // 记下发送前的用户消息条数（翻历史时的位置锚点）与本轮正文（内容校验）。
+        r.priorUserCount = r.messages.value.count { it.role == "user" }
+        r.pendingSendText = text.trim()
+        r.recoveryJob?.cancel()
         setMsgs(
             r,
             r.messages.value + Msg(
@@ -966,6 +989,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val rid = r.runId
         if (rid.isEmpty()) return
         r.lastEventAt = System.currentTimeMillis()   // 重新起流即重置活跃时间，避免刚连上就被判假死
+        // 每轮流一个攒帧器：碎字按帧放送。重起流时丢弃上一轮的残余。
+        r.coalescer?.discard()
+        r.coalescer = StreamDeltaCoalescer(viewModelScope, onFlush = { s -> appendDelta(r, s) })
         r.call = a.streamEvents(
             runId = rid,
             lastSeq = r.lastSeq,
@@ -978,6 +1004,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     r.autoContinue = 0
                     r.retryNote.value = ""
                 }
+                // 流已恢复：翻历史的盯梢任务作废。
+                if (name != "replay.truncated") r.recoveryJob?.cancel()
                 when (name) {
                     // 服务端明确告知：断线期间的事件已超出保留窗口、拿不回来了。
                     // 不能静默——在气泡里标一行，并拉一次服务端消息兜底。
@@ -989,14 +1017,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             if (s == _currentId.value) refreshFromServer()
                         }
                     }
-                    "message.delta" -> appendDelta(r, ev.data.optString("delta", ""))
+                    // 入攒帧缓冲，由 StreamDeltaCoalescer 按帧放送（避免一大块一大块地跳）。
+                    "message.delta" -> r.coalescer?.append(ev.data.optString("delta", ""))
                     "message.interim" -> {}
                     "tool.started" -> {}
                     "tool.completed" -> {
+                        r.coalescer?.flushNow()
                         val line = toolLine(ev, ev.data.optBoolean("error", false))
                         if (line.isNotEmpty()) appendTrace(r, line)
                     }
                     "tool.failed" -> {
+                        r.coalescer?.flushNow()
                         val line = toolLine(ev, true)
                         if (line.isNotEmpty()) appendTrace(r, line)
                     }
@@ -1005,6 +1036,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     "subagent.start" -> upsertSubagent(r, ev, running = true)
                     "subagent.complete" -> upsertSubagent(r, ev, running = false)
                     "run.completed" -> {
+                        r.coalescer?.flushNow()
                         r.finished = true
                         val out = ev.data.optString("output", "")
                         if (out.isNotEmpty()) setPendingText(r, out) else finishPending(r)
@@ -1013,22 +1045,28 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         notifyIfBackground(sid, out)
                     }
                     "run.failed" -> {
+                        r.coalescer?.flushNow()
                         r.finished = true
                         appendDelta(r, "\n[失败] " + ev.data.optString("error", "未知错误"))
                         finishPending(r)
                         maybeContinue(sid)
                     }
                     "run.cancelled", "run.interrupted" -> {
+                        r.coalescer?.flushNow()
                         r.finished = true
                         appendDelta(r, "\n[已中断]")
                         doneOk(sid)
                     }
                 }
             },
-            onClosed = { if (r.busy.value && !r.finished) maybeContinue(sid) },
+            onClosed = {
+                r.coalescer?.flushNow()
+                if (r.busy.value && !r.finished) maybeContinue(sid)
+            },
             onError = { e ->
                 // 不再往正文塞「[连接断开]」——断流期间的提示统一走 retryNote（气泡上方一行），
                 // 正文只保留任务真实产出，避免一次抖动就在会话里留一条错行。
+                r.coalescer?.flushNow()
                 if (r.busy.value && !r.finished) {
                     if (r.retryNote.value.isEmpty()) r.retryNote.value = "连接中断：" + (e.message ?: "未知")
                     maybeContinue(sid)
@@ -1053,8 +1091,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val rid = r.runId
         if (rid.isEmpty()) { failPending(sid); return }
         if (r.autoContinue >= MAX_RECONNECT_ATTEMPTS) {
-            r.retryNote.value = "已重试 $MAX_RECONNECT_ATTEMPTS 次仍未完成，可点「发送」重发或稍后再看"
-            failPending(sid)
+            // 重连退避用尽：不判死，改去翻服务端会话记录等答案落盘。
+            startHistoryRecovery(sid, rid)
             return
         }
         val attempt = r.autoContinue + 1
@@ -1086,6 +1124,125 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         return base.coerceAtMost(30_000L)
     }
 
+    /**
+     * 断流翻历史兜底。
+     *
+     * 重连退避用尽后不把回合判死：手机 SSE 常被系统掐死，而服务端其实还在跑，
+     * 跑完会把答案写进会话记录。这里改为轮询服务端历史，等答案落盘后再合并回来。
+     *
+     * 认哪一条是本次的答案，靠「位置」不靠「文字」：发送前记下的用户消息条数 N，
+     * 历史里第 N+1 条用户消息就是本次发送（再用正文做二次校验，防历史被编辑/分叉）。
+     * 它之后最后一条非空助手消息即答案，且必须连续两次读到一致才算定下来
+     * （签名里带记录总条数，服务端还在追加工具记录时签名会变，就继续等）。
+     * 认不出锚点就放弃——宁可报错，也不认错答案。
+     */
+    private fun startHistoryRecovery(sid: String, rid: String) {
+        val a = api ?: return
+        val r = rt(sid)
+        if (r.finished) return
+        if (r.recoveryJob?.isActive == true) return
+        val pending = r.pendingSendText
+        val prior = r.priorUserCount
+        if (pending.isEmpty()) {
+            r.retryNote.value = "连接中断，已重试 $MAX_RECONNECT_ATTEMPTS 次仍未完成"
+            failPending(sid)
+            return
+        }
+        r.retryNote.value = "连接中断，正在从服务端取回结果…"
+        r.recoveryJob = viewModelScope.launch(Dispatchers.IO) {
+            var delayMs = 5_000L
+            var elapsed = 0L
+            var lastSig: String? = null
+            var unanchored = 0
+            var failStreak = 0
+            while (elapsed < HISTORY_RECOVERY_WINDOW_MS) {
+                delay(delayMs)
+                elapsed += delayMs
+                delayMs = (delayMs * 2).coerceAtMost(30_000L)
+                if (!r.busy.value || r.finished) return@launch
+                val rows = try {
+                    historyRows(a, sid)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    failStreak++
+                    if (failStreak >= 3) {
+                        giveUpRecovery(sid, "服务端会话记录读取失败，可稍后再看")
+                        return@launch
+                    }
+                    continue
+                }
+                failStreak = 0
+                if (rows.isEmpty()) continue
+                val anchor = resolveAnchor(rows, pending, prior)
+                if (anchor < 0) {
+                    lastSig = null
+                    if (++unanchored >= 2) {
+                        giveUpRecovery(sid, "本次发送未落到服务端，可重发")
+                        return@launch
+                    }
+                    continue
+                }
+                unanchored = 0
+                val sig = answerSignature(rows, anchor)
+                if (sig != null && sig == lastSig) {
+                    adoptRecovered(sid)
+                    return@launch
+                }
+                lastSig = sig
+            }
+            giveUpRecovery(sid, "等 30 分钟仍未取回结果，可稍后再看")
+        }
+    }
+
+    /** 服务端会话记录解析成位置锚点所需的最小行。 */
+    private fun historyRows(a: HermesApi, sid: String): List<HistRow> {
+        val resp = a.sessionMessages(sid)
+        val arr = resp.optJSONArray("data") ?: return emptyList()
+        val out = ArrayList<HistRow>(arr.length())
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val role = o.optString("role", "")
+            if (role != "user" && role != "assistant") continue
+            out.add(HistRow(role, o.optString("content", ""), o.optString("id", i.toString())))
+        }
+        return out
+    }
+
+    /** 位置锚点：第 prior+1 条用户消息的下标；对不上返回 -1（不硬认）。 */
+    private fun resolveAnchor(rows: List<HistRow>, pendingText: String, prior: Int): Int {
+        val userIdx = rows.indices.filter { rows[it].role == "user" }
+        if (userIdx.size <= prior) return -1
+        val pos = userIdx[prior]
+        if (rows[pos].text.trim() != pendingText) return -1
+        return pos
+    }
+
+    /** 稳定性签名：锚点之后最后一条非空助手消息；带总条数，服务端还在追加时会变。 */
+    private fun answerSignature(rows: List<HistRow>, anchor: Int): String? {
+        val ans = rows.drop(anchor + 1)
+            .lastOrNull { it.role == "assistant" && it.text.isNotBlank() } ?: return null
+        return "${rows.size}|${ans.id}|${ans.text.length}"
+    }
+
+    /** 答案已落盘：结束本轮并按服务端记录合并回来。 */
+    private fun adoptRecovered(sid: String) {
+        val r = rt(sid)
+        r.finished = true
+        r.retryNote.value = ""
+        r.busy.value = false
+        r.runId = ""
+        prefs.removeActiveRun(sid)
+        updateRunService()
+        refreshFromServerFor(sid)
+    }
+
+    /** 翻历史也没捞到：明确收尾，不留一个永远转圈的空气泡。 */
+    private fun giveUpRecovery(sid: String, why: String) {
+        rt(sid).retryNote.value = why
+        failPending(sid)
+    }
+
     /** 停止「当前会话」正在跑的任务。 */
     fun stop() = stopSession(_currentId.value)
 
@@ -1096,6 +1253,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val a = api
         val rid = r.runId
         r.finished = true
+        r.recoveryJob?.cancel()
+        r.coalescer?.discard()
         if (a != null && rid.isNotEmpty()) viewModelScope.launch(Dispatchers.IO) { a.stopRun(rid) }
         r.call?.cancel()
         appendDelta(r, "\n[已请求停止]")
@@ -1141,6 +1300,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun failPending(sid: String) {
         val r = rt(sid)
+        r.recoveryJob?.cancel()
         finishPending(r)
         r.busy.value = false
         r.runId = ""
@@ -1151,6 +1311,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun doneOk(sid: String) {
         val r = rt(sid)
         r.autoContinue = 0
+        r.recoveryJob?.cancel()
         r.retryNote.value = ""
         finishPending(r)
         r.busy.value = false
