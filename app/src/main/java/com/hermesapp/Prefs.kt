@@ -122,4 +122,9 @@ class Prefs(ctx: Context) {
     var voiceRate: Float
         get() = sp.getFloat("voice_rate", 1.0f)
         set(v) { sp.edit().putFloat("voice_rate", v).apply() }
+
+    /** 空壳会话一次性清理是否已执行（2026-10-07 下线「拉取」时加）。 */
+    var shellCleanupDone: Boolean
+        get() = sp.getBoolean("shell_cleanup_done", false)
+        set(v) { sp.edit().putBoolean("shell_cleanup_done", v).apply() }
 }

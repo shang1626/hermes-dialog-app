@@ -456,7 +456,6 @@ fun DrawerPanel(
     val updateBadge by vm.updateBadge.collectAsState()
     val runningIds by vm.runningIds.collectAsState()
     var showArchived by remember { mutableStateOf(false) }
-    val pullNote by vm.pullNote.collectAsState()
 
     ModalDrawerSheet(
         drawerContainerColor = c.panel,
@@ -495,22 +494,12 @@ fun DrawerPanel(
                 )
                 Spacer(Modifier.width(10.dp))
                 Text(
-                    "拉取", color = c.accent, fontSize = 12.sp,
-                    modifier = Modifier.clickable { vm.pullFromServer() }
-                )
-                Spacer(Modifier.width(10.dp))
-                Text(
                     if (showArchived) "返回" else "已归档",
                     color = c.accent, fontSize = 12.sp,
                     modifier = Modifier.clickable { showArchived = !showArchived }
                 )
             }
             Spacer(Modifier.height(6.dp))
-
-            if (pullNote.isNotEmpty()) {
-                Text(pullNote, color = c.dim, fontSize = 11.sp)
-                Spacer(Modifier.height(4.dp))
-            }
 
             val gActive by vm.globalActive.collectAsState()
             val gQuery by vm.globalQuery.collectAsState()
