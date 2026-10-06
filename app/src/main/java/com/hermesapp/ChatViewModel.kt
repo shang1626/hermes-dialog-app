@@ -1614,7 +1614,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     if (r.retryNote.value.isEmpty()) r.retryNote.value = "连接中断：" + (e.message ?: "未知")
                     maybeContinue(sid)
                 }
-            }
+            },
+            // 心跳等任何一行都刷新活跃时间：长工具执行期间只有心跳、没有真实事件，
+            // 不刷就会让「回到前台」的 25 秒看门狗把健康流误判成假死（用户报的「一直在重连」）。
+            onActivity = { r.lastEventAt = System.currentTimeMillis() }
         )
     }
 

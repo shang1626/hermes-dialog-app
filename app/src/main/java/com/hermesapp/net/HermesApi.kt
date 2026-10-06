@@ -256,6 +256,16 @@ class HermesApi(
         onEvent: (SseEvent) -> Unit,
         onClosed: () -> Unit,
         onError: (Throwable) -> Unit,
+        /**
+         * 每读到一行（含 `: keepalive` 心跳注释帧）就回调一次，用来刷新「流还活着」的时间戳。
+         *
+         * 为什么必须单列这个回调：服务端在两次事件之间每 10 秒必发一个 `: keepalive`
+         * 注释帧，但它既不是 `id:`/`event:`/`data:` 行、也不是空行，解析器原先直接跳过，
+         * 不触发 onEvent。于是任务长时间只跑工具（如终端命令 180 秒）时，上层只看到
+         * 心跳、lastEventAt 长时间不刷新，被「25 秒没事件即假死」的看门狗误判成断流，
+         * 主动掐掉一条本来健康的流去重连——表现就是「一直在重连」。
+         */
+        onActivity: () -> Unit = {},
     ): Call {
         val b = base("/v1/runs/" + runId + "/events")
             .header("Accept", "text/event-stream")
