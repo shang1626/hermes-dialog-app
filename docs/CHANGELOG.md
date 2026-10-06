@@ -1,3 +1,14 @@
+## 2.83 — versionCode 94
+
+治本：切后台回来丢进度 / 完成不弹通知的根因——运行态跟着 Activity 一起被销毁重建。
+
+1. **运行态搬进进程级单例（RuntimeHub）**：原来 `runtimes` 挂在 ChatViewModel 里，而 ViewModel 会随 Activity 被系统销毁重建（息屏、内存紧张、从通知栏回 App 都可能触发）。新实例的代际号 `streamGen` 与续接计数 `autoContinue` 都从 0 重来，与旧实例那条仍在跑的流各执一份，同一个 run 挂上两条流：进度被互相搅乱（看着像「进度没了」），完成事件也可能落在已被作废的那条上，于是通知不弹。实测日志：02:45:04 起流 gen=2，02:45:37 又出现「第0次续接 gen=1」。
+2. **长命任务改挂进程级作用域**：攒帧器、消息落盘、退避重连、翻历史兜底原来都挂 `viewModelScope`，旧 ViewModel 一死全部陪葬——表现是「进度卡住不动、跑完才一次性冒出来」。现在统一挂 `RuntimeHub.scope`（SupervisorJob + Main.immediate），跨 Activity 重建存活。
+3. **前台服务保活判据改为「有任务在跑就举牌」**：不再只看「后台运行」开关，开关关着时任务在跑也保持进程不冻结（抄 relay 的活跃轮次登记思路）。
+4. **重建留痕**：ChatViewModel 构造时打一行 `[vm] ChatViewModel 新建 pid=`，用于确认是否真的发生了重建。
+
+（新增 RuntimeHub.kt；改 ChatViewModel.kt）
+
 ## 2.82 — versionCode 93
 
 修：回前台时同一条任务被起了两条流，导致回复正文与完成语音都重复执行一遍。
