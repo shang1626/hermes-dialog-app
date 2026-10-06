@@ -128,6 +128,48 @@ class HermesApi(
     fun getRun(runId: String): JSONObject =
         sync(base("/v1/runs/" + runId).get().build())
 
+    /**
+     * 运行状态探测结果——重连判据的核心。
+     *
+     * 原来的写法是 `try { getRun(rid).optString("status","") } catch { "" }`，
+     * 失败时拿到空串，而空串不在「还在跑」的集合里 → 被当成「任务已结束」，
+     * 于是第一次探测失败就彻底放弃重连（退避 8 次形同虚设）。必须把
+     * 「服务端明确回答」和「探不出来（不知道）」分开。
+     */
+    sealed class RunStatus {
+        /** 服务端明确回答了状态（如 running / completed）。 */
+        data class Known(val status: String) : RunStatus()
+
+        /** 服务端明确说没有这个 run（HTTP 404）——可以判结束。 */
+        object Missing : RunStatus()
+
+        /** 探不出来：网络没通、超时、5xx、body 异常。不知道 ≠ 已结束。 */
+        object Unknown : RunStatus()
+    }
+
+    /**
+     * 探测 run 状态，走带硬超时的 [probeClient]。
+     *
+     * 不能用 [getRun]：它走 [client]（readTimeout=0，SSE 流式必须），
+     * 隧道半死时会永久挂起；而且它把 404 和网络异常都抛成同一个
+     * IOException，上层分不清「任务真没了」和「网还没通」。
+     */
+    fun probeRun(runId: String): RunStatus = try {
+        probeClient.newCall(base("/v1/runs/" + runId).get().build()).execute().use { resp ->
+            when {
+                resp.code == 404 -> RunStatus.Missing
+                !resp.isSuccessful -> RunStatus.Unknown
+                else -> {
+                    val text = resp.body?.string().orEmpty()
+                    if (text.isEmpty()) RunStatus.Unknown
+                    else RunStatus.Known(JSONObject(text).optString("status", ""))
+                }
+            }
+        }
+    } catch (_: Exception) {
+        RunStatus.Unknown
+    }
+
     /** 拉取服务端某会话的消息列表（重开 App 时补回后台任务产出）。 */
     fun sessionMessages(sessionId: String): JSONObject =
         sync(base("/api/sessions/" + sessionId + "/messages").get().build())
