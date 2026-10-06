@@ -98,4 +98,12 @@ class Prefs(ctx: Context) {
     var keepAlive: Boolean
         get() = sp.getBoolean("keep_alive", true)
         set(v) { sp.edit().putBoolean("keep_alive", v).apply() }
+
+    /**
+     * 「其它会话完成也提醒」：App 在前台、但你正看着别的会话时，那边跑完也弹系统通知。
+     * 要靠一条活连接才能观察到别的会话收尾，所以打开它意味着同时启用后台运行。
+     */
+    var notifySessionCompletions: Boolean
+        get() = sp.getBoolean("notify_session_completions", false)
+        set(v) { sp.edit().putBoolean("notify_session_completions", v).apply() }
 }

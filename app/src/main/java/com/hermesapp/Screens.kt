@@ -862,6 +862,7 @@ fun SettingsScreen(
     val dtext by vm.downloadText.collectAsState()
     var url by remember { mutableStateOf(prefs.serverUrl) }
     var keepAlive by remember { mutableStateOf(prefs.keepAlive) }
+    var notifyDone by remember { mutableStateOf(prefs.notifySessionCompletions) }
     var showClear by remember { mutableStateOf(false) }
     val cacheText by vm.cacheText.collectAsState()
     LaunchedEffect(Unit) { vm.refreshCache() }
@@ -1074,6 +1075,23 @@ fun SettingsScreen(
             }
             Spacer(Modifier.width(10.dp))
             Switch(checked = keepAlive, onCheckedChange = { keepAlive = it; vm.setKeepAlive(it) })
+        }
+        Spacer(Modifier.height(12.dp))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("其它会话完成也提醒", color = c.text, fontSize = 13.sp)
+                Text(
+                    if (notifyDone) "别的会话跑完时也弹通知；当前会话的内容就在屏幕上，不重复提醒"
+                    else "只在 App 退到后台时提醒；开着 App 看别的会话时那边跑完不响",
+                    color = c.dim, fontSize = 11.sp
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Switch(checked = notifyDone, onCheckedChange = {
+                notifyDone = it
+                vm.setNotifySessionCompletions(it)
+                if (it && !keepAlive) { keepAlive = true; vm.setKeepAlive(true) }
+            })
         }
         Spacer(Modifier.height(24.dp))
         HorizontalDivider(color = c.card)

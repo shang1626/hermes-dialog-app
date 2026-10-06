@@ -191,6 +191,13 @@ private val RUNNING_STATES = setOf(
 private const val RESUME_PROBE_TRIES = 3
 
 /**
+ * 合并服务端与本地记录时，认定「同一条用户消息」的时间窗口。
+ * 服务端压缩会重发行 id、改写老行，但保留原时间戳；手机与服务端钟差 + 发送延迟
+ * 一般远小于这个窗口，超过即不认（避免把两句同文本的重复提问错配成一条）。
+ */
+private const val REWRITTEN_ROW_WINDOW_MS = 120_000L
+
+/**
  * 历史域名 → 当前域名。App 把服务器地址存在 prefs 里（登录时填的那次），
  * 就地升级不会改；域名一换（如 2026-10-06 从 .example-old.com 换到 .example.com），
  * 老用户的地址就成了死链，表现正是「一直重连连不上」。
@@ -924,54 +931,86 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 服务端会话记录与本地消息的合并——按「用户消息」锚点对齐，不按数组下标。
+     * 服务端会话记录与本地消息的合并——按「用户消息内容」对齐，不按数组下标。
      *
      * 为什么不能按下标：/api/sessions/{id}/messages 会滤掉空内容的助手行（本地保留，
-     * 它们带工具轨迹 trace），两边长度天然不等，按下标对齐会整体错位。
-     * 用户消息两边都完整保留、且有序，所以拿它当锚点：第 N 条用户消息到第 N+1 条之间
-     * 算一段，段内本地原样保留（带 trace/图片），仅当本地那条助手正文为空、而服务端
-     * 同段有内容时，用服务端正文补齐（保留本地 trace）。本地没有的段（别的端发的轮次）
-     * 整段取服务端。
+     * 它们带工具轨迹 trace），且**长会话被服务端压缩时老行会被删/合并**——两边用户消息
+     * 条数天然不等，按「第几条」对齐会从第一处差异起整体错位（把服务端回复贴到错误的
+     * 气泡上、用户消息重复出现）。用户消息正文两侧基本原样保留，所以拿「正文归一 + 时间
+     * 接近」做顺序匹配：服务端被压缩删掉的那条匹配不上就跳过，不影响其后各块的对齐。
      */
     private fun mergeByUserAnchor(local: List<Msg>, srv: List<Msg>): List<Msg> {
-        fun segs(ms: List<Msg>): Pair<MutableList<Msg>, MutableList<MutableList<Msg>>> {
+        fun isUser(m: Msg) = m.role == "user"
+        fun norm(s: String) = s.trim().replace(Regex("\\s+"), " ")
+
+        // 各自切块：head = 第一条用户消息之前的行；随后每个用户消息带一个 tail
+        //（其后、下一条用户消息之前的助手/系统行）。
+        fun blocks(ms: List<Msg>): Triple<MutableList<Msg>, MutableList<Msg>, MutableList<MutableList<Msg>>> {
+            val head = mutableListOf<Msg>()
             val users = mutableListOf<Msg>()
-            val out = mutableListOf<MutableList<Msg>>()
-            out.add(mutableListOf())      // 第 0 段：第一条用户消息之前
+            val tails = mutableListOf<MutableList<Msg>>()
+            var started = false
             for (m in ms) {
-                if (m.role == "user") { users.add(m); out.add(mutableListOf()) }
-                else out.last().add(m)
+                if (isUser(m)) { started = true; users.add(m); tails.add(mutableListOf()) }
+                else if (started) tails.last().add(m) else head.add(m)
             }
-            return users to out
+            return Triple(head, users, tails)
         }
-        val (lu, ls) = segs(local)
-        val (su, ss) = segs(srv)
+        val (lHead, lUsers, lTails) = blocks(local)
+        val (sHead, sUsers, sTails) = blocks(srv)
+
+        // 用户消息顺序匹配：正文归一相同（时间做二次确认，避免同文本误配）才认成同一条。
+        // 服务端压缩删掉的老用户消息匹配不上 → 跳过，不影响其后各块。
+        val l2s = IntArray(lUsers.size) { -1 }
+        var sj = 0
+        for (li in lUsers.indices) {
+            val a = lUsers[li]
+            val na = norm(a.text)
+            var k = sj
+            while (k < sUsers.size) {
+                val b = sUsers[k]
+                val sameText = na.isNotEmpty() && na == norm(b.text)
+                val tsOk = a.ts <= 0 || b.ts <= 0 || kotlin.math.abs(a.ts - b.ts) <= REWRITTEN_ROW_WINDOW_MS
+                if (sameText && tsOk) { l2s[li] = k; sj = k + 1; break }
+                k++
+            }
+        }
+        val srvMatched = BooleanArray(sUsers.size)
+        for (m in l2s) if (m >= 0) srvMatched[m] = true
+
+        fun mergeTail(lt: List<Msg>, st: List<Msg>): List<Msg> {
+            if (lt.isEmpty()) return st
+            if (st.isEmpty()) return lt
+            val seg = lt.toMutableList()
+            val li = seg.indexOfLast { it.role == "assistant" }
+            val sText = st.lastOrNull { it.role == "assistant" && it.text.isNotBlank() }?.text
+            if (li >= 0 && seg[li].text.isEmpty() && !sText.isNullOrEmpty()) {
+                seg[li] = seg[li].copy(text = sText, pending = false)
+            }
+            return seg
+        }
+
         val out = mutableListOf<Msg>()
-        val n = maxOf(lu.size, su.size)
-        for (k in 0..n) {
-            if (k > 0) {
-                val a = lu.getOrNull(k - 1)
-                val b = su.getOrNull(k - 1)
-                when {
-                    a != null -> out.add(a)      // 本地优先（含图片/回执/引用）
-                    b != null -> out.add(b)      // 本地没有（别的端发的轮次）
+        out.addAll(if (lHead.isNotEmpty()) lHead else sHead)
+        // 服务端独有的用户块（被压缩改写 / 别的端发的轮次）按其原顺序插回对应位置：
+        // 用「下一个本地已匹配块的 srv 索引」当边界，把边界之前未匹配的服务端块补进去。
+        var sIdx = 0
+        for (li in lUsers.indices) {
+            val target = l2s[li]
+            if (target >= 0) {
+                while (sIdx < target) {
+                    if (!srvMatched[sIdx]) { out.add(sUsers[sIdx]); out.addAll(sTails[sIdx]) }
+                    sIdx++
                 }
+                sIdx = target + 1
             }
-            val lSeg = ls.getOrNull(k).orEmpty()
-            val sSeg = ss.getOrNull(k).orEmpty()
-            when {
-                lSeg.isEmpty() -> out.addAll(sSeg)
-                sSeg.isEmpty() -> out.addAll(lSeg)
-                else -> {
-                    val seg = lSeg.toMutableList()
-                    val li = seg.indexOfLast { it.role == "assistant" }
-                    val sText = sSeg.lastOrNull { it.role == "assistant" && it.text.isNotBlank() }?.text
-                    if (li >= 0 && seg[li].text.isEmpty() && !sText.isNullOrEmpty()) {
-                        seg[li] = seg[li].copy(text = sText, pending = false)
-                    }
-                    out.addAll(seg)
-                }
-            }
+            out.add(lUsers[li])
+            out.addAll(mergeTail(lTails[li], if (target >= 0) sTails[target] else emptyList()))
+        }
+        // 本地所有块之后，剩余未匹配的服务端用户块照原顺序补上。
+        while (sIdx < sUsers.size) {
+            if (!srvMatched[sIdx]) { out.add(sUsers[sIdx]); out.addAll(sTails[sIdx]) }
+            sIdx++
         }
         return out
     }
@@ -1829,7 +1868,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         if (out.isNotEmpty()) setPendingText(r, out) else finishPending(r)
                         attachUsage(r, ev)
                         doneOk(sid)
-                        notifyIfBackground(sid, out)
+                        notifyCompletion(sid, out)
                     }
                     "run.failed" -> {
                         r.coalescer?.flushNow()
@@ -2218,9 +2257,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         Notifier.notifyAction(app, title, body, sid)
     }
 
-    /** App 不在前台时，任务完成弹系统通知（提示音+震动）。前台则静默，界面自己会更新。 */
-    private fun notifyIfBackground(sid: String, output: String) {
-        if (AppForeground.isForeground || !prefs.keepAlive) return
+    /**
+     * 任务完成提醒。
+     * 后台：一直提醒（原行为），前提是「后台运行」开着——否则根本没有连接能收到事件。
+     * 前台：只在「别的会话跑完」且用户开了「其它会话完成也提醒」时弹；
+     *       当前会话的内容就在屏幕上，再弹是骚扰。
+     */
+    private fun notifyCompletion(sid: String, output: String) {
+        val isCurrent = sid == _currentId.value
+        val should = if (!AppForeground.isForeground) prefs.keepAlive
+                     else !isCurrent && prefs.notifySessionCompletions
+        if (!should) return
         val app = getApplication<Application>()
         val body = output.replace(Regex("\\s+"), " ").trim().let {
             if (it.isEmpty()) "任务已完成" else if (it.length > 120) it.take(120) + "…" else it
@@ -2248,6 +2295,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun setKeepAlive(on: Boolean) {
         prefs.keepAlive = on
         if (!on) RunService.stop(getApplication()) else updateRunService()
+    }
+
+    /** 设置页「其它会话完成也提醒」：需一条活连接才能观察到别的会话收尾。 */
+    fun setNotifySessionCompletions(on: Boolean) {
+        prefs.notifySessionCompletions = on
     }
 
     // ---------- 自更新 ----------
