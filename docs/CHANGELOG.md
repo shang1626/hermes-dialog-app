@@ -1,3 +1,11 @@
+## 2.55 — versionCode 66
+
+定时任务页的翻译改成「精确表 + 关键词兜底」。
+
+- 原来中文对照表只写了自己这边的任务名，另一个机器人（friend）的两个任务名不在表里，于是回落显示英文。现在任务名里带 memory-refactor 就翻「记忆整理」、带 watchdog 翻「看门狗」、带 watch 翻「上游巡检」、带 reaper 翻「空闲回收」——朋友的、以后新加的、两边任意档案的任务都能自动出中文名与说明，不必每加一个任务改一次代码。
+- 排期补了对 cron 表达式的识别（如 0 9 * * * → 「每天 09:00」），不再依赖服务端那句英文 display（every day at 9am）。
+（ChatViewModel.kt、app/build.gradle.kts）
+
 ## 2.54 — versionCode 65
 
 定时任务页改中文。
