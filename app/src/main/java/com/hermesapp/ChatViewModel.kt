@@ -2169,14 +2169,28 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (i < 0) return
         val card = list[i].clarify ?: return
         if (card.resolved.isNotEmpty()) return
-        list[i] = list[i].copy(clarify = card.copy(resolved = choice))
-        setMsgs(r, list)
-        // 回执结果要可见：没送到时说清，别让卡片标着「已选择」而服务端根本没收到。
+        // 发成功才标「已选择」：先发请求，成功才把卡片定下来；失败就保持按钮可点，
+        // 提示里的「可重试」才真的能重试（原来先置已选、再发，失败后界面已无入口）。
+        if (!receiptInFlight.add(msgId)) return
+        r.retryNote.value = "正在送达回执…"
         viewModelScope.launch(Dispatchers.IO) {
             val ok = a.respondClarify(rid, card.clarifyId, choice)
             withContext(Dispatchers.Main) {
-                r.retryNote.value = if (ok) "已选择「" + choice + "」，已送达服务端"
-                else "回执没送到：本轮可能已收尾，可重试"
+                receiptInFlight.remove(msgId)
+                if (ok) {
+                    val cur = r.messages.value.toMutableList()
+                    val k = cur.indexOfFirst { it.id == msgId }
+                    if (k >= 0) {
+                        val cc = cur[k].clarify
+                        if (cc != null && cc.resolved.isEmpty()) {
+                            cur[k] = cur[k].copy(clarify = cc.copy(resolved = choice))
+                            setMsgs(r, cur)
+                        }
+                    }
+                    r.retryNote.value = "已选择「" + choice + "」，已送达服务端"
+                } else {
+                    r.retryNote.value = "回执没送到：本轮可能已收尾，可重试"
+                }
             }
         }
     }
@@ -2253,14 +2267,27 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (i < 0) return
         val card = list[i].approval ?: return
         if (card.resolved.isNotEmpty()) return
-        list[i] = list[i].copy(approval = card.copy(resolved = choice))
-        setMsgs(r, list)
-        // 同 respondClarify：回执没送到必须可见，不静默吞。
+        // 同 respondClarify：发成功才标「已选择」，失败保持可点，让提示里的重试有入口。
+        if (!receiptInFlight.add(msgId)) return
+        r.retryNote.value = "正在送达回执…"
         viewModelScope.launch(Dispatchers.IO) {
             val ok = a.respondApproval(rid, card.requestId, choice)
             withContext(Dispatchers.Main) {
-                r.retryNote.value = if (ok) "已选择「" + choice + "」，已送达服务端"
-                else "回执没送到：本轮可能已收尾，可重试"
+                receiptInFlight.remove(msgId)
+                if (ok) {
+                    val cur = r.messages.value.toMutableList()
+                    val k = cur.indexOfFirst { it.id == msgId }
+                    if (k >= 0) {
+                        val cc = cur[k].approval
+                        if (cc != null && cc.resolved.isEmpty()) {
+                            cur[k] = cur[k].copy(approval = cc.copy(resolved = choice))
+                            setMsgs(r, cur)
+                        }
+                    }
+                    r.retryNote.value = "已选择「" + choice + "」，已送达服务端"
+                } else {
+                    r.retryNote.value = "回执没送到：本轮可能已收尾，可重试"
+                }
             }
         }
     }
@@ -2292,6 +2319,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (i >= 0) list[i] = list[i].copy(usage = usage)
         setMsgs(r, list)
     }
+
+    /** 正在发送回执的卡片消息 id：防连点重复 POST，发完（无论成败）都放回。 */
+    private val receiptInFlight = ConcurrentHashMap.newKeySet<Long>()
 
     /** 子任务开始/结束：按 subagent_id 或 goal 归并成一行进度。 */
     private fun upsertSubagent(r: SessionRuntime, ev: com.hermesapp.net.SseEvent, running: Boolean) {

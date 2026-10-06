@@ -129,11 +129,22 @@ class SessionStore(ctx: Context, private val profile: String) {
                         durationMs = uo.optLong("durationMs", 0L),
                     )
                 }
-                // 只要还有正文 / 工具轨迹 / 图片 / 附件 / 待办卡片，这条就得留住。
+                // 子任务进度也要读回：长任务派了子代理，跑一半重开 App，进度行不能丢。
+                val subs = mutableListOf<SubagentLine>()
+                o.optJSONArray("subagents")?.let { sa ->
+                    for (k in 0 until sa.length()) {
+                        val so = sa.optJSONObject(k) ?: continue
+                        subs.add(SubagentLine(
+                            so.optString("id", ""), so.optString("goal", ""),
+                            so.optString("status", ""), so.optString("summary", "")
+                        ))
+                    }
+                }
+                // 只要还有正文 / 工具轨迹 / 图片 / 附件 / 待办卡片 / 子任务进度，这条就得留住。
                 // 待办卡片气泡的正文可能是空的（服务端还没产出内容），只查正文与轨迹的
                 // 老条件会把整条丢掉——重开 App 那张等你点的卡片就没了。
                 if (text.isEmpty() && trace.isEmpty() && imgs.isEmpty() && files.isEmpty() &&
-                    approval == null && clarify == null && usage == null) continue
+                    approval == null && clarify == null && usage == null && subs.isEmpty()) continue
                 // 投递状态：老消息没有这个键 → 保持 null（界面不显示角标，不报错）。
                 val rc = o.optJSONObject("receipt")?.let { ro ->
                     val arts = mutableListOf<String>()
@@ -165,6 +176,7 @@ class SessionStore(ctx: Context, private val profile: String) {
                         approval = approval,
                         clarify = clarify,
                         usage = usage,
+                        subagents = subs,
                         // 进行中气泡的计时起点：不读回来的话，重开 App 后实时耗时会从 0 重新算。
                         startedAt = o.optLong("startedAt", 0L),
                     )
@@ -180,7 +192,7 @@ class SessionStore(ctx: Context, private val profile: String) {
             // 带审批/澄清卡片的必须留下，否则重开 App 卡片就没了。
             val clean = list.filter {
                 !(it.pending && it.text.isEmpty() && it.trace.isEmpty() &&
-                    it.approval == null && it.clarify == null)
+                    it.approval == null && it.clarify == null && it.subagents.isEmpty())
             }
             val tail = if (clean.size > max) clean.takeLast(max) else clean
             val arr = JSONArray()
@@ -223,6 +235,15 @@ class SessionStore(ctx: Context, private val profile: String) {
                         .put("cacheRead", u.cacheRead).put("cacheWrite", u.cacheWrite)
                         .put("durationMs", u.durationMs)
                     o.put("usage", uj)
+                }
+                // 子任务进度落盘：长任务跑一半重开 App，进度行要能读回来。
+                if (m.subagents.isNotEmpty()) {
+                    val sa = JSONArray()
+                    for (s in m.subagents) {
+                        sa.put(JSONObject().put("id", s.id).put("goal", s.goal)
+                            .put("status", s.status).put("summary", s.summary))
+                    }
+                    o.put("subagents", sa)
                 }
                 // 进行中气泡的计时起点也要落盘，否则 App 退出重进后计时从 0 重新开始。
                 if (m.startedAt > 0) o.put("startedAt", m.startedAt)

@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.util.Base64
+import android.widget.Toast
 import androidx.core.content.FileProvider
 import java.io.File
 
@@ -172,8 +173,10 @@ private fun persistAttachment(ctx: Context, name: String, data: DecodedData): Fi
  * （微信、QQ、邮件都在里面）。这是「收到的文件转发给别人」的正路。
  */
 fun shareAttachment(ctx: Context, name: String, data: DecodedData) {
-    runCatching {
-        val f = persistAttachment(ctx, name, data) ?: return
+    // 失败不能静默：原来整段被 runCatching 包住，落盘失败或手机没有可分享的应用时
+    // 点一下毫无反应（旁边的「保存」有 Toast，分享没有，不一致）。
+    val ok = runCatching {
+        val f = persistAttachment(ctx, name, data) ?: return@runCatching false
         val uri = FileProvider.getUriForFile(ctx, "com.hermesapp.fileprovider", f)
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = data.mime.ifBlank { "application/octet-stream" }
@@ -185,6 +188,10 @@ fun shareAttachment(ctx: Context, name: String, data: DecodedData) {
         ctx.startActivity(Intent.createChooser(intent, "分享").apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         })
+        true
+    }.getOrDefault(false)
+    if (!ok) {
+        Toast.makeText(ctx, "分享失败：没有可用的分享应用，或文件写入失败", Toast.LENGTH_SHORT).show()
     }
 }
 
