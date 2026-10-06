@@ -270,6 +270,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
          */
         val probing = java.util.concurrent.atomic.AtomicBoolean(false)
         var finished: Boolean = false
+        /** 这条 run 是重开 App 后从落盘标记恢复的（没有本地发送上下文，拿不到位置锚点）。 */
+        var resumed: Boolean = false
         var startedAt: Long = 0L
         var loaded: Boolean = false
         var saveJob: Job? = null
@@ -577,6 +579,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * compareAndSet 是原子操作，只有一个线程能赢。
      */
     private val pingStarted = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** 正在恢复探测的会话 id：进前台会频繁调用 resumeActiveRun，防止同一会话叠起多条探测链。 */
+    private val resumingSids = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     /** 本机版本号：静默检查更新时用来比较（免去每次从界面传进来）。 */
     private val myVersionCode: Int = runCatching {
@@ -937,6 +942,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val map = prefs.activeRunsMap()
         if (map.isEmpty()) return
         for ((sid, rid) in map) {
+            // 已在跑的会话不重复探测：重复接流会把同一条 run 挂两条流、进度翻倍。
+            if (rt(sid).busy.value) continue
+            // 同一会话的探测不许叠（两个前台事件可能并发进来）。
+            if (!resumingSids.add(sid)) continue
             viewModelScope.launch(Dispatchers.IO) {
                 // 开机时网络往往还没就绪，探测失败不能当成「任务已结束」——
                 // 那样会把活跃标记删掉，这条任务就永远回不来了。重试几次，
@@ -955,6 +964,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             ensureLoaded(sid)
                             r.runId = rid
                             r.finished = false
+                            // 冷启动恢复：本地没有这轮的发送上下文（pendingSendText 不落盘），
+                            // 翻历史兜底拿不到位置锚点，靠 resumed 标记走「保留气泡继续重连」。
+                            r.resumed = true
                             // 续接序号从落盘恢复：只补断线之后的事件，避免从 0 全量重放
                             // 把已经存过的工具轨迹再追加一遍（用户报「过程重复显示」）。
                             r.lastSeq = prefs.lastSeq(sid)
@@ -1000,12 +1012,35 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         prefs.removeActiveRun(sid)
                         if (sid == _currentId.value) refreshFromServer()
                     }
-                    // 探不出来：保留标记（不清），只拉一次服务端记录兜底。
-                    // 下次 onProfileChanged / onAppForeground 还会再来试。
+                    // 探不出来（网还没就绪）：不知道 ≠ 已结束。保留标记，并把它登记成
+                    // 「进行中」（busy + 待接续气泡），交给看门狗与退避链继续重连——
+                    // 只留个标记干等的话，回前台这条路径以前根本不存在，任务就永远不报了。
                     HermesApi.RunStatus.Unknown -> {
+                        val r = rt(sid)
+                        ensureLoaded(sid)
+                        r.runId = rid
+                        r.finished = false
+                        r.resumed = true
+                        r.lastSeq = prefs.lastSeq(sid)
+                        val lastAssistant = r.messages.value.indexOfLast { it.role == "assistant" }
+                        val hasLocalTurnBubble = lastAssistant >= 0 &&
+                            lastAssistant == r.messages.value.lastIndex && r.lastSeq >= 0
+                        if (hasLocalTurnBubble) {
+                            val m = r.messages.value.toMutableList()
+                            m[lastAssistant] = m[lastAssistant].copy(pending = true)
+                            r.messages.value = m
+                        } else {
+                            r.messages.value = r.messages.value +
+                                Msg("assistant", "", pending = true, ts = System.currentTimeMillis(), startedAt = turnStart(r))
+                        }
+                        r.busy.value = true
+                        r.lastEventAt = System.currentTimeMillis()
+                        updateRunService()
+                        maybeContinue(sid)
                         if (sid == _currentId.value) refreshFromServer()
                     }
                 }
+                resumingSids.remove(sid)
             }
         }
     }
@@ -1018,9 +1053,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * 正常空闲绝不会误判；不这样做的话，息屏期间假死的流要等 30 秒读超时才断开。
      */
     fun onAppForeground() {
+        // 冷启动/探活失败遗留的活跃任务没有别的重试入口（onProfileChanged 只在切身份时跑），
+        // 进前台先补一次恢复探测。已在跑的会话会被 resumeActiveRun 的守卫跳过，不会重复接流。
+        resumeActiveRun()
         val now = System.currentTimeMillis()
         for (r in runtimes.values) {
             if (!r.busy.value || r.finished) continue
+            // 回前台是「重新争取流式续接」的机会：把退避计数归零、作废正在跑的历史轮询，
+            // 否则后台期间退避用尽的任务会停在「只等最终答案」的历史轮询里，界面不再刷流式进度。
+            r.autoContinue = 0
+            r.recoveryJob?.cancel()
             val last = r.lastEventAt
             if (last > 0 && now - last > 25_000L) {
                 val c = r.call
@@ -2164,6 +2206,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.finished = false
         r.lastSeq = -1
         r.autoContinue = 0
+        r.resumed = false
         updateRunService()
         val ids = mutableListOf<String>()
         var uploadsDone = reuseArtifacts.isNotEmpty()
@@ -2694,6 +2737,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val pending = r.pendingSendText
         val prior = r.priorUserCount
         if (pending.isEmpty()) {
+            // 重开 App 恢复出来的任务没有本地发送上下文，拿不到位置锚点，不能据此判死：
+            // 保留活跃标记与气泡，等下次进前台（onAppForeground 会把退避计数归零）再续接。
+            if (r.resumed) {
+                r.retryNote.value = "连接不稳，仍在尝试接回本轮…"
+                r.autoContinue = 0
+                return
+            }
             r.retryNote.value = "连接中断，已重试 $MAX_RECONNECT_ATTEMPTS 次仍未完成"
             failPending(sid)
             return
