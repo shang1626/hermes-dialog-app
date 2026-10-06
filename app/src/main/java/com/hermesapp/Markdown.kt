@@ -303,7 +303,10 @@ fun RichText(
 ) {
     val c = LocalAppColors.current
     val uri = LocalUriHandler.current
-    val blocks = remember(text) { parseMdBlocks(text) }
+    // 音频附件（完成语音播报）不占正文块：它改由气泡底部时间行里的迷你图标呈现。
+    val blocks = remember(text) {
+        parseMdBlocks(text).filterNot { it is MdBlock.Attachment && VoicePlayer.isAudio(it.name) }
+    }
 
     Column(modifier) {
         for ((idx, b) in blocks.withIndex()) {
@@ -581,11 +584,8 @@ private fun ZoomableImage(
 /** 非图片附件卡片：点一下落盘再拉起系统应用打开（HTML 走浏览器）。 */
 @Composable
 private fun MdAttachmentCard(name: String, dataUrl: String, token: String) {
-    // 完成语音播报的音频附件：不以文件卡片形式展示，只给一个播放按钮，点一下重播。
-    if (VoicePlayer.isAudio(name)) {
-        MdVoiceButton(name, dataUrl, token)
-        return
-    }
+    // 语音附件已在上层过滤掉，不会走到这里；兜底也不显示成文件卡片。
+    if (VoicePlayer.isAudio(name)) return
     val ctx = LocalContext.current
     val c = LocalAppColors.current
     val scope = rememberCoroutineScope()
@@ -633,36 +633,24 @@ private fun MdAttachmentCard(name: String, dataUrl: String, token: String) {
 }
 
 /**
- * 语音附件的播放按钮：极简迷你圆形图标，播完点一下可重播。
- * 不显示文件名（`tts_reply_xxx.mp3` 对用户没有意义），也不走「点击打开」那条文件路径。
+ * 语音附件的迷你播放图标：16dp 纯图标，跟时间并排同一行显示（不单独占一行、不显示文件名）。
+ * 空闲是播放三角，正在播这条时变停止方块，点一下播 / 再点一下停，播完可重播。
  */
 @Composable
-private fun MdVoiceButton(name: String, dataUrl: String, token: String) {
+fun VoiceMiniButton(target: String, modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
     val c = LocalAppColors.current
-    val target = when {
-        dataUrl.isNotEmpty() -> dataUrl
-        token.isNotEmpty() -> "hermes-media://" + token
-        else -> ""
-    }
     val playing by VoicePlayer.nowPlaying.collectAsState()
     val isThis = target.isNotEmpty() && playing == target
-    Box(
-        Modifier
-            .size(30.dp)
+    Icon(
+        imageVector = if (isThis) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
+        contentDescription = if (isThis) "停止播放" else "播放语音",
+        tint = if (isThis) c.accent else c.dim,
+        modifier = modifier
+            .size(16.dp)
             .clip(CircleShape)
-            .background(if (isThis) c.accent.copy(alpha = 0.18f) else c.card)
-            .border(0.5.dp, if (isThis) c.accent else c.dim, CircleShape)
-            .clickable(enabled = target.isNotEmpty()) { VoicePlayer.toggle(ctx, target) },
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(
-            imageVector = if (isThis) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
-            contentDescription = if (isThis) "停止播放" else "播放语音",
-            tint = if (isThis) c.accent else c.dim,
-            modifier = Modifier.size(17.dp)
-        )
-    }
+            .clickable(enabled = target.isNotEmpty()) { VoicePlayer.toggle(ctx, target) }
+    )
 }
 
 /**

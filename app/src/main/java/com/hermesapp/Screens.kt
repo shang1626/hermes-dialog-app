@@ -720,7 +720,9 @@ fun Bubble(
                     Receipt.FAILED -> c.bad
                     else -> c.dim
                 }
-                if (rc != null || m.ts > 0) {
+                // 语音附件的迷你图标：跟时间并排同一行，不单独占一行。
+                val voiceTarget = remember(m.text) { VoicePlayer.audioTarget(m.text) }
+                if (rc != null || m.ts > 0 || voiceTarget.isNotEmpty()) {
                     Spacer(Modifier.height(4.dp))
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -733,6 +735,10 @@ fun Bubble(
                             Spacer(Modifier.width(5.dp))
                         }
                         if (m.ts > 0) Text(TimeFmt.hm(m.ts), color = c.dim, fontSize = 10.sp)
+                        if (voiceTarget.isNotEmpty()) {
+                            Spacer(Modifier.width(6.dp))
+                            VoiceMiniButton(voiceTarget)
+                        }
                         if (rc != null) {
                             val tip = when (rc.status) {
                                 Receipt.QUEUED -> "排队中，本轮结束后自动发送（点这里可撤回或编辑）"
