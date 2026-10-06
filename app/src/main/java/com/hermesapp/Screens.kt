@@ -180,6 +180,7 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
     val q by vm.searchQuery.collectAsState()
     val hits by vm.searchIds.collectAsState()
     val hitIdx by vm.searchIdx.collectAsState()
+    val rcMenu by vm.receiptMenu.collectAsState()
     val listState = rememberLazyListState()
     val focus = LocalFocusManager.current
     val ctx = LocalContext.current
@@ -263,6 +264,10 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
                 val hl = hits.getOrNull(hitIdx) == m.id
                 Bubble(
                     m, vm::respondApproval, vm::respondClarify,
+                    receiptMenuOpen = rcMenu == m.id,
+                    onReceiptTap = { vm.openReceiptMenu(it) },
+                    onConfirmReceipt = { vm.confirmReceipt(it) },
+                    onResendReceipt = { vm.resendReceipt(it) },
                     highlight = hl,
                     hitQuery = if (hl) q else "",
                     selectionReset = selReset,
@@ -393,6 +398,11 @@ fun Bubble(
     m: Msg,
     onApproval: (Long, String) -> Unit = { _, _ -> },
     onClarify: (Long, String) -> Unit = { _, _ -> },
+    /** 该条的投递处置按钮是否展开（由 vm.receiptMenu 控制）。 */
+    receiptMenuOpen: Boolean = false,
+    onReceiptTap: (Long) -> Unit = {},
+    onConfirmReceipt: (Long) -> Unit = {},
+    onResendReceipt: (Long) -> Unit = {},
     /** 该条是当前搜索命中：加一圈强调边框。 */
     highlight: Boolean = false,
     /** 命中词：正文里加黄底（空表示不高亮）。 */
@@ -577,6 +587,57 @@ fun Bubble(
                     parts.add("共 " + u.total)
                     if (speed.isNotEmpty()) parts.add(speed + " tok/s")
                     Text(parts.joinToString(" · "), color = c.dim, fontSize = 10.sp)
+                }
+                // 用户消息投递状态：转圈 / 单勾 / 黄问号 / 红叹号。点黄问号或红叹号展开处置。
+                val rc = m.receipt
+                if (rc != null) {
+                    Spacer(Modifier.height(4.dp))
+                    val actionable = rc.status == Receipt.UNCERTAIN || rc.status == Receipt.FAILED
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.then(
+                            if (actionable) Modifier.clickable { onReceiptTap(m.id) } else Modifier
+                        )
+                    ) {
+                        val mark = when (rc.status) {
+                            Receipt.SENDING -> "◌"
+                            Receipt.ACCEPTED -> "✓"
+                            Receipt.UNCERTAIN -> "?"
+                            else -> "!"
+                        }
+                        val col = when (rc.status) {
+                            Receipt.UNCERTAIN -> c.warn
+                            Receipt.FAILED -> c.bad
+                            else -> c.dim
+                        }
+                        Text(mark, color = col, fontSize = 11.sp)
+                        if (rc.status == Receipt.UNCERTAIN) {
+                            Spacer(Modifier.width(4.dp))
+                            Text("发送结果不确定，点这里处理", color = c.warn, fontSize = 10.sp)
+                        } else if (rc.status == Receipt.FAILED) {
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                if (rc.note.isNotEmpty()) rc.note else "发送失败，点这里重发",
+                                color = c.bad, fontSize = 10.sp,
+                                maxLines = 2, overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                    if (receiptMenuOpen && actionable) {
+                        Spacer(Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            OutlinedButton(
+                                onClick = { onConfirmReceipt(m.id) },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                shape = RoundedCornerShape(8.dp),
+                            ) { Text("确认送达", color = c.accent, fontSize = 12.sp) }
+                            OutlinedButton(
+                                onClick = { onResendReceipt(m.id) },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                shape = RoundedCornerShape(8.dp),
+                            ) { Text("重新发送", color = c.accent, fontSize = 12.sp) }
+                        }
+                    }
                 }
                 if (m.ts > 0) {
                     Spacer(Modifier.height(4.dp))

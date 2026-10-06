@@ -49,10 +49,38 @@ data class Msg(
     val subagents: List<SubagentLine> = emptyList(),
     /** 稳定唯一 id：给 LazyColumn 做 key，避免滑动时整列重组。 */
     val id: Long = nextMsgId(),
+    /** 投递状态：只有用户消息有；老消息/服务端拉回的消息为 null。 */
+    val receipt: Receipt? = null,
 ) {
     companion object {
         private val counter = java.util.concurrent.atomic.AtomicLong(0)
         fun nextMsgId(): Long = counter.incrementAndGet()
+    }
+}
+
+/**
+ * 一条用户消息的投递状态——「服务端到底收下这条没有」。
+ *
+ *   sending    POST 已发出，回执还没回来（气泡角标转灰点）
+ *   accepted   服务端已收下并给了 run_id（角标打勾），本轮才能正常订阅流
+ *   uncertain  POST 中途断了，收没收不知道（黄问号）——要用户点一下确认或重发
+ *   failed     服务端明确拒绝（HTTP 4xx/5xx，有回执），或确认后发现记录里没有（红叹号）
+ *
+ * rawText / priorUserCount 是给「确认送达」「重新发送」复用的：
+ * 拿原文与本条之前的用户消息条数去服务端记录里认领这条消息。
+ */
+data class Receipt(
+    val status: String,
+    val runId: String = "",
+    val note: String = "",
+    val rawText: String = "",
+    val priorUserCount: Int = -1,
+) {
+    companion object {
+        const val SENDING = "sending"
+        const val ACCEPTED = "accepted"
+        const val UNCERTAIN = "uncertain"
+        const val FAILED = "failed"
     }
 }
 
@@ -152,6 +180,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         var priorUserCount: Int = 0
         /** 本轮待发正文（trim 过）：锚点的内容校验用。 */
         var pendingSendText: String = ""
+        /** 最近一条用户消息的 id：投递回执按它认领。 */
+        var lastUserMsgId: Long = 0L
+        /** 「确认送达」进行中要回写的用户消息 id；0 表示没有。 */
+        var confirmingMsgId: Long = 0L
         /** 断流翻历史的轮询任务；收到正常事件或任务结束时取消。 */
         var recoveryJob: Job? = null
     }
@@ -768,24 +800,152 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         ensureLoaded(sid)
         val wasEmpty = r.messages.value.none { it.role == "user" }
         // 记下发送前的用户消息条数（翻历史时的位置锚点）与本轮正文（内容校验）。
-        r.priorUserCount = r.messages.value.count { it.role == "user" }
+        val prior = r.messages.value.count { it.role == "user" }
+        r.priorUserCount = prior
         r.pendingSendText = text.trim()
         r.recoveryJob?.cancel()
         // 发出去的图先落进 App 私有「已发送」目录再进气泡：相册给的 content:// 会被系统
         // 回收（换机/清数据/授权到期），而 outbox 会被「清理缓存」清掉——两者都会让历史
         // 里的图变白框。sent/ 既不参与清理、又是私有文件，重开、清缓存后都还在。
         val durableImgs = imgs.filter { it.isImage }.map { persistOutgoing(it) }
-        setMsgs(
-            r,
-            r.messages.value + Msg(
-                "user", text, ts = stamp(),
-                images = durableImgs,
-                files = imgs.filter { !it.isImage }.map { it.file.name },
-            )
+        // 投递状态挂在用户消息自己身上（按 msgId 认领，不靠位置）：POST 没回来前是 sending，
+        // 拿到 run_id 才转 accepted，中途断了转 uncertain 等用户处置。
+        val userMsg = Msg(
+            "user", text, ts = stamp(),
+            images = durableImgs,
+            files = imgs.filter { !it.isImage }.map { it.file.name },
+            receipt = Receipt(
+                status = Receipt.SENDING,
+                rawText = text.trim(),
+                priorUserCount = prior,
+            ),
         )
+        r.lastUserMsgId = userMsg.id
+        setMsgs(r, r.messages.value + userMsg)
         touchSession(if (wasEmpty) text else null)
         _pendingImages.value = emptyList()
-        startRunWith(a, sid, text, imgs.map { it.file })
+        startRunWith(a, sid, text, imgs.map { it.file }, receiptMsgId = userMsg.id)
+    }
+
+    /** 按消息 id 改投递状态（找不到就忽略——消息可能已被「清理缓存」截掉）。 */
+    private fun setReceipt(sid: String, msgId: Long, receipt: Receipt?) {
+        if (msgId <= 0) return
+        val r = rt(sid)
+        val list = r.messages.value.toMutableList()
+        val i = list.indexOfFirst { it.id == msgId }
+        if (i < 0) return
+        list[i] = list[i].copy(receipt = receipt)
+        setMsgs(r, list)
+    }
+
+    /** 把某条用户消息的投递状态推到下一档，其余字段保留。 */
+    private fun advanceReceipt(sid: String, msgId: Long, status: String, runId: String? = null, note: String = "") {
+        if (msgId <= 0) return
+        val r = rt(sid)
+        val list = r.messages.value.toMutableList()
+        val i = list.indexOfFirst { it.id == msgId }
+        if (i < 0) return
+        val old = list[i].receipt
+        list[i] = list[i].copy(
+            receipt = Receipt(
+                status = status,
+                runId = runId ?: old?.runId.orEmpty(),
+                note = note,
+                rawText = old?.rawText ?: list[i].text.trim(),
+                priorUserCount = old?.priorUserCount ?: -1,
+            )
+        )
+        setMsgs(r, list)
+    }
+
+    /** 发送明确失败时把那个空气泡收掉，别在界面留一个空壳。 */
+    private fun dropEmptyPending(r: SessionRuntime) {
+        val list = r.messages.value.toMutableList()
+        val i = list.indexOfLast { it.role == "assistant" && it.pending }
+        if (i < 0) return
+        val m = list[i]
+        if (m.text.isEmpty() && m.trace.isEmpty() && m.approval == null && m.clarify == null &&
+            m.usage == null && m.subagents.isEmpty()
+        ) {
+            list.removeAt(i)
+            setMsgs(r, list)
+        }
+    }
+
+    // ---------- 投递回执：服务端到底收下这条没有 ----------
+
+    private val _receiptMenu = MutableStateFlow(0L)
+    /** 当前展开处置按钮的用户消息 id；0 表示没有。 */
+    val receiptMenu = _receiptMenu.asStateFlow()
+
+    fun openReceiptMenu(msgId: Long) {
+        _receiptMenu.value = if (_receiptMenu.value == msgId) 0L else msgId
+    }
+
+    fun closeReceiptMenu() {
+        _receiptMenu.value = 0L
+    }
+
+    /**
+     * 「确认送达」：去服务端会话记录里按位置锚点 + 正文核对这条消息在不在。
+     * 在 → 标已送达并接着把答案等回来（复用断流翻历史那套轮询）；
+     * 不在 → 标失败，提示可重发。认不出锚点就报失败，绝不硬认。
+     */
+    fun confirmReceipt(msgId: Long) {
+        val a = api ?: return
+        val sid = _currentId.value
+        val r = rt(sid)
+        val list = r.messages.value
+        val i = list.indexOfFirst { it.id == msgId }
+        if (i < 0) return
+        val rc = list[i].receipt ?: return
+        _receiptMenu.value = 0L
+        viewModelScope.launch(Dispatchers.IO) {
+            val rows = try { historyRows(a, sid) } catch (_: Exception) { emptyList() }
+            val anchor = if (rows.isEmpty()) -1 else resolveAnchor(rows, rc.rawText, rc.priorUserCount)
+            if (anchor < 0) {
+                advanceReceipt(sid, msgId, Receipt.FAILED, note = "服务端记录里没有这条消息，可重新发送")
+                return@launch
+            }
+            advanceReceipt(sid, msgId, Receipt.ACCEPTED, note = "")
+            r.pendingSendText = rc.rawText
+            r.priorUserCount = rc.priorUserCount
+            r.confirmingMsgId = msgId
+            r.busy.value = true
+            r.finished = false
+            r.retryNote.value = "已确认送达，正在取回结果…"
+            setMsgs(r, r.messages.value + Msg("assistant", "", pending = true, ts = stamp()))
+            updateRunService()
+            startHistoryRecovery(sid, "")
+        }
+    }
+
+    /** 「重新发送」：拿原正文再 POST 一次（图片附件能找回就一并带上）。 */
+    fun resendReceipt(msgId: Long) {
+        val a = api ?: return
+        val sid = _currentId.value
+        val r = rt(sid)
+        val list = r.messages.value
+        val i = list.indexOfFirst { it.id == msgId }
+        if (i < 0) return
+        val m = list[i]
+        val rc = m.receipt ?: return
+        _receiptMenu.value = 0L
+        if (r.busy.value) {
+            r.retryNote.value = "本会话还在跑，等这轮结束再重发"
+            return
+        }
+        r.priorUserCount = list.take(i).count { it.role == "user" }
+        r.pendingSendText = rc.rawText
+        r.recoveryJob?.cancel()
+        val files = m.images.mapNotNull { u ->
+            runCatching { File(Uri.parse(u).path ?: "") }.getOrNull()?.takeIf { it.exists() }
+        }
+        if (m.files.isNotEmpty()) {
+            r.retryNote.value = "这条带过附件，重发只带上图片，其他附件请重新选"
+        }
+        advanceReceipt(sid, msgId, Receipt.SENDING, note = "")
+        startRunWith(a, sid, rc.rawText, files, receiptMsgId = msgId)
     }
 
     /**
@@ -918,7 +1078,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         else -> "application/octet-stream"
     }
 
-    private fun startRunWith(a: HermesApi, sid: String, text: String, files: List<File> = emptyList()) {
+    private fun startRunWith(
+        a: HermesApi,
+        sid: String,
+        text: String,
+        files: List<File> = emptyList(),
+        receiptMsgId: Long = 0L,
+    ) {
         val r = rt(sid)
         setMsgs(r, r.messages.value + Msg("assistant", "", pending = true, ts = stamp()))
         r.busy.value = true
@@ -939,10 +1105,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 r.runId = run.optString("run_id", run.optString("id", ""))
                 r.startedAt = System.currentTimeMillis()
                 prefs.putActiveRun(sid, r.runId)
+                // 拿到 run_id 才算「服务端已收下」，此时回执才转已送达。
+                advanceReceipt(sid, receiptMsgId, Receipt.ACCEPTED, runId = r.runId)
                 streamRun(a, sid)
             } catch (e: Exception) {
                 _imageNote.value = ""
-                appendDelta(r, "\n[请求失败] " + (e.message ?: "?"))
+                val msg = e.message ?: "?"
+                // 服务端有明确回执（HTTP 4xx/5xx）= 拒绝，标失败；
+                // 收不到回执（超时/连接被掐）= 不知道收没收，标「不确定」等用户处置，
+                // 绝不自作主张重发，避免同一句话发两遍。
+                dropEmptyPending(r)
+                if (msg.startsWith("HTTP ")) {
+                    advanceReceipt(sid, receiptMsgId, Receipt.FAILED, note = msg)
+                } else {
+                    r.retryNote.value = "发送结果不确定：网络中断，服务端可能已收下"
+                    advanceReceipt(sid, receiptMsgId, Receipt.UNCERTAIN, note = msg)
+                }
                 failPending(sid)
             }
         }
@@ -1320,6 +1498,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 答案已落盘：结束本轮并按服务端记录合并回来。 */
     private fun adoptRecovered(sid: String) {
         val r = rt(sid)
+        if (r.confirmingMsgId > 0L) {
+            advanceReceipt(sid, r.confirmingMsgId, Receipt.ACCEPTED, note = "")
+            r.confirmingMsgId = 0L
+        }
         r.finished = true
         r.retryNote.value = ""
         r.busy.value = false
@@ -1331,7 +1513,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 翻历史也没捞到：明确收尾，不留一个永远转圈的空气泡。 */
     private fun giveUpRecovery(sid: String, why: String) {
-        rt(sid).retryNote.value = why
+        val r = rt(sid)
+        r.retryNote.value = why
+        if (r.confirmingMsgId > 0L) {
+            advanceReceipt(sid, r.confirmingMsgId, Receipt.FAILED, note = why)
+            r.confirmingMsgId = 0L
+        }
         failPending(sid)
     }
 
