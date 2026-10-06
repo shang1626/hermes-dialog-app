@@ -1,3 +1,13 @@
+## 2.82 — versionCode 93
+
+修：回前台时同一条任务被起了两条流，导致回复正文与完成语音都重复执行一遍。
+
+1. **流代际号**：每起一条新流 `streamGen + 1`，旧流的回调（onEvent/onClosed/onError/onActivity）发现代际不符即整段作废，不再重复处理事件、不再重复触发续接。
+2. **起新流前掐旧流**：`streamRun` 里先把 `r.call` 指向的旧流 `cancel()`，再挂新流——以前只是覆盖引用，旧流还活着。
+3. **恢复探测加守卫**：`resumeActiveRun` 探测是异步的，等待期间用户可能刚发了新消息（busy 已置真 / runId 已换新）。探测完成后先复核这两点，命中就放弃本次恢复，不再对同一条 run 起第二条流。
+
+（ChatViewModel.kt streamRun / resumeActiveRun / SessionRuntime）
+
 ## 2.81 — versionCode 92
 
 修：App 切到后台再切回来，正在跑的任务不再继续汇报进度。

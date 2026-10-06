@@ -262,6 +262,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val retryNote = MutableStateFlow("")
         var runId: String = ""
         var call: Call? = null
+        /**
+         * 流的代际号：每起一条新流就 +1。被新流取代的旧流，其回调据此自我作废——
+         * 否则两条流会同时收 run.completed，正文、通知与语音都执行两遍（实测 2.81 回前台重复播报）。
+         */
+        var streamGen: Int = 0
         var lastSeq: Int = -1
         var autoContinue: Int = 0
         /**
@@ -955,6 +960,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     last = a.probeRun(rid)
                     if (last !is HermesApi.RunStatus.Unknown) break
                     delay(if (i == 1) 1_000L else 3_000L)
+                }
+                // 探测是异步的：等待期间用户可能刚发了新消息（busy 已置真、runId 已换新），
+                // 或另一条路径已把这条任务接上。此时绝不能按探测到的旧 run 再起一条流——
+                // 同一 run 两条流会重复收事件，正文与语音都执行两遍（实测 2.81 回前台重复播报）。
+                val rg = rt(sid)
+                if (rg.busy.value || (rg.runId.isNotEmpty() && rg.runId != rid)) {
+                    AppLog.log("resume", "恢复探测放弃 sid=" + sid.take(8) + " busy=" + rg.busy.value + " runId换=" + (rg.runId.isNotEmpty() && rg.runId != rid))
+                    resumingSids.remove(sid)
+                    return@launch
                 }
                 when (last) {
                     is HermesApi.RunStatus.Known -> {
@@ -2510,8 +2524,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val r = rt(sid)
         val rid = r.runId
         if (rid.isEmpty()) return
+        // 起新流前先掐掉上一条并作废它的回调：r.call 被覆盖而旧流还活着时，两条流会同时收到
+        // run.completed，正文、通知与语音都执行两遍（实测 2.81 回前台重复播报）。
+        val gen = r.streamGen + 1
+        r.streamGen = gen
+        r.call?.let { old -> if (!old.isCanceled()) { AppLog.log("stream", "重起流先掐旧流 run=" + rid.take(12)); old.cancel() } }
         r.lastEventAt = System.currentTimeMillis()   // 重新起流即重置活跃时间，避免刚连上就被判假死
-        AppLog.log("stream", "起流 run=" + rid.take(12) + " lastSeq=" + r.lastSeq + " 第" + r.autoContinue + "次续接")
+        AppLog.log("stream", "起流 run=" + rid.take(12) + " lastSeq=" + r.lastSeq + " 第" + r.autoContinue + "次续接 gen=" + gen)
         // 每轮流一个攒帧器：碎字按帧放送。重起流时丢弃上一轮的残余。
         r.coalescer?.discard()
         r.coalescer = StreamDeltaCoalescer(viewModelScope, onFlush = { s -> appendDelta(r, s) })
@@ -2519,6 +2538,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             runId = rid,
             lastSeq = r.lastSeq,
             onEvent = { ev ->
+                if (gen != r.streamGen) return@streamEvents   // 已被新流取代，作废
                 if (ev.id != null) r.lastSeq = ev.id
                 r.lastEventAt = System.currentTimeMillis()
                 val name = ev.event ?: ev.data.optString("event", "")
@@ -2597,11 +2617,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 }
             },
             onClosed = {
+                if (gen != r.streamGen) return@streamEvents   // 已被新流取代，作废
                 r.coalescer?.flushNow()
                 AppLog.log("stream", "流关闭 run=" + rid.take(12) + " busy=" + r.busy.value + " finished=" + r.finished + " lastSeq=" + r.lastSeq)
                 if (r.busy.value && !r.finished) maybeContinue(sid)
             },
             onError = { e ->
+                if (gen != r.streamGen) return@streamEvents   // 已被新流取代，作废
                 AppLog.err("stream", "流出错 run=" + rid.take(12) + " busy=" + r.busy.value + " finished=" + r.finished, e)
                 // 不再往正文塞「[连接断开]」——断流期间的提示统一走 retryNote（气泡上方一行），
                 // 正文只保留任务真实产出，避免一次抖动就在会话里留一条错行。
@@ -2613,7 +2635,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             },
             // 心跳等任何一行都刷新活跃时间：长工具执行期间只有心跳、没有真实事件，
             // 不刷就会让「回到前台」的 25 秒看门狗把健康流误判成假死（用户报的「一直在重连」）。
-            onActivity = { r.lastEventAt = System.currentTimeMillis() }
+            onActivity = { if (gen == r.streamGen) r.lastEventAt = System.currentTimeMillis() }
         )
     }
 
