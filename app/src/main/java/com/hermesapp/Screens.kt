@@ -551,6 +551,15 @@ fun Bubble(
                 )
         ) {
             Column(Modifier.padding(10.dp)) {
+                // 插话气泡：左上角一个「插话」小标，和正常发言区分开
+                if (m.steer) {
+                    Row(
+                        Modifier.clip(RoundedCornerShape(6.dp))
+                            .background(c.accent.copy(alpha = 0.16f))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) { Text("插话", color = c.accent, fontSize = 10.sp) }
+                    Spacer(Modifier.height(4.dp))
+                }
                 // 引用片段：这条消息是引用发送时，先显示被引的一行（左侧竖条 + 灰字）
                 if (m.quote.isNotEmpty()) {
                     Row(

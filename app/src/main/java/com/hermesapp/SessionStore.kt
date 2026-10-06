@@ -161,6 +161,7 @@ class SessionStore(ctx: Context, private val profile: String) {
                         trace = trace,
                         receipt = rc,
                         quote = o.optString("quote", ""),
+                        steer = o.optBoolean("steer", false),
                         approval = approval,
                         clarify = clarify,
                         usage = usage,
@@ -187,6 +188,7 @@ class SessionStore(ctx: Context, private val profile: String) {
                 val o = JSONObject().put("role", m.role).put("text", m.text).put("ts", m.ts)
                 if (m.trace.isNotEmpty()) o.put("trace", m.trace)
                 if (m.quote.isNotEmpty()) o.put("quote", m.quote)
+                if (m.steer) o.put("steer", true)
                 if (m.images.isNotEmpty()) {
                     val ia = JSONArray()
                     for (u in m.images) ia.put(u)
