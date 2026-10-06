@@ -11,13 +11,20 @@ android {
         applicationId = "com.hermesapp"
         minSdk = 26
         targetSdk = 34
-        versionCode = 85
-        versionName = "2.74"
+        versionCode = 86
+        versionName = "2.75"
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8：代码压缩 + 资源裁剪。debug 包这两项都不做，方法数与体积明显偏大，
+            // 启动与滚动都吃这个亏。release 才是给手机装的包。
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
             signingConfig = signingConfigs.getByName("debug")
         }
     }

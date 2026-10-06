@@ -1,3 +1,12 @@
+## 2.75 — versionCode 86
+
+发布方式变更：改发 **release 包**（原来一直发 debug 包）。
+
+1. **release 开启 R8 代码压缩 + 资源裁剪**：`app/build.gradle.kts` 的 release 从 `isMinifyEnabled = false` 改为 `true` + `isShrinkResources = true`，并启用 `proguard-rules.pro`。debug 包不做压缩/裁剪，方法数与体积都偏大，启动与滚动都吃这个亏。实测包体从 16,294,063 字节（debug）降到 1,576,296 字节，签同一份 debug 证书，可直接覆盖安装。
+2. 新增 `app/proguard-rules.pro`：保住清单入口（MainActivity / RunService / ReplyReceiver / HermesApplication）、okhttp、coil 与 kotlin 元数据；**保留行号信息**（`-keepattributes SourceFile,LineNumberTable`），崩溃日志仍能定位到行。
+
+（app/build.gradle.kts、app/proguard-rules.pro）
+
 ## 2.74 — versionCode 85
 
 两项改进：
