@@ -1003,6 +1003,54 @@ fun SettingsScreen(
                 ) { Text("清除", color = c.dim, fontSize = 12.sp) }
             }
         }
+        // 运行日志：连接/重连/发送/收流的关键节点留痕。排查「连不上」时复制全文发出来，
+        // 就能看到卡在哪一跳（DNS / TLS / 服务端码 / 探测超时 / 流被系统掐）。
+        var logText by remember { mutableStateOf(AppLog.tail(ctx, 200)) }
+        LaunchedEffect(Unit) {
+            while (true) {
+                delay(2000)
+                logText = AppLog.tail(ctx, 200)
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+        HorizontalDivider(color = c.card)
+        Spacer(Modifier.height(12.dp))
+        Text("运行日志", color = c.text, fontSize = 13.sp)
+        Spacer(Modifier.height(4.dp))
+        Text("连接/重连/发送/收流的每一步都记在这里；出问题时点「复制全文」发给我。", color = c.dim, fontSize = 11.sp)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            if (logText.isEmpty()) "（暂无日志）" else logText,
+            color = c.text, fontSize = 10.sp,
+            fontFamily = FontFamily.Monospace,
+            modifier = Modifier.fillMaxWidth()
+                .heightIn(max = 260.dp)
+                .background(c.panel, RoundedCornerShape(8.dp))
+                .verticalScroll(rememberScrollState())
+                .padding(8.dp)
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = {
+                    val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE)
+                        as? android.content.ClipboardManager
+                    cm?.setPrimaryClip(
+                        android.content.ClipData.newPlainText("hermes-log", AppLog.read(ctx))
+                    )
+                    android.widget.Toast.makeText(
+                        ctx, "已复制，粘贴发给我即可", android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                },
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                shape = RoundedCornerShape(8.dp),
+            ) { Text("复制全文", color = c.accent, fontSize = 12.sp) }
+            OutlinedButton(
+                onClick = { AppLog.clear(ctx); logText = "" },
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                shape = RoundedCornerShape(8.dp),
+            ) { Text("清除", color = c.dim, fontSize = 12.sp) }
+        }
         Spacer(Modifier.height(20.dp))
         HorizontalDivider(color = c.card)
         Spacer(Modifier.height(12.dp))

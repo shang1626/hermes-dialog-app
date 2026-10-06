@@ -766,6 +766,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 when (last) {
                     is HermesApi.RunStatus.Known -> {
+                        AppLog.log("resume", "恢复探测 sid=" + sid.take(8) + " 状态=" + last.status)
                         if (last.status in RUNNING_STATES) {
                             val r = rt(sid)
                             ensureLoaded(sid)
@@ -966,12 +967,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             while (true) {
                 val ok = api?.ping() ?: false
                 if (ok) {
+                    if (!_online.value) AppLog.log("net", "恢复在线")
                     fails = 0
                     _online.value = true   // 恢复立刻生效
                 } else {
                     // 连续 2 次失败才翻「离线」，避免单次抖动闪红。
                     fails++
-                    if (fails >= 2) _online.value = false
+                    if (fails >= 2) {
+                        if (_online.value) AppLog.log("net", "连续 " + fails + " 次探测失败，标记离线")
+                        _online.value = false
+                    }
                 }
                 // 每 30 秒静默查一次更新：发新版后角标自动亮起，不必等下次启动。
                 tick++
@@ -1513,6 +1518,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 _imageNote.value = ""
                 val run = a.startRun(text, sid, ids, idemKey)
                 r.runId = run.optString("run_id", run.optString("id", ""))
+                AppLog.log("send", "已建 run=" + r.runId.take(12) + " 重放=" + run.optBoolean("replayed", false) + " 附件=" + ids.size)
                 r.startedAt = System.currentTimeMillis()
                 prefs.putActiveRun(sid, r.runId)
                 prefs.putLastSeq(sid, -1)   // 新 run 从 0 开始，清掉上一轮的续接序号
@@ -1525,6 +1531,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 _imageNote.value = ""
                 val msg = e.message ?: "?"
                 val httpReject = msg.startsWith("HTTP ")
+                AppLog.err("send", "发送失败 服务端拒绝=" + httpReject + " 内容=" + msg.take(200), e)
                 // 网络中断（收不到回执）、带幂等键、且还没重试过 → 自动安全重试一次。
                 // 为什么现在敢自动重试：服务端对同一个键只执行一次，重试要么接上原来那轮
                 // （首次其实已收下，只是回包丢了），要么全新执行一次，绝不会变成发两遍。
@@ -1692,6 +1699,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val rid = r.runId
         if (rid.isEmpty()) return
         r.lastEventAt = System.currentTimeMillis()   // 重新起流即重置活跃时间，避免刚连上就被判假死
+        AppLog.log("stream", "起流 run=" + rid.take(12) + " lastSeq=" + r.lastSeq + " 第" + r.autoContinue + "次续接")
         // 每轮流一个攒帧器：碎字按帧放送。重起流时丢弃上一轮的残余。
         r.coalescer?.discard()
         r.coalescer = StreamDeltaCoalescer(viewModelScope, onFlush = { s -> appendDelta(r, s) })
@@ -1740,6 +1748,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     "subagent.complete" -> upsertSubagent(r, ev, running = false)
                     "run.completed" -> {
                         r.coalescer?.flushNow()
+                        AppLog.log("stream", "run 完成 run=" + rid.take(12) + " 正文长度=" + ev.data.optString("output", "").length)
                         r.finished = true
                         val out = ev.data.optString("output", "")
                         if (out.isNotEmpty()) setPendingText(r, out) else finishPending(r)
@@ -1749,6 +1758,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     "run.failed" -> {
                         r.coalescer?.flushNow()
+                        AppLog.log("stream", "run 失败 run=" + rid.take(12) + " 错误=" + ev.data.optString("error", "未知").take(120))
                         r.finished = true
                         appendDelta(r, "\n[失败] " + ev.data.optString("error", "未知错误"))
                         finishPending(r)
@@ -1764,9 +1774,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             },
             onClosed = {
                 r.coalescer?.flushNow()
+                AppLog.log("stream", "流关闭 run=" + rid.take(12) + " busy=" + r.busy.value + " finished=" + r.finished + " lastSeq=" + r.lastSeq)
                 if (r.busy.value && !r.finished) maybeContinue(sid)
             },
             onError = { e ->
+                AppLog.err("stream", "流出错 run=" + rid.take(12) + " busy=" + r.busy.value + " finished=" + r.finished, e)
                 // 不再往正文塞「[连接断开]」——断流期间的提示统一走 retryNote（气泡上方一行），
                 // 正文只保留任务真实产出，避免一次抖动就在会话里留一条错行。
                 r.coalescer?.flushNow()
@@ -1805,10 +1817,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.autoContinue = attempt
         val waitMs = backoffDelayMs(attempt)
         r.retryNote.value = "连接中断，${waitMs / 1000} 秒后重试（$attempt/$MAX_RECONNECT_ATTEMPTS）"
+        AppLog.log("retry", "第 $attempt/$MAX_RECONNECT_ATTEMPTS 次重试，${waitMs / 1000}s 后探 run=" + rid.take(12))
         viewModelScope.launch(Dispatchers.IO) {
             delay(waitMs)
             if (!r.busy.value || r.finished) return@launch
-            when (val st = a.probeRun(rid)) {
+            val st = a.probeRun(rid)
+            AppLog.log("retry", "探测结果 " + when (st) {
+                is HermesApi.RunStatus.Known -> "Known(" + st.status + ")"
+                HermesApi.RunStatus.Missing -> "Missing(404)"
+                HermesApi.RunStatus.Unknown -> "Unknown(探不出来)"
+            })
+            when (st) {
                 // 服务端明确回答「还在跑」：续接同一 run，不新增任何用户消息。
                 is HermesApi.RunStatus.Known -> {
                     if (st.status in RUNNING_STATES) {
