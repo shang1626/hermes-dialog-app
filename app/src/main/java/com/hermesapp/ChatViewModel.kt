@@ -796,6 +796,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+        // 回前台补齐前台服务：后台期间被 Android 12+ 限制挡下的启动在这里补上，
+        // 保证继续挂着的任务不再被系统冻结。
+        updateRunService()
         // 顺带刷一次在线状态，别让角标停在离线
         viewModelScope.launch(Dispatchers.IO) { refreshStatus() }
     }
@@ -1911,7 +1914,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val running = runtimes.filterValues { it.busy.value }.keys.toSet()
         _runningIds.value = running
         if (running.isNotEmpty()) {
-            if (prefs.keepAlive) RunService.start(getApplication())
+            // Android 12+ 禁止从后台启动前台服务：后台硬启会撞墙，反而触发
+            // ForegroundServiceDidNotStartInTime 崩溃。任务在服务端照跑，
+            // 切回前台时 onAppForeground 会再调一次这里把服务补上。
+            if (prefs.keepAlive && AppForeground.isForeground) RunService.start(getApplication())
         } else {
             RunService.stop(getApplication())
         }

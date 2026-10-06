@@ -1,5 +1,21 @@
 # 变更记录
 
+## 2.31 — versionCode 42
+修「前台服务启动超时」崩溃（ForegroundServiceDidNotStartInTimeException）：
+- 根因：RunService.onStartCommand 里 `runCatching { startForeground(...) }` 把异常
+  静默吞掉——startForeground 若失败（Android 12+ 从后台拉起前台服务、通知权限被禁、
+  类型不符），进程既不退也不停，系统看到「喊了转前台却一直没转」，约 10 秒后判违约
+  直接杀进程。机型 realme RMX3888 / Android 16 上必现。
+- 改法三条：① startForeground 显式传前台服务类型 FOREGROUND_SERVICE_TYPE_DATA_SYNC，
+  与清单一致；② 失败不再吞异常，改为 CrashLog.recordFault 留痕 + stopSelf 干净收场，
+  从「崩溃」降级为「安静降级」；③ 返回 START_NOT_STICKY，避免进程被杀后系统在后台
+  把服务拉回来、正好撞上「后台不许起前台服务」的限制而再次崩溃。
+- 配套：调用方 updateRunService 仅在 App 处于前台时启动服务（Android 12+ 限制），
+  回到前台由 onAppForeground 补启，任务在服务端照跑不受影响。
+- 新增：设置页「服务故障记录」，把被 catch 住、进程不会死的非致命故障单独留一份
+  （crash/service_fault.txt），可复制全文。
+（RunService.kt、CrashLog.kt、ChatViewModel.kt、Screens.kt、app/build.gradle.kts）
+
 ## 2.30 — versionCode 41
 修「长时间跑工具时一直重连、连不上」——心跳帧没被算作「流还活着」：
 - 根因：服务端在两次事件之间每 10 秒必发一个 `: keepalive` 注释帧，但 SSE 解析器

@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -17,14 +18,39 @@ import androidx.core.app.NotificationCompat
  * 说明：Android 规定前台服务必须常驻一条通知，无法真正「无通知」。
  * 这里把这条通知压到最低干扰：IMPORTANCE_MIN 频道 + 静音 + 无正文，
  * 只保留一个可折叠的静默条目，不再有提示音/震动/正文横幅。
+ *
+ * 关于「前台服务启动超时」崩溃（ForegroundServiceDidNotStartInTimeException）：
+ * 根因不是服务启动慢，而是 startForeground() 抛异常后被静默吞掉——系统看到
+ * 「喊了要转前台、却一直没转」，约 10 秒后判违约，直接把进程杀掉。
+ * 现在改为：失败必须留证据（CrashLog.recordFault）并立刻 stopSelf 干净收场，
+ * 从「崩溃」降级为「安静降级」。另外 Android 12+ 不允许从后台启动前台服务，
+ * 所以调用方只在 App 处于前台时才启动（见 ChatViewModel.updateRunService）。
  */
 class RunService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        runCatching { startForeground(NOTIF_ID, buildNotification()) }
-        return START_STICKY
+        val notif = buildNotification()
+        try {
+            // Android 10+ 必须声明前台服务类型，且要与清单里 android:foregroundServiceType
+            // 保持一致（清单写的是 dataSync）。不传类型在部分机型上会被拒。
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            } else {
+                startForeground(NOTIF_ID, notif)
+            }
+        } catch (e: Throwable) {
+            // 绝不吞异常。这里是原崩溃的真正入口：Android 12+ 从后台拉起、
+            // 通知权限被禁、类型不符都会在这里抛。留痕 + 主动停，别再让系统判违约。
+            CrashLog.recordFault(this, "前台服务启动失败", e)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        // 不用 START_STICKY：进程被杀后系统在后台把它拉回来，正好会撞上
+        // 「后台不许起前台服务」的限制，反而制造崩溃。任务本身在服务端跑，
+        // 重开 App 会重新拉结果，不需要系统替我们拉活。
+        return START_NOT_STICKY
     }
 
     private fun buildNotification(): Notification {
