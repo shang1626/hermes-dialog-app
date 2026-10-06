@@ -304,6 +304,7 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
                     onReceiptTap = { vm.openReceiptMenu(it) },
                     onConfirmReceipt = { vm.confirmReceipt(it) },
                     onResendReceipt = { vm.resendReceipt(it) },
+                    onAckReceipt = { vm.acknowledgeReceipt(it) },
                     onQuote = { vm.setQuote(it) },
                     onCardAction = { vm.dispatchCardAction(it, ctx) },
                     highlight = hl,
@@ -453,6 +454,8 @@ fun Bubble(
     onReceiptTap: (Long) -> Unit = {},
     onConfirmReceipt: (Long) -> Unit = {},
     onResendReceipt: (Long) -> Unit = {},
+    /** 「知道了，不重发」：收掉「不确定」角标与提示，不动网络。 */
+    onAckReceipt: (Long) -> Unit = {},
     /** 长按气泡选「引用」：把这整条交给 ViewModel。 */
     onQuote: (Msg) -> Unit = {},
     /** 富卡片按钮点击：交给 ViewModel 分发（发消息 / 开链接）。 */
@@ -674,6 +677,7 @@ fun Bubble(
                     Receipt.ACCEPTED -> "✓"
                     Receipt.UNCERTAIN -> "?"
                     Receipt.FAILED -> "!"
+                    Receipt.ACKED -> ""
                     else -> ""
                 }
                 val markCol = when (rc?.status) {
@@ -725,6 +729,14 @@ fun Bubble(
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
                                 shape = RoundedCornerShape(8.dp),
                             ) { Text("重新发送", color = c.accent, fontSize = 12.sp) }
+                            // 「不确定」时给一个不重发的出口：看过就算了，不必拿这句话去赌会不会发两遍。
+                            if (rc?.status == Receipt.UNCERTAIN) {
+                                OutlinedButton(
+                                    onClick = { onAckReceipt(m.id) },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                ) { Text("知道了", color = c.dim, fontSize = 12.sp) }
+                            }
                         }
                     }
                 }
