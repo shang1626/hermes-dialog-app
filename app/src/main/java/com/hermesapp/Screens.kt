@@ -175,6 +175,7 @@ fun ChatScreen(
             onFullscreen = { fullscreen = true },
             onPickImages = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
             onPickFiles = { filePicker.launch(arrayOf("*/*")) },
+            onPasteImage = { vm.addImage(ctx, it) },
         )
     }
 
@@ -326,6 +327,8 @@ fun ChatInputBar(
     onFullscreen: () -> Unit,
     onPickImages: () -> Unit,
     onPickFiles: () -> Unit,
+    /** 输入框里粘贴了图片（剪贴板/输入法）：交给 vm.addImage 收进待发附件。 */
+    onPasteImage: (android.net.Uri) -> Unit = {},
 ) {
     val c = LocalAppColors.current
     val busy by vm.busy.collectAsState()
@@ -340,7 +343,8 @@ fun ChatInputBar(
                 value = input,
                 onValueChange = onInput,
                 hintText = "发消息…",
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth(),
+                onPasteImage = onPasteImage,
             )
             // 全屏 + 图片：并排的小无边框图标，压在输入框右下角
             Row(
@@ -1111,15 +1115,22 @@ fun NativeChatInput(
     minLines: Int = 2,
     maxLines: Int = 8,
     fill: Boolean = false,
+    /**
+     * 输入框里粘贴了一张图片时回调（含输入法自带的图片粘贴）。
+     * 传入 Uri，交给上层加进待发附件；不传则粘贴图片按普通文本处理（保持旧行为）。
+     */
+    onPasteImage: ((Uri) -> Unit)? = null,
 ) {
     val c = LocalAppColors.current
     // TextWatcher 在 factory 里只挂一次，必须经 rememberUpdatedState 拿到最新回调，
     // 否则后续重组的新回调永远不生效（输入内容回传的是旧闭包）。
     val onChange by rememberUpdatedState(onValueChange)
+    // 粘贴回调同理：只挂一次，读的必须是当前这一份。
+    val onPaste by rememberUpdatedState(onPasteImage)
     AndroidView(
         modifier = modifier,
         factory = { context ->
-            EditText(context).apply {
+            PasteAwareEditText(context) { onPaste }.apply {
                 hint = hintText
                 applyNativeInputColors(this, c)
                 textSize = 15f
@@ -1159,6 +1170,69 @@ fun NativeChatInput(
             }
         },
     )
+}
+
+/**
+ * 支持把剪贴板/输入法里的图片交出来的 EditText。
+ *
+ * 原生 EditText 粘贴图片只会走两条路，两条都要接：
+ *   ① 系统剪贴板里是图片（复制了一张图）→ onTextContextMenuItem 的 paste 分支；
+ *   ② 输入法自带的图片提交（如 Gboard 贴图）→ InputConnection.commitContent。
+ * 都只把 Uri 交给上层（上层统一走 addImage 拷进沙盒），输入框自身不放图片。
+ */
+private class PasteAwareEditText(
+    context: Context,
+    private val onImage: () -> ((Uri) -> Unit)?,
+) : EditText(context) {
+
+    override fun onTextContextMenuItem(id: Int): Boolean {
+        if (id == android.R.id.paste || id == android.R.id.pasteAsPlainText) {
+            val cb = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                as? android.content.ClipboardManager
+            val clip = cb?.primaryClip
+            val uri = clipImageUri(clip)
+            if (uri != null) {
+                onImage()?.invoke(uri)
+                return true
+            }
+        }
+        return super.onTextContextMenuItem(id)
+    }
+
+    override fun onCreateInputConnection(outAttrs: android.view.inputmethod.EditorInfo): android.view.inputmethod.InputConnection? {
+        // 告诉输入法「这个框能收图片」：Gboard 一类才会把贴图按钮亮出来。
+        outAttrs.contentMimeTypes = arrayOf("image/*")
+        val base = super.onCreateInputConnection(outAttrs) ?: return null
+        return object : android.view.inputmethod.InputConnectionWrapper(base, true) {
+            override fun commitContent(
+                inputMethod: android.view.inputmethod.InputContentInfo,
+                flags: Int,
+                opts: android.os.Bundle?,
+            ): Boolean {
+                val desc = inputMethod.description
+                val mime = if (desc != null && desc.mimeTypeCount > 0) desc.getMimeType(0) else null
+                val uri = inputMethod.contentUri
+                if (mime != null && mime.startsWith("image/") && uri != null) {
+                    val handler = onImage()
+                    if (handler != null) {
+                        handler(uri)
+                        return true
+                    }
+                }
+                return super.commitContent(inputMethod, flags, opts)
+            }
+        }
+    }
+}
+
+/** 从剪贴板里取一张图片的 Uri（没有图片返回 null）。 */
+private fun clipImageUri(clip: android.content.ClipData?): Uri? {
+    if (clip == null || clip.itemCount == 0) return null
+    for (i in 0 until clip.itemCount) {
+        val it = clip.getItemAt(i)
+        if (it.uri != null) return it.uri
+    }
+    return null
 }
 
 /** 原生 EditText 的描边/文字/提示颜色统一按当前配色刷新（配色未变则直接跳过）。 */
