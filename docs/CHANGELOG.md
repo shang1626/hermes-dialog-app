@@ -1,5 +1,17 @@
 # 变更记录
 
+## 2.35 — versionCode 46
+修「软键盘收不起来」——把收键盘从 Compose 层挪到 Activity 触摸分发层：
+- 根因一：输入框是原生 EditText（AndroidView 承载），View 体系「点外部不会失焦」，
+  键盘自然不收。
+- 根因二（关键）：消息气泡自己带 combinedClickable，点击被气泡先消费，父级 Compose 的
+  detectTapGestures 根本收不到 → 点气泡（屏幕绝大部分区域）收不起键盘。
+- 改法：MainActivity 重写 dispatchTouchEvent，在 ACTION_DOWN 阶段（任何子 View/Compose
+  消费之前）取当前焦点控件，若它是 EditText 且落点不在其可见矩形内，就 clearFocus +
+  hideSoftInputFromWindow。一次覆盖：点空白、点气泡、顶栏、抽屉、切 tab、切会话。
+- 保留 Compose 侧原逻辑做兜底（两者不冲突；EditText 已失焦时 dispatch 分支不触发）。
+（App.kt、app/build.gradle.kts）
+
 ## 2.34 — versionCode 45
 用幂等键根治「发送结果不确定」——重发不可能再变成发两遍：
 - 根因：POST /v1/runs 中途断网时收不到回执，客户端分不清「服务端收了没」。原实现
