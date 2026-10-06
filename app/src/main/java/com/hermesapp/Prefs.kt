@@ -114,4 +114,12 @@ class Prefs(ctx: Context) {
     var playCompletionVoice: Boolean
         get() = sp.getBoolean("play_completion_voice", true)
         set(v) { sp.edit().putBoolean("play_completion_voice", v).apply() }
+
+    /**
+     * 完成语音播报的语速（1.0 = 正常）。设置页给几档平铺按钮调；
+     * 播放时由 MediaPlayer 的 PlaybackParams.setSpeed 应用，不影响语音文件本身。
+     */
+    var voiceRate: Float
+        get() = sp.getFloat("voice_rate", 1.0f)
+        set(v) { sp.edit().putFloat("voice_rate", v).apply() }
 }

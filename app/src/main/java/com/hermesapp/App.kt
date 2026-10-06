@@ -746,6 +746,20 @@ fun ModeBtn(label: String, selected: Boolean, m: Modifier, onClick: () -> Unit) 
     ) { Text(label, color = if (selected) c.accent else c.dim, fontSize = 12.sp) }
 }
 
+/** 语速档位小按钮：描边、选中填充，风格同 ModeBtn，但不吃 Modifier（设置页平铺一排）。 */
+@Composable
+fun SpeedBtn(label: String, selected: Boolean, onClick: () -> Unit) {
+    val c = LocalAppColors.current
+    OutlinedButton(
+        onClick = onClick,
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+        shape = RoundedCornerShape(8.dp),
+        colors = ButtonDefaults.outlinedButtonColors(
+            containerColor = if (selected) c.card else Color.Transparent
+        ),
+    ) { Text(label, color = if (selected) c.accent else c.dim, fontSize = 12.sp) }
+}
+
 /**
  * 进程入口：第一时间装上崩溃留痕。
  *
