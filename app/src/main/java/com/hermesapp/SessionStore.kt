@@ -164,6 +164,8 @@ class SessionStore(ctx: Context, private val profile: String) {
                         approval = approval,
                         clarify = clarify,
                         usage = usage,
+                        // 进行中气泡的计时起点：不读回来的话，重开 App 后实时耗时会从 0 重新算。
+                        startedAt = o.optLong("startedAt", 0L),
                     )
                 )
             }
@@ -220,6 +222,8 @@ class SessionStore(ctx: Context, private val profile: String) {
                         .put("durationMs", u.durationMs)
                     o.put("usage", uj)
                 }
+                // 进行中气泡的计时起点也要落盘，否则 App 退出重进后计时从 0 重新开始。
+                if (m.startedAt > 0) o.put("startedAt", m.startedAt)
                 // 投递状态要落盘：重开 App 后「不确定/失败」的消息还得能处置。
                 // sending 不落盘——重启后那个 POST 已经没了，留着会一直转圈；
                 // queued 同理——内存里的排队队列重启即丢，落盘会永远停在「排队中」。

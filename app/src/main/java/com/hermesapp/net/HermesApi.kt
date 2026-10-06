@@ -215,13 +215,16 @@ class HermesApi(
         }
     }
 
-    fun steer(runId: String, text: String) {
-        runCatching {
-            val body = JSONObject().put("input", text)
-            client.newCall(base("/v1/runs/" + runId + "/steer").post(body.toString().toRequestBody(jsonType)).build())
-                .execute().use { it.body?.string() }
-        }
-    }
+    /**
+     * 中途插话：把这句话注入本轮。返回是否被服务端接受（HTTP 2xx）。
+     * 服务端只在 run 状态为 running 且 agent 支持 steer 时接受（409 = 本轮已收尾/不接受）；
+     * 调用方据此给用户明确反馈，不再静默吞掉结果。
+     */
+    fun steer(runId: String, text: String): Boolean = runCatching {
+        val body = JSONObject().put("input", text)
+        client.newCall(base("/v1/runs/" + runId + "/steer").post(body.toString().toRequestBody(jsonType)).build())
+            .execute().use { it.isSuccessful }
+    }.getOrDefault(false)
 
     /** 审批回执：POST /v1/runs/{id}/approval，choice ∈ once/session/always/deny。 */
     fun respondApproval(runId: String, requestId: String, choice: String) {
