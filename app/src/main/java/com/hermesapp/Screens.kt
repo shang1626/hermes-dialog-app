@@ -664,43 +664,52 @@ fun Bubble(
                     Text(parts.joinToString(" · "), color = c.dim, fontSize = 10.sp)
                 }
                 // 用户消息投递状态：转圈 / 单勾 / 黄问号 / 红叹号。点黄问号或红叹号展开处置。
+                // 状态标记与发送时间并排同一行（不再各自独占一行）；告警说明接在时间后面。
                 val rc = m.receipt
-                if (rc != null) {
+                val actionable = rc != null &&
+                    (rc.status == Receipt.UNCERTAIN || rc.status == Receipt.FAILED)
+                val mark = when (rc?.status) {
+                    Receipt.SENDING -> "◌"
+                    Receipt.QUEUED -> "⋯"
+                    Receipt.ACCEPTED -> "✓"
+                    Receipt.UNCERTAIN -> "?"
+                    Receipt.FAILED -> "!"
+                    else -> ""
+                }
+                val markCol = when (rc?.status) {
+                    Receipt.UNCERTAIN, Receipt.QUEUED -> c.warn
+                    Receipt.FAILED -> c.bad
+                    else -> c.dim
+                }
+                if (rc != null || m.ts > 0) {
                     Spacer(Modifier.height(4.dp))
-                    val actionable = rc.status == Receipt.UNCERTAIN || rc.status == Receipt.FAILED
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.then(
                             if (actionable) Modifier.clickable { onReceiptTap(m.id) } else Modifier
                         )
                     ) {
-                        val mark = when (rc.status) {
-                            Receipt.SENDING -> "◌"
-                            Receipt.QUEUED -> "⋯"
-                            Receipt.ACCEPTED -> "✓"
-                            Receipt.UNCERTAIN -> "?"
-                            else -> "!"
+                        if (rc != null) {
+                            Text(mark, color = markCol, fontSize = 11.sp)
+                            Spacer(Modifier.width(5.dp))
                         }
-                        val col = when (rc.status) {
-                            Receipt.UNCERTAIN -> c.warn
-                            Receipt.QUEUED -> c.warn
-                            Receipt.FAILED -> c.bad
-                            else -> c.dim
-                        }
-                        Text(mark, color = col, fontSize = 11.sp)
-                        if (rc.status == Receipt.QUEUED) {
-                            Spacer(Modifier.width(4.dp))
-                            Text("排队中，本轮结束后自动发送", color = c.warn, fontSize = 10.sp)
-                        } else if (rc.status == Receipt.UNCERTAIN) {
-                            Spacer(Modifier.width(4.dp))
-                            Text("发送结果不确定，点这里处理", color = c.warn, fontSize = 10.sp)
-                        } else if (rc.status == Receipt.FAILED) {
-                            Spacer(Modifier.width(4.dp))
-                            Text(
-                                if (rc.note.isNotEmpty()) rc.note else "发送失败，点这里重发",
-                                color = c.bad, fontSize = 10.sp,
-                                maxLines = 2, overflow = TextOverflow.Ellipsis
-                            )
+                        if (m.ts > 0) Text(TimeFmt.hm(m.ts), color = c.dim, fontSize = 10.sp)
+                        if (rc != null) {
+                            val tip = when (rc.status) {
+                                Receipt.QUEUED -> "排队中，本轮结束后自动发送"
+                                Receipt.UNCERTAIN -> "发送结果不确定，点这里处理"
+                                Receipt.FAILED -> if (rc.note.isNotEmpty()) rc.note else "发送失败，点这里重发"
+                                else -> ""
+                            }
+                            if (tip.isNotEmpty()) {
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    tip,
+                                    color = if (rc.status == Receipt.FAILED) c.bad else c.warn,
+                                    fontSize = 10.sp,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
                     }
                     if (receiptMenuOpen && actionable) {
@@ -718,10 +727,6 @@ fun Bubble(
                             ) { Text("重新发送", color = c.accent, fontSize = 12.sp) }
                         }
                     }
-                }
-                if (m.ts > 0) {
-                    Spacer(Modifier.height(4.dp))
-                    Text(TimeFmt.hm(m.ts), color = c.dim, fontSize = 10.sp)
                 }
             }
         }
