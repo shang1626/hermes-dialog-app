@@ -95,7 +95,10 @@ fun ChatScreen(
     Column(Modifier.fillMaxSize()) {
         MessageList(vm, Modifier.weight(1f))
         // 引用条：长按气泡选「引用」后出现，点 × 取消。发送时把片段拼在正文前。
-        if (quote != null) {
+        // 取一份本地快照再判空：委托属性（by collectAsState）不能被智能转换，
+        // 老写法在 if 里用 !! 二次读同一个状态，状态一旦变空就是空指针闪退。
+        val quoteBar = quote
+        if (quoteBar != null) {
             Row(
                 Modifier.fillMaxWidth().background(c.card).padding(horizontal = 10.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -106,10 +109,10 @@ fun ChatScreen(
                 )
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("引用" + (if (quote!!.role == "user") "我的消息" else "助手消息"),
+                    Text("引用" + (if (quoteBar.role == "user") "我的消息" else "助手消息"),
                         color = c.accent, fontSize = 11.sp)
                     Text(
-                        quote!!.text.replace(Regex("\\s+"), " ").trim().let {
+                        quoteBar.text.replace(Regex("\\s+"), " ").trim().let {
                             if (it.isEmpty()) "[图片或附件]" else if (it.length > 60) it.take(60) + "…" else it
                         },
                         color = c.dim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis
@@ -891,6 +894,50 @@ fun SettingsScreen(
         }
         Spacer(Modifier.height(6.dp))
         Text("当前版本 " + vc, color = c.dim, fontSize = 11.sp)
+
+        // 上次闪退记录：崩溃是进程被直接杀掉，界面和日志都留不下东西，只有落到这里才查得动。
+        // 复现一次后「复制全文」发出来即可定位到具体哪一行。
+        var crashText by remember { mutableStateOf(CrashLog.read(ctx)) }
+        if (crashText.isNotEmpty()) {
+            Spacer(Modifier.height(20.dp))
+            HorizontalDivider(color = c.card)
+            Spacer(Modifier.height(12.dp))
+            Text("上次闪退记录", color = c.bad, fontSize = 13.sp)
+            Spacer(Modifier.height(4.dp))
+            Text("点「复制全文」发给我，就能定位到出错的代码行。", color = c.dim, fontSize = 11.sp)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                crashText, color = c.text, fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier.fillMaxWidth()
+                    .heightIn(max = 200.dp)
+                    .background(c.panel, RoundedCornerShape(8.dp))
+                    .verticalScroll(rememberScrollState())
+                    .padding(8.dp)
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE)
+                            as? android.content.ClipboardManager
+                        cm?.setPrimaryClip(
+                            android.content.ClipData.newPlainText("hermes-crash", crashText)
+                        )
+                        android.widget.Toast.makeText(
+                            ctx, "已复制，粘贴发给我即可", android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                    shape = RoundedCornerShape(8.dp),
+                ) { Text("复制全文", color = c.accent, fontSize = 12.sp) }
+                OutlinedButton(
+                    onClick = { CrashLog.clear(ctx); crashText = "" },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                    shape = RoundedCornerShape(8.dp),
+                ) { Text("清除", color = c.dim, fontSize = 12.sp) }
+            }
+        }
         Spacer(Modifier.height(20.dp))
         HorizontalDivider(color = c.card)
         Spacer(Modifier.height(12.dp))

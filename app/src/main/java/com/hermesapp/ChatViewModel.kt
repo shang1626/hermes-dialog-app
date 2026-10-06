@@ -960,15 +960,28 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.priorUserCount = prior
         r.pendingSendText = sendText.trim()
         r.recoveryJob?.cancel()
-        // 发出去的图先落进 App 私有「已发送」目录再进气泡：相册给的 content:// 会被系统
-        // 回收（换机/清数据/授权到期），而 outbox 会被「清理缓存」清掉——两者都会让历史
-        // 里的图变白框。sent/ 既不参与清理、又是私有文件，重开、清缓存后都还在。
-        val durableImgs = imgs.filter { it.isImage }.map { persistOutgoing(it) }
+        // 发出去的图先落进 App 私有「已发送」目录：相册给的 content:// 会被系统回收
+        // （换机/清数据/授权到期），outbox 会被「清理缓存」清掉——两者都会让历史里的图变白框。
+        // sent/ 不参与清理、又是私有文件，重开、清缓存后都还在。
+        //
+        // 关键：挪动之后，「上传」和「气泡回显」必须都认挪过去的新文件。老代码在这一步把
+        // outbox 原文件删了，可后面发请求时还按老路径读 → 文件已不存在，附件必然发不出去。
+        val durableImgs = mutableListOf<String>()
+        val uploadFiles = mutableListOf<java.io.File>()
+        for (p in imgs) {
+            if (p.isImage) {
+                val (f, uri) = persistOutgoing(p)
+                durableImgs.add(uri)
+                uploadFiles.add(f)
+            } else {
+                uploadFiles.add(p.file)
+            }
+        }
         // 投递状态挂在用户消息自己身上（按 msgId 认领，不靠位置）：POST 没回来前是 sending，
         // 拿到 run_id 才转 accepted，中途断了转 uncertain 等用户处置。
         val userMsg = Msg(
             "user", text, ts = stamp(),
-            images = durableImgs,
+            images = durableImgs.toList(),
             files = imgs.filter { !it.isImage }.map { it.file.name },
             receipt = Receipt(
                 status = if (willQueue) Receipt.QUEUED else Receipt.SENDING,
@@ -984,11 +997,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         _quoteTarget.value = null
         if (willQueue) {
             // 排队：气泡先落下（回执标「排队中」），本轮一结束由 drainQueue 自动发。
-            r.queue.add(QueuedSend(sendText, imgs.map { it.file }, userMsg.id, prior))
+            r.queue.add(QueuedSend(sendText, uploadFiles.toList(), userMsg.id, prior))
             r.queued.value = r.queue.size
             return
         }
-        startRunWith(a, sid, sendText, imgs.map { it.file }, receiptMsgId = userMsg.id)
+        startRunWith(a, sid, sendText, uploadFiles.toList(), receiptMsgId = userMsg.id)
     }
 
     /**
@@ -1130,19 +1143,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 把待发图片从 outbox 挪进「已发送」目录，返回气泡要存的 file:// 地址。
-     * 落盘失败时退回原地址（至少本次还能看），不阻断发送。
+     * 把待发图片从 outbox 挪进「已发送」目录，返回 (挪过去的文件, 气泡要存的 file:// 地址)。
+     *
+     * 为什么要把文件也返回来：挪动之后上传必须用新路径。老实现只返回地址、却把 outbox
+     * 原文件删了，调用方随后仍拿 p.file 去读字节 → 文件不存在，附件发送必然失败。
+     * 落盘失败时退回原文件与原地址（至少本次还能发、还能看），不阻断发送。
      */
-    private fun persistOutgoing(p: PendingImage): String {
+    private fun persistOutgoing(p: PendingImage): Pair<File, String> {
         val app = getApplication<Application>()
         return try {
             val dir = File(app.filesDir, "sent").apply { mkdirs() }
             val dst = File(dir, p.file.name)
             if (!dst.exists()) p.file.copyTo(dst, overwrite = true)
-            p.file.delete()
-            android.net.Uri.fromFile(dst).toString()
+            if (p.file.absolutePath != dst.absolutePath) p.file.delete()
+            dst to android.net.Uri.fromFile(dst).toString()
         } catch (_: Exception) {
-            p.uri
+            p.file to p.uri
         }
     }
 
