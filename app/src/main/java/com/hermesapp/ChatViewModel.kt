@@ -260,6 +260,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val queue = mutableListOf<QueuedSend>()
         /** 队列长度：输入栏显示「排队 N 条」。 */
         val queued = MutableStateFlow(0)
+        /** 用户按过停止后置真：待发队列暂停，等「继续」再走。 */
+        val queuePaused = MutableStateFlow(false)
     }
 
     private val runtimes = ConcurrentHashMap<String, SessionRuntime>()
@@ -285,6 +287,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     val queuedCount: StateFlow<Int> = _currentId
         .flatMapLatest { id -> if (id.isEmpty()) flowOf(0) else rt(id).queued }
         .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
+
+    /** 当前会话的待发队列是否被「停止」按住（界面显示「继续」按钮）。 */
+    val queuedPaused: StateFlow<Boolean> = _currentId
+        .flatMapLatest { id -> if (id.isEmpty()) flowOf(false) else rt(id).queuePaused }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     private val _sessions = MutableStateFlow<List<SessionMeta>>(emptyList())
     val sessions = _sessions.asStateFlow()
@@ -339,6 +346,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun clearQuote() {
         _quoteTarget.value = null
     }
+
+    // ---------- 排队消息编辑回填 ----------
+
+    /** 编辑排队消息时把正文回填到输入框；非空即取走。 */
+    private val _queuedEdit = MutableStateFlow<String?>(null)
+    val queuedEdit = _queuedEdit.asStateFlow()
 
     /** 被引正文压缩成一行片段（最多 80 字），服务端与气泡共用。 */
     private fun quoteSnippet(m: Msg): String {
@@ -1229,7 +1242,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun drainQueue(sid: String) {
         val a = api ?: return
         val r = rt(sid)
-        if (r.busy.value || r.queue.isEmpty()) return
+        if (r.busy.value || r.queue.isEmpty() || r.queuePaused.value) return
         val next = r.queue.removeAt(0)
         r.queued.value = r.queue.size
         r.priorUserCount = next.priorUserCount
@@ -1237,6 +1250,71 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.recoveryJob?.cancel()
         advanceReceipt(sid, next.msgId, Receipt.SENDING, note = "")
         startRunWith(a, sid, next.text, next.files, receiptMsgId = next.msgId, idemKey = next.idemKey)
+    }
+
+    /** 用户点「继续」：解除「停止」对队列的按住，接着发。 */
+    fun resumeQueue() {
+        val sid = _currentId.value
+        if (sid.isEmpty()) return
+        val r = rt(sid)
+        r.queuePaused.value = false
+        drainQueue(sid)
+    }
+
+    /**
+     * 撤回一条还没发出去的排队消息：从队列摘掉，连那条用户气泡一起收掉。
+     * 排队中的消息本轮结束会自动发，此前没有任何入口能把它收回来。
+     */
+    fun cancelQueued(msgId: Long) {
+        val sid = _currentId.value
+        if (sid.isEmpty()) return
+        val r = rt(sid)
+        val i = r.queue.indexOfFirst { it.msgId == msgId }
+        if (i >= 0) r.queue.removeAt(i)
+        r.queued.value = r.queue.size
+        removeUserMsg(r, msgId)
+    }
+
+    /**
+     * 编辑一条排队消息：从队列摘掉、收掉原气泡，正文回填到输入框由用户改完重发。
+     * 附件不回填（待发区依赖 uri，还原不了），需要就重新选。
+     */
+    fun editQueued(msgId: Long) {
+        val sid = _currentId.value
+        if (sid.isEmpty()) return
+        val r = rt(sid)
+        val i = r.queue.indexOfFirst { it.msgId == msgId }
+        if (i < 0) return
+        val q = r.queue.removeAt(i)
+        r.queued.value = r.queue.size
+        _queuedEdit.value = q.text
+        removeUserMsg(r, msgId)
+    }
+
+    /** 编辑回填：输入框取走后清空。 */
+    fun clearQueuedEdit() { _queuedEdit.value = null }
+
+    private fun removeUserMsg(r: SessionRuntime, msgId: Long) {
+        val list = r.messages.value.toMutableList()
+        val k = list.indexOfFirst { it.id == msgId }
+        if (k >= 0) { list.removeAt(k); setMsgs(r, list) }
+    }
+
+    /**
+     * 中途插话（steer）：把这句话注入当前正在跑的这一轮，服务端 agent 会读到。
+     * 与「排队」不同——排队是下一轮才发，插话是立刻影响本轮方向。
+     */
+    fun steerCurrent(text: String) {
+        val t = text.trim()
+        if (t.isEmpty()) return
+        val a = api ?: return
+        val sid = _currentId.value
+        if (sid.isEmpty()) return
+        val r = rt(sid)
+        val rid = r.runId
+        if (rid.isEmpty()) return
+        appendTrace(r, "\n[插话] " + t)
+        viewModelScope.launch(Dispatchers.IO) { runCatching { a.steer(rid, t) } }
     }
 
     /** 按消息 id 改投递状态（找不到就忽略——消息可能已被「清理缓存」截掉）。 */
@@ -2156,7 +2234,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.runId = ""
         prefs.removeActiveRun(sid)
         updateRunService()
-        drainQueue(sid)   // 停止的是当前这轮，排队的下一条接着发
+        // 停止时把待发队列一起按住：不自动发下一条，等用户点「继续」。
+        if (r.queue.isNotEmpty()) r.queuePaused.value = true else drainQueue(sid)
     }
 
     /** 工具轨迹追加到该会话当前 assistant 消息的 trace（界面默认折叠，不进正文）。 */
