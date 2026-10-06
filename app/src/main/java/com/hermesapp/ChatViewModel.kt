@@ -550,6 +550,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun saveRuntime(r: SessionRuntime) {
         store.saveMessages(r.id, r.messages.value, maxHistory)
+        // 续接序号与消息一起落盘，保证两者永远一致：重开 App 时按它做
+        // Last-Event-ID，只补断线之后的事件（消息也正好停在那一刻）——
+        // 既不会重放已存过的工具轨迹（表现是「过程重复显示」），也不会漏事件。
+        if (r.runId.isNotEmpty()) prefs.putLastSeq(r.id, r.lastSeq)
     }
 
     /** 保存当前会话的消息与索引（切换/新建前调用）。 */
@@ -748,7 +752,26 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             ensureLoaded(sid)
                             r.runId = rid
                             r.finished = false
-                            r.lastSeq = -1
+                            // 续接序号从落盘恢复：只补断线之后的事件，避免从 0 全量重放
+                            // 把已经存过的工具轨迹再追加一遍（用户报「过程重复显示」）。
+                            r.lastSeq = prefs.lastSeq(sid)
+                            // 本地落盘的消息读回来时 pending 一律是 false，而服务端这条 run
+                            // 还没结束。若断线前已收到过事件（lastSeq>=0），本地就有这一轮的
+                            // 气泡，把它恢复成「进行中」，续接来的增量才追加到同一条上，不会
+                            // 再起一条（否则同一轮正文/轨迹会显示两次）；若还没收到过任何事件，
+                            // 本地只有上一轮的回复，绝不能标它 pending（新内容会挂到旧回复上），
+                            // 这时新起一个空气泡接续。
+                            val lastAssistant = r.messages.value.indexOfLast { it.role == "assistant" }
+                            val hasLocalTurnBubble = lastAssistant >= 0 &&
+                                lastAssistant == r.messages.value.lastIndex && r.lastSeq >= 0
+                            if (hasLocalTurnBubble) {
+                                val m = r.messages.value.toMutableList()
+                                m[lastAssistant] = m[lastAssistant].copy(pending = true)
+                                r.messages.value = m
+                            } else {
+                                r.messages.value = r.messages.value +
+                                    Msg("assistant", "", pending = true, ts = System.currentTimeMillis())
+                            }
                             r.busy.value = true
                             updateRunService()
                             streamRun(a, sid)
@@ -1379,6 +1402,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 r.runId = run.optString("run_id", run.optString("id", ""))
                 r.startedAt = System.currentTimeMillis()
                 prefs.putActiveRun(sid, r.runId)
+                prefs.putLastSeq(sid, -1)   // 新 run 从 0 开始，清掉上一轮的续接序号
                 // 拿到 run_id 才算「服务端已收下」，此时回执才转已送达。
                 advanceReceipt(sid, receiptMsgId, Receipt.ACCEPTED, runId = r.runId)
                 streamRun(a, sid)
