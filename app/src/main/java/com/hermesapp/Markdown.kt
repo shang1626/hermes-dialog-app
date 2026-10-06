@@ -31,6 +31,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import coil.compose.AsyncImage
+import coil.compose.AsyncImagePainter
+import coil.compose.SubcomposeAsyncImage
+import coil.compose.SubcomposeAsyncImageContent
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -180,6 +183,32 @@ fun linkAnnotated(raw: String, link: Color): AnnotatedString {
     return sb.toAnnotatedString()
 }
 
+/**
+ * 在已链接标注的文本上，把搜索命中词再加一层黄底 SpanStyle。
+ * 链接的颜色标注保留（黄底只叠背景），命中判定大小写不敏感。
+ */
+fun highlightHits(src: AnnotatedString, query: String): AnnotatedString {
+    val q = query.trim()
+    if (q.isEmpty()) return src
+    val plain = src.text
+    val lower = plain.lowercase()
+    val needle = q.lowercase()
+    val hits = mutableListOf<IntRange>()
+    var i = 0
+    while (i <= lower.length - needle.length) {
+        val k = lower.indexOf(needle, i)
+        if (k < 0) break
+        hits.add(k until (k + needle.length))
+        i = k + needle.length
+    }
+    if (hits.isEmpty()) return src
+    val sb = AnnotatedString.Builder(src)
+    for (r in hits) {
+        sb.addStyle(SpanStyle(background = Color(0xFFFFE066), color = Color(0xFF1A1A1A)), r.first, r.last + 1)
+    }
+    return sb.toAnnotatedString()
+}
+
 /** 气泡正文：逐块渲染，段落可点链接，表格画成网格。 */
 @Composable
 fun RichText(
@@ -191,6 +220,8 @@ fun RichText(
     selectionReset: Int = 0,
     /** 点正文空白处（非链接）时回调：外层据此取消选中。 */
     onClearSelection: () -> Unit = {},
+    /** 搜索命中的词：非空时正文里给它加黄底。 */
+    hitQuery: String = "",
 ) {
     val c = LocalAppColors.current
     val uri = LocalUriHandler.current
@@ -203,7 +234,9 @@ fun RichText(
                 is MdBlock.Image -> MdImage(b.dataUrl, b.alt)
                 is MdBlock.Attachment -> MdAttachmentCard(b.name, b.dataUrl, b.token)
                 is MdBlock.Para -> {
-                    val ann = remember(b.text, c.accent) { linkAnnotated(b.text, c.accent) }
+                    val ann = remember(b.text, c.accent, hitQuery) {
+                        highlightHits(linkAnnotated(b.text, c.accent), hitQuery)
+                    }
                     // key 变化 → SelectionContainer 被重建，选中态随之清除（点空白/点正文时触发）。
                     key(selectionReset) {
                         SelectionContainer {
@@ -283,13 +316,32 @@ private fun MdImage(dataUrl: String, alt: String) {
 fun LocalImageView(uri: String, modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
     val decoded = remember(uri) { uriToDecoded(ctx, Uri.parse(uri)) }
+    // 读不到字节：可能是相册给的 content:// 已被系统回收（换机/清数据/授权到期）。
+    // 不再默默变白框，明确标出来，重开/重选后若恢复则自动恢复正常渲染。
+    if (decoded == null) {
+        LocalImageFallback(uri, modifier)
+        return
+    }
     ZoomableImage(
-        model = if (decoded != null) decoded.bytes else uri,
+        model = decoded.bytes,
         decoded = decoded,
         alt = "image",
         thumbScale = ContentScale.Crop,
         thumbModifier = modifier,
     )
+}
+
+/** 本地图读不到时的可见兜底：一个带「图片不可用」的小灰块，不占满屏也不静默。 */
+@Composable
+private fun LocalImageFallback(uri: String, modifier: Modifier) {
+    val c = LocalAppColors.current
+    Box(
+        modifier.clip(RoundedCornerShape(8.dp)).background(c.card)
+            .border(0.5.dp, c.dim, RoundedCornerShape(8.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        Text("图片不可用", color = c.dim, fontSize = 10.sp, modifier = Modifier.padding(4.dp))
+    }
 }
 
 /**
@@ -317,12 +369,47 @@ private fun ZoomableImage(
             Toast.LENGTH_SHORT
         ).show()
     }
-    AsyncImage(
-        model = model,
+    // 三态渲染：加载中显示灰底占位，失败显示「加载失败 + 重试」，成功才画图。
+    // 原来直接 AsyncImage，网络一抖或 token 过期就是一片空白，用户分不清「在加载」还是「坏了」。
+    var retry by remember { mutableStateOf(0) }
+    var failed by remember { mutableStateOf(false) }
+    // retry 作为请求参数进缓存键：点重试才会真正重新发起请求（否则模型没变，Coil 直接复用失败的缓存）。
+    val req = remember(model, retry) {
+        coil.request.ImageRequest.Builder(ctx)
+            .data(model)
+            .setParameter("retry", retry)
+            .build()
+    }
+    SubcomposeAsyncImage(
+        model = req,
         contentDescription = alt.ifBlank { "图片" },
         contentScale = thumbScale,
-        modifier = thumbModifier.clickable { zoom = true }
-    )
+        modifier = thumbModifier.clickable(enabled = !failed) { zoom = true }
+    ) {
+        when (painter.state) {
+            is AsyncImagePainter.State.Loading -> Box(
+                Modifier.fillMaxSize().background(LocalAppColors.current.card),
+                contentAlignment = Alignment.Center
+            ) { Text("加载中…", color = LocalAppColors.current.dim, fontSize = 10.sp) }
+            is AsyncImagePainter.State.Error -> {
+                failed = true
+                Box(
+                    Modifier.fillMaxSize().background(LocalAppColors.current.card),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "加载失败，点此重试",
+                        color = LocalAppColors.current.warn, fontSize = 10.sp,
+                        modifier = Modifier.clickable { failed = false; retry++ }
+                    )
+                }
+            }
+            else -> {
+                failed = false
+                SubcomposeAsyncImageContent()
+            }
+        }
+    }
     if (zoom) {
         // 全屏查看：双指缩放 + 拖动，底部按钮保存/关闭（点空白不再误关，方便缩放）
         var scale by remember { mutableStateOf(1f) }
