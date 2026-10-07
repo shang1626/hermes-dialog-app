@@ -254,6 +254,26 @@ data class JobItem(
     val deliveryError: String = "",
 )
 
+/**
+ * 收件箱里一条定时任务产出（服务端 GET /api/inbox 的一条）。
+ * 为什么走收件箱而不是推送：App 走 api_server 通道，那条适配器声明不支持推送
+ * （supports_async_delivery=False），定时任务结果没法主动送过来，只能 App 来拉。
+ */
+data class CronReport(
+    /** 收件箱条目 id：确认已读按它标记。 */
+    val id: String,
+    /** 产出时刻（服务端 ISO 串，带时区）。 */
+    val at: String,
+    val jobId: String,
+    val jobName: String,
+    /** true = 这是「任务没跑成 / 配置有问题」的通知，不是正常产出。 */
+    val failed: Boolean,
+    /** 正文（服务端已脱敏、超长已截断）。 */
+    val body: String,
+    /** 还没确认已读。 */
+    val unread: Boolean,
+)
+
 /** SSE 断流后的最大自动重连次数（退避等待，见 ChatViewModel.backoffDelayMs）。 */
 private const val MAX_RECONNECT_ATTEMPTS = 8
 
@@ -946,6 +966,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         refreshFromServer()
         fetchCapabilities()
         resumeActiveRun()
+        // 启动就先看一眼定时任务收件箱：App 这个通道收不到推送，产出只能自己来拉。
+        refreshInbox()
         drainPendingReply()
         checkUpdateSilently()
     }
@@ -1113,6 +1135,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun onAppForeground() {
         AppLog.log("ui", "回前台")
+        // 回前台顺手看一眼定时任务收件箱：App 这个通道收不到推送（服务端
+        // supports_async_delivery=False），任务产出只能自己来拉。
+        refreshInbox()
         // 冷启动/探活失败遗留的活跃任务没有别的重试入口（onProfileChanged 只在切身份时跑），
         // 进前台先补一次恢复探测。已在跑的会话会被 resumeActiveRun 的守卫跳过，不会重复接流。
         resumeActiveRun()
@@ -1372,6 +1397,100 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _jobsNote = MutableStateFlow("")
     val jobsNote = _jobsNote.asStateFlow()
+
+    /** App 收件箱：定时任务产出（api_server 通道不支持推送，见 HermesApi.inbox）。 */
+    private val _inbox = MutableStateFlow<List<CronReport>>(emptyList())
+    val inbox = _inbox.asStateFlow()
+    private val _inboxUnread = MutableStateFlow(0)
+    val inboxUnread = _inboxUnread.asStateFlow()
+    private val _inboxErr = MutableStateFlow("")
+    val inboxErr = _inboxErr.asStateFlow()
+    /** 已弹过通知的收件箱条目 id：避免每次回前台都把同一条再响一遍。 */
+    private val notifiedReports = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** 正在看的报告：非 null 时界面弹「定时任务产出」全文。 */
+    private val _cronReport = MutableStateFlow<CronReport?>(null)
+    val cronReport = _cronReport.asStateFlow()
+
+    /**
+     * 拉一次收件箱。App 打开 / 回前台 / 进定时任务页时调。
+     *
+     * 拉回来后：新的未读条目弹一条本机通知（App 开着也能看见「任务跑完了」），
+     * 同一条只弹一次（按 id 记着）。失败只记错误文案，不打扰。
+     */
+    fun refreshInbox(notifyNew: Boolean = true) {
+        RuntimeHub.scope.launch {
+            try {
+                val a = api ?: return@launch
+                val resp = a.inbox(limit = 50)
+                val arr = resp.optJSONArray("items") ?: JSONArray()
+                val out = mutableListOf<CronReport>()
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    out.add(
+                        CronReport(
+                            id = o.optString("id", ""),
+                            at = o.optString("at", ""),
+                            jobId = o.optString("job_id", ""),
+                            jobName = o.optString("job_name", ""),
+                            failed = o.optString("status", "ok") == "failure",
+                            body = o.optString("body", ""),
+                            // 服务端「未读」是 JSON null（不是缺键）：Android 的 optString 会把
+                            // JSON null 读成字符串 "null"（非空），所以这里必须先判 isNull。
+                            unread = o.isNull("acked_at") || o.optString("acked_at", "").isEmpty(),
+                        )
+                    )
+                }
+                _inbox.value = out
+                _inboxUnread.value = resp.optInt("unread", out.count { it.unread })
+                _inboxErr.value = ""
+                if (notifyNew) {
+                    // 只弹最新一条未读：一次拉回好几条未读时不该连着响一串，
+                    // 剩下的在定时任务页里显示成未读，点开即读。
+                    val newestUnread = out.firstOrNull { it.unread }
+                    if (newestUnread != null && notifiedReports.add(newestUnread.id)) {
+                        Notifier.notifyMessage(
+                            getApplication(),
+                            (if (newestUnread.failed) "定时任务失败：" else "定时任务完成：") +
+                                (newestUnread.jobName.ifEmpty { newestUnread.jobId }),
+                            newestUnread.body.replace(Regex("\\s+"), " ").trim().take(80),
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                _inboxErr.value = "收件箱获取失败：" + (e.message ?: "?")
+            }
+        }
+    }
+
+    /** 打开一条报告看全文（未读则顺手标已读）。 */
+    fun openCronReport(report: CronReport) {
+        _cronReport.value = report
+        if (report.unread) ackInbox(listOf(report.id))
+    }
+
+    fun closeCronReport() {
+        _cronReport.value = null
+    }
+
+    /** 标记已读：ids 为空表示整箱已读。标记完本地状态与未读数一起更新。 */
+    fun ackInbox(ids: List<String> = emptyList(), all: Boolean = false) {
+        RuntimeHub.scope.launch {
+            try {
+                val a = api ?: return@launch
+                a.ackInbox(ids, all)
+                _inbox.value = if (all) {
+                    _inbox.value.map { it.copy(unread = false) }
+                } else {
+                    val set = ids.toSet()
+                    _inbox.value.map { if (it.id in set) it.copy(unread = false) else it }
+                }
+                _inboxUnread.value = _inbox.value.count { it.unread }
+            } catch (e: Exception) {
+                _inboxErr.value = "标记已读失败：" + (e.message ?: "?")
+            }
+        }
+    }
 
     /** 上次列表用的过滤口径：动作完成后按同一口径重拉，避免刚暂停的任务凭空消失。 */
     private var jobsIncludeDisabled = false

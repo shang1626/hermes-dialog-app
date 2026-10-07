@@ -331,6 +331,31 @@ class HermesApi(
 
     fun runJob(jobId: String) = postJob("/api/jobs/" + jobId + "/run")
 
+    /**
+     * App 收件箱：定时任务的产出。
+     * 为什么要它：App 走 api_server 通道，而那条通道不支持推送（服务端
+     * supports_async_delivery=False），定时任务结果没法主动推过来。服务端投递时把产出留档
+     * （cron/app_inbox.py），App 来拉，再调 ackInbox 确认已读。
+     */
+    fun inbox(limit: Int = 50, unackedOnly: Boolean = false): JSONObject =
+        sync(
+            base(
+                "/api/inbox?limit=" + limit + (if (unackedOnly) "&unacked=true" else "")
+            ).get().build()
+        )
+
+    /** 标记收件箱已读：ids 非空按 id 标；all=true 整箱标（返回改动条数）。 */
+    fun ackInbox(ids: List<String> = emptyList(), all: Boolean = false): JSONObject {
+        val body = JSONObject()
+        if (all) body.put("all", true)
+        if (ids.isNotEmpty()) {
+            val arr = org.json.JSONArray()
+            for (i in ids) arr.put(i)
+            body.put("ids", arr)
+        }
+        return sync(base("/api/inbox/ack").post(body.toString().toRequestBody(jsonType)).build())
+    }
+
     fun sysinfo(): JSONObject = sync(base("/health/sysinfo").get().build())
 
     fun healthDetailed(): JSONObject = sync(base("/health/detailed").get().build())
