@@ -97,6 +97,8 @@ fun ChatScreen(
     val quote by vm.quoteTarget.collectAsState()
 
     Column(Modifier.fillMaxSize()) {
+        // 子任务汇总面板：贴在对话窗口顶部（顶栏下面），消息再长也不用往回翻。
+        SubagentPanel(vm)
         MessageList(vm, Modifier.weight(1f))
         // 引用条：长按气泡选「引用」后出现，点 × 取消。发送时把片段拼在正文前。
         // 取一份本地快照再判空：委托属性（by collectAsState）不能被智能转换，
@@ -228,23 +230,12 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
     val hits by vm.searchIds.collectAsState()
     val hitIdx by vm.searchIdx.collectAsState()
     val rcMenu by vm.receiptMenu.collectAsState()
-    val curId by vm.currentId.collectAsState()
     val listState = rememberLazyListState()
     val focus = LocalFocusManager.current
     val ctx = LocalContext.current
     val view = LocalView.current
     // 变化即重建各气泡的 SelectionContainer：用来取消文本选中（点空白/点正文时 +1）。
     var selReset by remember { mutableStateOf(0) }
-    // 子任务进度的心跳：只在「本会话有子任务在跑」时才每 3 秒跳一次（进度本身 4 秒刷一回），
-    // 没在跑就完全不跳，免得空转。
-    val subTick = remember { mutableStateOf(System.currentTimeMillis()) }
-    val anySubRunning = msgs.any { m -> m.subagents.any { it.status == "running" } }
-    LaunchedEffect(anySubRunning) {
-        while (anySubRunning) {
-            subTick.value = System.currentTimeMillis()
-            delay(3000L)
-        }
-    }
 
     // 末尾放一个 1dp 占位项，永远滚到它 = 永远贴底（正文增长也能跟上）
     //
@@ -349,9 +340,6 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
                     hitQuery = if (hl) q else "",
                     selectionReset = selReset,
                     onClearSelection = { selReset++ },
-                    // 子任务的进度面板按「当前会话 + 子任务 key」打开。
-                    onOpenSubagent = { key -> vm.openSubagentDetail(curId, key) },
-                    subTick = subTick,
                 )
             }
             item { Spacer(Modifier.height(1.dp)) }
@@ -569,6 +557,68 @@ private fun subagentProgressText(s: SubagentLine, now: Long): String {
     return parts.joinToString(" · ")
 }
 
+/**
+ * 会话子任务面板：把本会话全部子任务汇总在对话窗口顶部。
+ *
+ * 为什么放到顶部：子任务原来只在它那一条气泡里显示，对话一长就得往回翻半天才能找到
+ * 「那个子任务跑到哪了」。汇总到顶部后，不管对话多长都在同一处看；点某条看它每一步在做什么。
+ */
+@Composable
+fun SubagentPanel(vm: ChatViewModel) {
+    val c = LocalAppColors.current
+    val subs by vm.sessionSubagents.collectAsState()
+    if (subs.isEmpty()) return
+    val running = subs.count { it.status == "running" }
+    // 长会话里子任务会一直累积，默认只列最近 5 条，其余靠「看全部」展开，
+    // 免得面板把整个对话窗口吃掉。
+    var open by remember { mutableStateOf(true) }
+    val cap = 5
+    var showAll by remember { mutableStateOf(false) }
+    val rows = if (showAll) subs else subs.take(cap)
+    val tick = remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(running > 0) {
+        while (running > 0) {
+            tick.value = System.currentTimeMillis()
+            delay(3000L)
+        }
+    }
+    val curId by vm.currentId.collectAsState()
+    Column(Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 10.dp, vertical = 6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "子任务（" + subs.size + "）" + (if (running > 0) " · " + running + " 个在跑" else ""),
+                color = if (running > 0) c.accent else c.dim, fontSize = 11.sp,
+            )
+            Spacer(Modifier.weight(1f))
+            if (subs.size > cap) {
+                Text(
+                    if (showAll) "只显示最近" else "看全部",
+                    color = c.accent, fontSize = 11.sp,
+                    modifier = Modifier.clickable { showAll = !showAll }.padding(horizontal = 4.dp),
+                )
+            }
+            Text(
+                if (open) "收起" else "展开", color = c.accent, fontSize = 11.sp,
+                modifier = Modifier.clickable { open = !open }.padding(horizontal = 4.dp),
+            )
+        }
+        if (open) {
+            Spacer(Modifier.height(4.dp))
+            for (s in rows) {
+                SubagentRow(s, tick) { vm.openSubagentDetail(curId, s.id) }
+            }
+            if (!showAll && subs.size > cap) {
+                Text(
+                    "还有 " + (subs.size - cap) + " 条更早的（点「看全部」）",
+                    color = c.dim, fontSize = 10.sp,
+                    modifier = Modifier.padding(vertical = 2.dp),
+                )
+            }
+        }
+    }
+    HorizontalDivider(color = c.card)
+}
+
 /** 一条子任务：目标 + 实时进度 + 入口提示，点整行打开进度面板。 */
 @Composable
 private fun SubagentRow(s: SubagentLine, tick: State<Long>, onClick: () -> Unit) {
@@ -685,10 +735,6 @@ fun Bubble(
     onQuote: (Msg) -> Unit = {},
     /** 富卡片按钮点击：交给 ViewModel 分发（发消息 / 开链接）。 */
     onCardAction: (CardAction) -> Unit = {},
-    /** 点某条子任务：打开「子任务进度」面板（参数是子任务 key）。 */
-    onOpenSubagent: (String) -> Unit = {},
-    /** 子任务进度里「多久前取的进度」用的心跳（只在有子任务在跑时才跳）。 */
-    subTick: State<Long> = mutableStateOf(0L),
     /** 该条是当前搜索命中：加一圈强调边框。 */
     highlight: Boolean = false,
     /** 命中词：正文里加黄底（空表示不高亮）。 */
@@ -833,18 +879,8 @@ fun Bubble(
                         Spacer(Modifier.height(6.dp))
                     }
                 }
-                // 子任务进度：delegate_task 派出的子代理，一行一条。
-                // 每行带实时进度（步数/已跑多久/多久前取的进度），点整行打开进度面板看它
-                // 每一步在做什么 —— 运行中的进度是轮询子代理自己的会话拿的，见 ChatViewModel。
-                if (m.subagents.isNotEmpty()) {
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text("子任务（" + m.subagents.size + "）", color = c.dim, fontSize = 11.sp)
-                        for (s in m.subagents) {
-                            SubagentRow(s, subTick) { onOpenSubagent(s.id) }
-                        }
-                    }
-                    if (m.text.isNotBlank() || m.usage != null) Spacer(Modifier.height(6.dp))
-                }
+                // 子任务进度不在这里逐条显示了：已统一汇总到对话窗口顶部的面板
+                // （SubagentPanel），消息再长也在同一处看。
                 if (m.text.isNotEmpty() || (m.pending && m.trace.isEmpty())) {
                     // 正文走 Markdown 渲染：管道表格画成网格，URL 可点开浏览器；其余按等宽原文
                     RichText(

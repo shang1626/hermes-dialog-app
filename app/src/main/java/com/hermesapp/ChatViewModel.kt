@@ -17,8 +17,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -356,6 +358,29 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 当前会话的消息/忙闲/重连提示：随 _currentId 切换，后台会话互不影响。 */
     val messages: StateFlow<List<Msg>> = _currentId
         .flatMapLatest { id -> if (id.isEmpty()) flowOf(emptyList<Msg>()) else rt(id).messages }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /**
+     * 当前会话里的全部子任务（跨气泡汇总、按 id 去重取最新状态），供对话窗口顶部的面板用。
+     *
+     * 为什么要在顶部汇总：子任务原来只在它那一条气泡里显示，对话一长就得往回翻半天才能找到
+     * 「那个子任务跑到哪了」。汇总到顶部后，不管对话多长都在同一处看。
+     * 排序：正在跑的排前面，同组内按开始时间倒序（新的在上）。
+     */
+    val sessionSubagents: StateFlow<List<SubagentLine>> = _currentId
+        .flatMapLatest { id ->
+            if (id.isEmpty()) flowOf(emptyList())
+            else rt(id).messages.map { msgs ->
+                val byId = LinkedHashMap<String, SubagentLine>()
+                for (m in msgs) {
+                    for (s in m.subagents) byId[s.id] = s   // 后出现的覆盖先前的 = 取最新状态
+                }
+                byId.values.sortedWith(
+                    compareBy({ it.status != "running" }, { -it.startedAt })
+                )
+            }
+        }
+        .distinctUntilChanged()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val busy: StateFlow<Boolean> = _currentId
