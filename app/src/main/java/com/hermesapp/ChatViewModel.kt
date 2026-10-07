@@ -1433,8 +1433,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     val inboxUnread = _inboxUnread.asStateFlow()
     private val _inboxErr = MutableStateFlow("")
     val inboxErr = _inboxErr.asStateFlow()
-    /** 已弹过通知的收件箱条目 id：避免每次回前台都把同一条再响一遍。 */
-    private val notifiedReports = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     /** 正在看的报告：非 null 时界面弹「定时任务产出」全文。 */
     private val _cronReport = MutableStateFlow<CronReport?>(null)
@@ -1473,10 +1471,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 _inboxUnread.value = resp.optInt("unread", out.count { it.unread })
                 _inboxErr.value = ""
                 if (notifyNew) {
-                    // 只弹最新一条未读：一次拉回好几条未读时不该连着响一串，
-                    // 剩下的在定时任务页里显示成未读，点开即读。
+                    // 只弹最新一条未读（一次拉回好几条未读不该连响一串），且**跨重启**只弹一次：
+                    // 去重集合落盘在 Prefs（原来只在内存里，重启就空 → 每次开机都把同一条未读
+                    // 再响一遍；用户不进定时任务页点掉它就会一直响）。
                     val newestUnread = out.firstOrNull { it.unread }
-                    if (newestUnread != null && notifiedReports.add(newestUnread.id)) {
+                    if (newestUnread != null && newestUnread.id !in prefs.notifiedReportIds()) {
+                        prefs.markReportNotified(newestUnread.id)
                         Notifier.notifyMessage(
                             getApplication(),
                             (if (newestUnread.failed) "定时任务失败：" else "定时任务完成：") +
