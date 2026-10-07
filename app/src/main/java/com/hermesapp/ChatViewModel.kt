@@ -415,6 +415,35 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         .flatMapLatest { id -> if (id.isEmpty()) flowOf("") else rt(id).retryNote }
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
 
+    /**
+     * 当前会话里「在等我点头」的卡片（审批或澄清），供对话窗口顶部一条醒目提示。
+     *
+     * 为什么要置顶：卡片原来是嵌在助手气泡里的（和正文同一块），对话一长就埋在中间，
+     * 得滚半天才看得到 —— 用户报「长文本上面看不到」。置顶后不管滚到哪都在眼前，
+     * 点一下直接跳到那张卡片。数据源就是本地已有的消息，不额外发请求。
+     */
+    data class PendingAction(val msgId: Long, val title: String, val summary: String, val isApproval: Boolean)
+
+    val pendingAction: StateFlow<PendingAction?> = _currentId
+        .flatMapLatest { id ->
+            if (id.isEmpty()) flowOf(null)
+            else rt(id).messages.map { msgs ->
+                // 取最后一条未处理的卡片；审批优先（同会话极少两者同时有）。
+                val ap = msgs.lastOrNull { it.approval?.resolved?.isEmpty() == true }
+                val cl = msgs.lastOrNull { it.clarify?.resolved?.isEmpty() == true }
+                when {
+                    ap != null -> PendingAction(
+                        ap.id, "需要你确认",
+                        ap.approval?.description?.ifEmpty { ap.approval?.command.orEmpty() }.orEmpty(), true)
+                    cl != null -> PendingAction(
+                        cl.id, "需要你选一下", cl.clarify?.question.orEmpty(), false)
+                    else -> null
+                }
+            }
+        }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
     /** 当前会话排队待发的条数：输入栏显示「排队 N 条」。 */
     val queuedCount: StateFlow<Int> = _currentId
         .flatMapLatest { id -> if (id.isEmpty()) flowOf(0) else rt(id).queued }
@@ -562,6 +591,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     val searchIdx = _searchIdx.asStateFlow()
 
     private var searchJob: Job? = null
+
+    /**
+     * 「滚到某条消息」的一次性请求（待处理卡片置顶提示点「查看」用）。
+     *
+     * 为什么不复用搜索跳转：那条路径要 searchActive=true，会顺手弹出搜索栏。
+     * 这里只要滚动，界面消费完立刻清掉，避免后续重组再滚一次。
+     */
+    private val _scrollToMsg = MutableStateFlow<Long?>(null)
+    val scrollToMsg = _scrollToMsg.asStateFlow()
+
+    fun requestScrollToMsg(msgId: Long) { if (msgId > 0) _scrollToMsg.value = msgId }
+    fun consumeScrollToMsg() { _scrollToMsg.value = null }
 
     /** 打开/收起搜索栏。收起时清掉全部搜索态。 */
     fun toggleSearch() {
@@ -1558,18 +1599,27 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             var fails = 0
             var tick = 0
+            // 最近一次探测成功的时刻：用于「30 秒内成功过就仍算在线」的兜底，
+            // 避免单次超时（fails 未达 3 次阈值）也把角标打红。
+            var lastOkAt = 0L
             while (true) {
                 val ok = api?.ping() ?: false
                 if (ok) {
                     if (!_online.value) AppLog.log("net", "恢复在线")
                     fails = 0
+                    lastOkAt = System.currentTimeMillis()
                     _online.value = true   // 恢复立刻生效
                 } else {
-                    // 连续 2 次失败才翻「离线」，避免单次抖动闪红。
+                    // 2026-10-08：连续 2 次失败就翻「离线」太敏感 —— 移动网络/服务端偶发一次
+                    // 超时就闪红，用户实测「一直显示离线」而服务端 6195 次心跳全 200。
+                    // 现在：连续 3 次失败才翻，且最近 30 秒内成功过就仍算在线（兜底）。
                     fails++
-                    if (fails >= 2) {
+                    val recentlyOk = lastOkAt > 0 && System.currentTimeMillis() - lastOkAt < 30_000L
+                    if (fails >= 3 && !recentlyOk) {
                         if (_online.value) AppLog.log("net", "连续 " + fails + " 次探测失败，标记离线")
                         _online.value = false
+                    } else {
+                        AppLog.log("net", "探测失败第 " + fails + " 次（最近成功=" + recentlyOk + "），暂不标离线")
                     }
                 }
                 // 每 30 秒静默查一次更新：发新版后角标自动亮起，不必等下次启动。
@@ -3814,11 +3864,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 任务停下来等人点头（审批/澄清）且 App 不在前台时弹提醒。
-     * 前台不弹——卡片就在屏幕上，再弹通知是骚扰。
+     * 任务停下来等人点头（审批/澄清）时弹提醒。
+     *
+     * 2026-10-08 改：原来「App 在前台就一律不弹」，导致用户开着 App 但在看别的页面 /
+     * 别的会话时，审批来了完全没提示 —— 静默错过（用户报「经常静默错过」）。
+     * 新判据：只有「就在当前这个会话里」才不弹（卡片已在屏幕上），其余情况都弹，前台也弹。
      */
     private fun notifyNeedAction(sid: String, title: String, text: String) {
-        if (AppForeground.isForeground) return
+        val onThisSession = AppForeground.isForeground && sid == _currentId.value
+        if (onThisSession) return
         // 落盘一份：App 若在用户点通知前被系统杀掉，冷启动的 Intent extra 可能丢，
         // 靠这份落盘仍能跳回那条待处理卡片。
         prefs.pendingOpenSession = sid

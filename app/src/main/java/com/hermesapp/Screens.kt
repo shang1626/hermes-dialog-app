@@ -51,6 +51,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -137,6 +138,37 @@ fun ChatScreen(
             }
         }
         // 子任务汇总面板已挪进顶部栏本身（App.kt 的 TopBar），不在这里再放一份。
+        //
+        // 待处理卡片置顶提示：审批/澄清的卡片原来是嵌在助手气泡里的，长对话时埋在中间
+        // 得滚半天才看得到（用户报「长文本上面看不到」）。这里在消息列表之上钉一条醒目
+        // 提示，不管滚到哪都在眼前；点一下跳到那张卡片。没有待处理时不占任何高度。
+        val pendingAct by vm.pendingAction.collectAsState()
+        val pa = pendingAct
+        if (pa != null) {
+            Row(
+                Modifier.fillMaxWidth()
+                    .background(c.warn.copy(alpha = 0.14f))
+                    .clickable { vm.requestScrollToMsg(pa.msgId) }
+                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("●", color = c.warn, fontSize = 11.sp)
+                Spacer(Modifier.width(7.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(pa.title, color = c.warn, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    if (pa.summary.isNotEmpty()) {
+                        Text(
+                            pa.summary.replace(Regex("\\s+"), " ").trim().let {
+                                if (it.length > 50) it.take(50) + "…" else it
+                            },
+                            color = c.text, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                Spacer(Modifier.width(6.dp))
+                Text("查看 ›", color = c.accent, fontSize = 12.sp)
+            }
+        }
         MessageList(vm, Modifier.weight(1f))
         // 引用条：长按气泡选「引用」后出现，点 × 取消。发送时把片段拼在正文前。
         // 取一份本地快照再判空：委托属性（by collectAsState）不能被智能转换，
@@ -299,6 +331,16 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
         val id = hits.getOrNull(hitIdx) ?: return@LaunchedEffect
         val pos = msgs.indexOfFirst { it.id == id }
         if (pos >= 0) listState.animateScrollToItem(pos)
+    }
+
+    // 顶部「待处理」提示点了「查看」：滚到那张卡片所在的消息，消费掉请求。
+    // 单独一条通道，不复用搜索跳转（那条会把搜索栏弹出来）。
+    val scrollReq by vm.scrollToMsg.collectAsState()
+    LaunchedEffect(scrollReq) {
+        val id = scrollReq ?: return@LaunchedEffect
+        val pos = msgs.indexOfFirst { it.id == id }
+        if (pos >= 0) listState.animateScrollToItem(pos)
+        vm.consumeScrollToMsg()
     }
 
     Column(
