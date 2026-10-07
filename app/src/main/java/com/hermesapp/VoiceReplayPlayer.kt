@@ -49,6 +49,9 @@ object VoiceReplayPlayer {
 
     /** 取字节（本机留档优先）→ 落盘 → 播放；先置状态，界面立刻切成「停止」。 */
     private fun play(ctx: Context, runId: String) {
+        // 互斥：点重播先掐掉正在响的流式自动播报，否则两条叠着念、且都停不掉对方。
+        VoicePlayer.stop()
+        StreamVoicePlayer.stop()
         _nowPlaying.value = runId
         Thread {
             try {

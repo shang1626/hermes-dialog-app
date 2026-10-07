@@ -1014,14 +1014,14 @@ fun Bubble(
                             Spacer(Modifier.width(6.dp))
                             LiveElapsed(m.startedAt, c.accent)
                         }
-                        if (voiceTarget.isNotEmpty()) {
-                            Spacer(Modifier.width(6.dp))
-                            VoiceMiniButton(voiceTarget)
-                        }
-                        // 流式语音：正文里没有附件，按消息的 runId 显示重播按钮。
+                        // 同一条消息只留一个语音按钮：优先按 runId 的重播按钮（服务端长期留档，
+                        // 本机有缓存则零网络），没有 runId 的老消息才回落正文里的内联附件按钮。
                         if (replayRunId.isNotEmpty()) {
                             Spacer(Modifier.width(6.dp))
                             VoiceReplayMiniButton(replayRunId)
+                        } else if (voiceTarget.isNotEmpty()) {
+                            Spacer(Modifier.width(6.dp))
+                            VoiceMiniButton(voiceTarget)
                         }
                         if (rc != null) {
                             val tip = when (rc.status) {

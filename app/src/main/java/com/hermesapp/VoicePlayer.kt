@@ -73,6 +73,10 @@ object VoicePlayer {
     /** 取字节 → 落临时文件 → 播放；先置状态，界面立刻切成「停止」。 */
     private fun playTarget(ctx: Context, target: String) {
         if (target.isEmpty()) return
+        // 互斥：同一时刻只允许一条语音在响。三个播放器各持一份状态、互不相识，
+        // 不在这里掐掉另外两个，就会出现「两条一起响、只停得掉自己那条」。
+        StreamVoicePlayer.stop()
+        VoiceReplayPlayer.stop()
         _nowPlaying.value = target
         Thread {
             var fail: Throwable? = null
