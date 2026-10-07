@@ -638,7 +638,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun refreshSessions() {
-        _sessions.value = store.loadIndex().sortedByDescending { it.updatedAt }
+        val l = store.loadIndex().sortedByDescending { it.updatedAt }
+        AppLog.log("store", "刷新列表 条数=" + l.size + " 已归档=" + l.count { it.archived } +
+            " 当前=" + _currentId.value.take(8))
+        _sessions.value = l
     }
 
     /** 上次从服务端同步标题的时间：节流用，避免每个轮末都打一次接口。 */
@@ -674,6 +677,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         list[idx] = list[idx].copy(title = title); changed = true
                     }
                 }
+                AppLog.log("sync", "同步标题：服务端=" + arr.length() + " 条，本地=" + list.size +
+                    " 条，覆盖=" + changed)
                 if (changed) {
                     _sessions.value = list
                     store.saveIndex(list)
@@ -696,19 +701,25 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * 只动本地索引，不删任何消息文件；服务端数据原样保留，误判也不会丢数据。
      */
     private fun cleanupShellSessionsOnce() {
-        if (prefs.shellCleanupDone) return
-        runCatching {
+        if (prefs.shellCleanupDone) {
+            AppLog.log("session-sync", "空壳清理：本机已执行过，跳过")
+            return
+        }
+        try {
             val list = _sessions.value
             val kept = list.filter { meta ->
                 store.hasMessages(meta.id) || meta.title == "新对话"
             }
             val removed = list.size - kept.size
+            AppLog.log("session-sync", "空壳清理：清理前=" + list.size +
+                " 保留=" + kept.size + " 移除=" + removed)
             if (removed > 0) {
                 _sessions.value = kept
                 store.saveIndex(kept)
-                AppLog.log("session-sync", "一次性清理空壳会话 " + removed + " 条")
                 if (kept.none { it.id == _currentId.value }) selectNextOrEmpty()
             }
+        } catch (e: Exception) {
+            AppLog.err("session-sync", "空壳清理失败", e)
         }
         prefs.shellCleanupDone = true
     }
@@ -738,6 +749,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun archiveSession(id: String, archived: Boolean) {
+        AppLog.log("ui", "归档会话 sid=" + id.take(8) + " 归档=" + archived)
         val list = _sessions.value.toMutableList()
         val i = list.indexOfFirst { it.id == id }
         if (i < 0) return
@@ -831,26 +843,36 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun bootstrapSessions(profileSessionId: String?) {
         store = SessionStore(getApplication(), prefs.profile)
-        if (store.loadIndex().isEmpty()) {
+        // 启动体检：把本机到底存了哪些会话文件钉进日志。
+        AppLog.log("store", "启动体检 profile=" + prefs.profile + " " + store.diagSummary() +
+            " 上次会话=" + (profileSessionId ?: "无"))
+        val idx = store.loadIndex()
+        AppLog.log("store", "启动读索引 条数=" + idx.size)
+        if (idx.isEmpty()) {
             val migrated = store.migrateLegacy(profileSessionId ?: "")
             if (migrated == null) {
                 // 无历史会话：进入空态，首次输入再建会话
+                AppLog.log("store", "启动分支=空态（索引为空且无旧格式文件可迁移）")
                 _currentId.value = ""
                 prefs.sessionId = null
                 _sessions.value = emptyList()
                 return
             }
+            AppLog.log("store", "启动分支=迁移旧格式 会话=" + migrated.id.take(8))
             _currentId.value = migrated.id
             prefs.sessionId = migrated.id
             _sessions.value = listOf(migrated)
             ensureLoaded(migrated.id)
             return
         }
-        val list = store.loadIndex().sortedByDescending { it.updatedAt }
+        val list = idx.sortedByDescending { it.updatedAt }
         // 优先恢复上次停留的会话（prefs.sessionId）；找不到才回退到最近更新的未归档会话。
         val preferred = profileSessionId?.takeIf { it.isNotEmpty() }
             ?.let { pid -> list.firstOrNull { it.id == pid && !it.archived } }
         val target = preferred ?: list.firstOrNull { !it.archived } ?: list.first()
+        AppLog.log("store", "启动分支=恢复列表 条数=" + list.size +
+            " 已归档=" + list.count { it.archived } +
+            " 命中上次会话=" + (preferred != null) + " 当前=" + target.id.take(8))
         _currentId.value = target.id
         prefs.sessionId = target.id
         _sessions.value = list

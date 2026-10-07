@@ -23,9 +23,9 @@ import java.util.Locale
  */
 object AppLog {
     private const val FILE = "run.log"
-    private const val MAX_MEM = 800          // 内存保留行数
-    private const val MAX_FILE = 5000        // 落盘保留行数
-    private const val MAX_FILE_BYTES = 2_000_000L
+    private const val MAX_MEM = 1200         // 内存保留行数
+    private const val MAX_FILE = 8000        // 落盘保留行数
+    private const val MAX_FILE_BYTES = 4_000_000L
 
     private val mem = ArrayDeque<String>()
     private val fmt = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.CHINA)
