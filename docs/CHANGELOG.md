@@ -1,3 +1,14 @@
+## 2.103 — versionCode 114
+
+修「通知栏左侧还是系统占位图（机器人＋网格），不是应用图标」。用户截图逐像素比对确认：那张卡片确实是 Hermes 的通知（标题以 H 开头），但左侧图标与 App 图标相关系数 −0.20 —— 系统没用我们给的图，退回了它自己的占位图。
+
+两处按 Android 官方形式改：
+
+- **小图标从 PNG 位图改成矢量图**（`res/drawable/ic_stat_hermes.xml`，24dp 圆角方块路径）。原来的位图是灰度+alpha 的 PNG（aapt2 会把白+透明的图优化成 LA 格式），这类位图在部分 ROM 的通知图标路径上会加载失败，系统就退回占位图。矢量图是官方推荐的小图标形式，任何 ROM 都能解析。
+- **自适应图标补上 `monochrome` 单色层**（Android 13+ 主题图标用）。缺这一层时，部分 ROM 在通知/状态栏会用自家占位图顶替。
+
+（改 res/drawable/ic_stat_hermes.xml（新增）/ mipmap-anydpi-v26/ic_launcher.xml、ic_launcher_round.xml / 删除 res/drawable-nodpi/ic_stat_hermes.png / app/build.gradle.kts）
+
 ## 2.102 — versionCode 113
 
 通知栏挂上 App 自己的图标：
