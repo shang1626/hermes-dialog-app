@@ -678,7 +678,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     _sessions.value = list
                     store.saveIndex(list)
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                AppLog.err("sync", "同步会话标题失败", e)
                 // 离线 / 接口异常：保留本地列表，不影响使用
             }
         }
@@ -714,6 +715,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 切到某个会话（网关 session_id 同步指过去）。不再停止任何正在跑的任务。 */
     fun switchSession(id: String) {
         if (id == _currentId.value) return
+        AppLog.log("ui", "切会话 -> " + id.take(8))
         clearSearch()   // 搜索只作用于当前会话：切走即收起
         saveCurrent()
         _currentId.value = id
@@ -723,6 +725,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun newConversation() {
+        AppLog.log("ui", "新建会话")
         saveCurrent()
         val id = UUID.randomUUID().toString()
         val meta = SessionMeta(id, "新对话", stamp(), false)
@@ -745,6 +748,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun deleteSession(id: String) {
+        AppLog.log("ui", "删除会话 sid=" + id.take(8))
         // 若该会话有正在跑的任务，先停掉（服务端一并停），再删本地记录。
         stopSession(id)
         store.deleteMessages(id)
@@ -856,6 +860,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     // ---------- 连接 ----------
 
     fun onProfileChanged(p: Prefs) {
+        AppLog.log("ui", "切身份 profile=" + p.profile + " 服务器=" + p.serverUrl)
         migrateLegacyHost(p)
         val key = if (p.profile == "default") Keys.DEFAULT_KEY else Keys.FRIEND_KEY
         val prefix = if (p.profile == "default") "" else "/p/friend"
@@ -903,7 +908,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val info = a.checkUpdate() ?: return@launch
                 _updateBadge.value = info.versionCode > myVersionCode
-            } catch (_: Exception) {
+                AppLog.log("update", "静默检查：服务端=" + info.versionName + "(" + info.versionCode + ") 本机=" + myVersionCode)
+            } catch (e: Exception) {
+                AppLog.err("update", "静默检查更新失败", e)
             }
         }
     }
@@ -1037,6 +1044,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * 正常空闲绝不会误判；不这样做的话，息屏期间假死的流要等 30 秒读超时才断开。
      */
     fun onAppForeground() {
+        AppLog.log("ui", "回前台")
         // 冷启动/探活失败遗留的活跃任务没有别的重试入口（onProfileChanged 只在切身份时跑），
         // 进前台先补一次恢复探测。已在跑的会话会被 resumeActiveRun 的守卫跳过，不会重复接流。
         resumeActiveRun()
@@ -1157,7 +1165,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 r.messages.value = merged
                 r.loaded = true
                 store.saveMessages(id, merged, maxHistory)
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                AppLog.err("sync", "拉服务端消息失败 sid=" + id.take(8), e)
                 // 服务端无此会话或网络异常：保留本地内容
             }
         }
@@ -1651,6 +1660,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 _statusSections.value = buildStatus(h)
                 _statusErr.value = ""
             } catch (e: Exception) {
+                AppLog.err("status", "获取系统状态失败", e)
                 _statusErr.value = "获取失败：" + (e.message ?: "?")
             }
         }
@@ -1822,6 +1832,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             // 排队：气泡先落下（回执标「排队中」），本轮一结束由 drainQueue 自动发。
             r.queue.add(QueuedSend(wireText, uploadFiles.toList(), userMsg.id, prior, idemKey))
             r.queued.value = r.queue.size
+            AppLog.log("queue", "入队 sid=" + sid.take(8) + " msg=" + userMsg.id + " 队列=" + r.queue.size)
             return
         }
         startRunWith(a, sid, wireText, uploadFiles.toList(), receiptMsgId = userMsg.id, idemKey = idemKey)
@@ -1837,6 +1848,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (r.busy.value || r.queue.isEmpty() || r.queuePaused.value) return
         val next = r.queue.removeAt(0)
         r.queued.value = r.queue.size
+        AppLog.log("queue", "出队发送 sid=" + sid.take(8) + " msg=" + next.msgId + " 剩余=" + r.queue.size)
         r.priorUserCount = next.priorUserCount
         r.pendingSendText = next.text.trim()
         r.recoveryJob?.cancel()
@@ -1850,6 +1862,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (sid.isEmpty()) return
         val r = rt(sid)
         r.queuePaused.value = false
+        AppLog.log("queue", "继续队列 sid=" + sid.take(8) + " 待发=" + r.queue.size)
         drainQueue(sid)
     }
 
@@ -1864,6 +1877,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val i = r.queue.indexOfFirst { it.msgId == msgId }
         if (i >= 0) r.queue.removeAt(i)
         r.queued.value = r.queue.size
+        AppLog.log("queue", "撤回排队 sid=" + sid.take(8) + " msg=" + msgId + " 剩余=" + r.queue.size)
         removeUserMsg(r, msgId)
     }
 
@@ -1879,6 +1893,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (i < 0) return
         val q = r.queue.removeAt(i)
         r.queued.value = r.queue.size
+        AppLog.log("queue", "编辑排队 sid=" + sid.take(8) + " msg=" + msgId + " 剩余=" + r.queue.size)
         _queuedEdit.value = q.text
         removeUserMsg(r, msgId)
     }
@@ -1916,6 +1931,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 原来 runCatching 把返回整个吞了，用户看不到任何反应，才觉得「插不进去」。
         viewModelScope.launch(Dispatchers.IO) {
             val ok = a.steer(rid, t)
+            AppLog.log("steer", "插话 run=" + rid.take(12) + " 结果=" + (if (ok) "送达" else "未送达") + " len=" + t.length)
             withContext(Dispatchers.Main) {
                 r.retryNote.value = if (ok) "插话已送达，本轮会读到"
                 else "插话没送达：本轮可能已收尾，这句话没赶上"
@@ -1950,6 +1966,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val i = list.indexOfFirst { it.id == msgId }
         if (i < 0) return
         val old = list[i].receipt
+        AppLog.log("receipt", "回执 " + (old?.status ?: "无") + " -> " + status +
+            " sid=" + sid.take(8) + " msg=" + msgId + (if (note.isNotEmpty()) " note=" + note.take(60) else ""))
         list[i] = list[i].copy(
             receipt = Receipt(
                 status = status,
@@ -2143,6 +2161,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 _imageNote.value = ""
                 _pendingImages.value = _pendingImages.value + PendingImage(Msg.nextMsgId(), uri.toString(), dst, isImage = true)
             } catch (e: Exception) {
+                AppLog.err("attach", "读取图片失败 uri=" + uri, e)
                 _imageNote.value = "读取图片失败：" + (e.message ?: "?")
             }
         }
@@ -2178,6 +2197,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 _imageNote.value = ""
                 _pendingImages.value = _pendingImages.value + PendingImage(Msg.nextMsgId(), uri.toString(), dst, isImage = isImg)
             } catch (e: Exception) {
+                AppLog.err("attach", "读取文件失败 uri=" + uri, e)
                 _imageNote.value = "读取文件失败：" + (e.message ?: "?")
             }
         }
@@ -2313,6 +2333,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 澄清请求：挂到该会话当前助手气泡上，等用户选选项回执。 */
     private fun attachClarify(r: SessionRuntime, ev: com.hermesapp.net.SseEvent) {
+        AppLog.log("clarify", "收到澄清请求 sid=" + r.id.take(8) + " id=" + ev.data.optString("clarify_id", "").take(12))
         notifyNeedAction(r.id, "需要你选一下", ev.data.optString("question", ""))
         placeClarify(r, ev.data)
     }
@@ -2380,6 +2401,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 审批请求：挂到该会话当前助手气泡上，等用户点按钮回执。 */
     private fun attachApproval(r: SessionRuntime, ev: com.hermesapp.net.SseEvent) {
+        AppLog.log("approval", "收到审批请求 sid=" + r.id.take(8) + " id=" + ev.data.optString("request_id", "").take(12))
         notifyNeedAction(r.id, "需要你确认",
             ev.data.optString("description", "").ifEmpty { ev.data.optString("command", "") })
         placeApproval(r, ev.data)
@@ -2917,6 +2939,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (!r.busy.value && r.runId.isEmpty()) return
         val a = api
         val rid = r.runId
+        AppLog.log("stop", "用户停止 sid=" + sid.take(8) + " run=" + rid.take(12))
         r.finished = true
         r.recoveryJob?.cancel()
         r.coalescer?.discard()
@@ -3018,13 +3041,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 不再只看「后台运行」开关：开关关着时切后台照样会被系统冻结，
         // 进度与完成通知都丢。
         if (!prefs.keepAlive && running.isEmpty()) {
+            AppLog.log("service", "停前台服务（后台运行关 且 无任务）")
             RunService.stop(getApplication())
             return
         }
         // Android 12+ 禁止从后台启动前台服务：后台硬启会撞墙，反而触发
         // ForegroundServiceDidNotStartInTime 崩溃。切回前台时 onAppForeground
         // 会再调一次这里把服务补上。
-        if (AppForeground.isForeground) RunService.start(getApplication())
+        if (AppForeground.isForeground) {
+            AppLog.log("service", "起前台服务 运行中会话=" + running.size + " keepAlive=" + prefs.keepAlive)
+            RunService.start(getApplication())
+        } else {
+            AppLog.log("service", "跳过起服务（App 不在前台）运行中会话=" + running.size)
+        }
     }
 
     /** 进主界面时调一次：开关开着但还没发过消息，也要把常驻通知挂上。 */

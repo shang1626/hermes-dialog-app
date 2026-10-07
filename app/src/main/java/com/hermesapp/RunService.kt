@@ -91,6 +91,7 @@ class RunService : Service() {
         const val NOTIF_ID = 1001
 
         fun start(ctx: Context) {
+            AppLog.log("service", "RunService.start")
             runCatching {
                 val i = Intent(ctx, RunService::class.java)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -102,6 +103,7 @@ class RunService : Service() {
         }
 
         fun stop(ctx: Context) {
+            AppLog.log("service", "RunService.stop")
             runCatching { ctx.stopService(Intent(ctx, RunService::class.java)) }
         }
     }

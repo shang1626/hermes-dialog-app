@@ -2,6 +2,7 @@ package com.hermesapp
 
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.text.Editable
@@ -56,7 +57,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
+import java.io.File
 import kotlinx.coroutines.delay
 
 /**
@@ -1114,7 +1117,32 @@ fun JobCard(j: JobItem, onAction: (String) -> Unit) {
     }
 }
 
-/** 设置页分组小标题：左侧一条强调色竖线 + 标题，各区之间用它隔开。 */
+/**
+ * 把运行日志落成文件并调系统分享面板发出去（发我排查用）。
+ * 走「复制全文」不占剪贴板、不截断，长日志也能整份发过来。
+ * 落在 App 私有 exports/（FileProvider 已声明），只读日志，不改任何数据。
+ * 失败只弹一行提示，绝不崩。
+ */
+private fun exportLogFile(ctx: Context) {
+    try {
+        val dir = File(ctx.filesDir, "exports").apply { mkdirs() }
+        val f = File(dir, "run.log")
+        f.writeText(AppLog.read(ctx))
+        val uri = FileProvider.getUriForFile(ctx, "com.hermesapp.fileprovider", f)
+        val i = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, "Hermes 运行日志")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        ctx.startActivity(Intent.createChooser(i, "导出运行日志"))
+    } catch (e: Exception) {
+        android.widget.Toast.makeText(
+            ctx, "导出失败：" + (e.message ?: "?"), android.widget.Toast.LENGTH_SHORT
+        ).show()
+    }
+}
+
 @Composable
 private fun SectionTitle(text: String) {
     val c = LocalAppColors.current
@@ -1321,11 +1349,11 @@ fun SettingsScreen(
         )
         if (diagOpen) {
             // 运行日志：连接/重连/发送/收流的关键节点留痕。排查「连不上」时复制全文发出来。
-            var logText by remember { mutableStateOf(AppLog.tail(ctx, 200)) }
+            var logText by remember { mutableStateOf(AppLog.tail(ctx, 300)) }
             LaunchedEffect(Unit) {
                 while (true) {
                     delay(2000)
-                    logText = AppLog.tail(ctx, 200)
+                    logText = AppLog.tail(ctx, 300)
                 }
             }
             Spacer(Modifier.height(14.dp))
@@ -1359,6 +1387,11 @@ fun SettingsScreen(
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
                     shape = RoundedCornerShape(8.dp),
                 ) { Text("复制全文", color = c.accent, fontSize = 12.sp) }
+                OutlinedButton(
+                    onClick = { exportLogFile(ctx) },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                    shape = RoundedCornerShape(8.dp),
+                ) { Text("导出文件", color = c.accent, fontSize = 12.sp) }
                 OutlinedButton(
                     onClick = { AppLog.clear(ctx); logText = "" },
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
