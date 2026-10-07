@@ -3299,14 +3299,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     }
                     "audio.delta" -> {
-                        if (prefs.playCompletionVoice && StreamVoicePlayer.nowPlaying.value.isNotEmpty()) {
+                        if (prefs.playCompletionVoice) {
                             StreamVoicePlayer.append(getApplication(), ev.data.optString("data", ""))
                         }
                     }
                     "audio.end" -> {
                         AppLog.log("stream", "语音流结束 run=" + rid.take(12) +
                             " 块数=" + ev.data.optInt("chunks", 0))
-                        if (prefs.playCompletionVoice && StreamVoicePlayer.nowPlaying.value.isNotEmpty()) {
+                        if (prefs.playCompletionVoice) {
                             StreamVoicePlayer.end(getApplication())
                         }
                     }
