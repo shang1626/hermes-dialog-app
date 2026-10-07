@@ -1674,6 +1674,26 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 删除收件箱条目：ids 非空按 id 删；all=true 整箱清空。删完本地列表与未读数即时更新。 */
+    fun deleteInbox(ids: List<String> = emptyList(), all: Boolean = false) {
+        RuntimeHub.scope.launch(Dispatchers.IO) {
+            try {
+                val a = api ?: return@launch
+                val resp = a.deleteInbox(ids, all)
+                val removed = resp.optInt("removed", 0)
+                val set = ids.toSet()
+                _inbox.value = if (all) emptyList() else _inbox.value.filter { it.id !in set }
+                _inboxUnread.value = _inbox.value.count { it.unread }
+                // 删掉的正是当前打开的那条时，顺手收掉全文弹窗
+                val cur = _cronReport.value
+                if (cur != null && (all || cur.id in set)) _cronReport.value = null
+                AppLog.log("job", "收件箱删除 请求=" + (if (all) "全部" else ids.size.toString()) + " 实际=" + removed)
+            } catch (e: Exception) {
+                _inboxErr.value = "删除失败：" + diagText(e)
+            }
+        }
+    }
+
     /** 上次列表用的过滤口径：动作完成后按同一口径重拉，避免刚暂停的任务凭空消失。 */
     private var jobsIncludeDisabled = false
 

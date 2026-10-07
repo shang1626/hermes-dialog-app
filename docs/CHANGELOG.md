@@ -1,3 +1,14 @@
+## 2.109 — versionCode 120
+
+新：收件箱支持删除。
+
+- **单条删除**：长按收件箱某条产出 → 弹二次确认 → 删除（服务端 `POST /api/inbox/delete`）。也可在打开的全文弹窗底部点「删除」。
+- **清空全部**：标题行新增红色「清空」入口 → 二次确认 → 整箱清空。
+- 删完本地列表与未读数即时更新，不用等重拉；删掉的正是当前打开的那条时自动收起弹窗。
+- 服务端配套补丁 `apply_app_inbox_delete_patch.py`（`cron/app_inbox.py` 加 `delete()`、`api_server.py` 加路由 `POST /api/inbox/delete`），已归档并登记总清单。
+
+（改 net/HermesApi.kt / ChatViewModel.kt / Screens.kt / app/build.gradle.kts）
+
 ## 2.108 — versionCode 119
 
 定时任务页的中文说明补齐（含朋友那边）。
