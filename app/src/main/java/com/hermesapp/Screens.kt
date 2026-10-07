@@ -1188,6 +1188,8 @@ fun JobsScreen(vm: ChatViewModel, prefs: Prefs) {
     val unread by vm.inboxUnread.collectAsState()
     val inboxErr by vm.inboxErr.collectAsState()
     var showDisabled by remember { mutableStateOf(false) }
+    var clearConfirm by remember { mutableStateOf(false) }
+    var pendingDelete by remember { mutableStateOf<CronReport?>(null) }
     LaunchedEffect(Unit) {
         vm.refreshJobs(showDisabled)
         // 进这一页顺手拉一次收件箱（App 走 api_server 通道收不到推送，产出只能来拉）。
@@ -1239,11 +1241,16 @@ fun JobsScreen(vm: ChatViewModel, prefs: Prefs) {
                             "全部已读", color = c.accent, fontSize = 11.sp,
                             modifier = Modifier.clickable { vm.ackInbox(all = true) },
                         )
+                        Spacer(Modifier.width(12.dp))
                     }
+                    Text(
+                        "清空", color = c.bad, fontSize = 11.sp,
+                        modifier = Modifier.clickable { clearConfirm = true },
+                    )
                 }
                 Spacer(Modifier.height(6.dp))
                 for (r in reports) {
-                    CronReportRow(r) { vm.openCronReport(r) }
+                    CronReportRow(r, onOpen = { vm.openCronReport(r) }, onLongPress = { pendingDelete = r })
                     Spacer(Modifier.height(6.dp))
                 }
                 Spacer(Modifier.height(12.dp))
@@ -1269,16 +1276,53 @@ fun JobsScreen(vm: ChatViewModel, prefs: Prefs) {
     val viewing by vm.cronReport.collectAsState()
     val vr = viewing
     if (vr != null) CronReportDialog(vm, vr)
+
+    // 清空全部：不可恢复，先二次确认。
+    if (clearConfirm) {
+        AlertDialog(
+            onDismissRequest = { clearConfirm = false },
+            title = { Text("清空收件箱？", color = c.text, fontSize = 15.sp) },
+            text = { Text("所有定时任务产出都会被删除，删了找不回来。", color = c.dim, fontSize = 12.sp) },
+            confirmButton = {
+                TextButton(onClick = { clearConfirm = false; vm.deleteInbox(all = true) }) {
+                    Text("清空", color = c.bad, fontSize = 14.sp)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { clearConfirm = false }) { Text("取消", color = c.dim, fontSize = 14.sp) }
+            },
+            containerColor = c.panel,
+        )
+    }
+    // 单条删除：长按某条弹出，二次确认。
+    val pd = pendingDelete
+    if (pd != null) {
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("删除这条产出？", color = c.text, fontSize = 15.sp) },
+            text = { Text((pd.jobName.ifEmpty { pd.jobId }) + " 的这条产出会被删除，删了找不回来。", color = c.dim, fontSize = 12.sp) },
+            confirmButton = {
+                TextButton(onClick = { pendingDelete = null; vm.deleteInbox(listOf(pd.id)) }) {
+                    Text("删除", color = c.bad, fontSize = 14.sp)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) { Text("取消", color = c.dim, fontSize = 14.sp) }
+            },
+            containerColor = c.panel,
+        )
+    }
 }
 
 /** 收件箱一条：任务名 + 时间 + 正文首行；未读带红点。点开看全文。 */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun CronReportRow(r: CronReport, onClick: () -> Unit) {
+private fun CronReportRow(r: CronReport, onOpen: () -> Unit, onLongPress: () -> Unit) {
     val c = LocalAppColors.current
     Column(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
             .background(c.card)
-            .clickable { onClick() }
+            .combinedClickable(onClick = { onOpen() }, onLongClick = { onLongPress() })
             .padding(10.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1332,6 +1376,11 @@ fun CronReportDialog(vm: ChatViewModel, r: CronReport) {
         confirmButton = {
             TextButton(onClick = { vm.closeCronReport() }) {
                 Text("关闭", color = c.accent, fontSize = 13.sp)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { vm.deleteInbox(listOf(r.id)) }) {
+                Text("删除", color = c.bad, fontSize = 13.sp)
             }
         },
     )

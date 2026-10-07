@@ -366,6 +366,18 @@ class HermesApi(
         return sync(base("/api/inbox/ack").post(body.toString().toRequestBody(jsonType)).build())
     }
 
+    /** 删除收件箱条目：ids 非空按 id 删；all=true 整箱清空（返回删除条数）。 */
+    fun deleteInbox(ids: List<String> = emptyList(), all: Boolean = false): JSONObject {
+        val body = JSONObject()
+        if (all) body.put("all", true)
+        if (ids.isNotEmpty()) {
+            val arr = org.json.JSONArray()
+            for (i in ids) arr.put(i)
+            body.put("ids", arr)
+        }
+        return sync(base("/api/inbox/delete").post(body.toString().toRequestBody(jsonType)).build())
+    }
+
     fun sysinfo(): JSONObject = sync(base("/health/sysinfo").get().build())
 
     fun healthDetailed(): JSONObject = sync(base("/health/detailed").get().build())
