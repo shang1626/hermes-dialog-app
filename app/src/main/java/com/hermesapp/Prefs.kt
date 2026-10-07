@@ -144,4 +144,28 @@ class Prefs(ctx: Context) {
     var shellCleanupDone: Boolean
         get() = sp.getBoolean("shell_cleanup_done", false)
         set(v) { sp.edit().putBoolean("shell_cleanup_done", v).apply() }
+
+    /**
+     * 已经弹过系统通知的收件箱条目 id（逗号分隔，只留最近 100 个）。
+     *
+     * 为什么要落盘：这个去重集合原来只在内存里，App 一重启就空了——用户不进定时任务页
+     * 把条目点成已读的话，每次重启都会把同一条未读再响一遍。通知的语义是「提醒一次」，
+     * 不是「每次开机提醒」，所以去重必须跨重启。
+     * 注意：弹过通知 ≠ 已读，未读标记仍留着，进定时任务页照样能看见红点。
+     */
+    fun notifiedReportIds(): Set<String> {
+        val raw = sp.getString("notified_reports", "") ?: ""
+        if (raw.isEmpty()) return emptySet()
+        return raw.split(',').filter { it.isNotEmpty() }.toSet()
+    }
+
+    fun markReportNotified(id: String) {
+        if (id.isEmpty()) return
+        val list = (sp.getString("notified_reports", "") ?: "")
+            .split(',').filter { it.isNotEmpty() }.toMutableList()
+        if (list.contains(id)) return
+        list.add(id)
+        while (list.size > 100) list.removeAt(0)
+        sp.edit().putString("notified_reports", list.joinToString(",")).apply()
+    }
 }
