@@ -11,92 +11,64 @@ import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.TransferListener
 import java.io.File
 import java.io.RandomAccessFile
+import java.util.ArrayDeque
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * 流式语音播放（方案丙）：服务端边合成边把 mp3 块通过 SSE 的 audio.delta 事件推过来，
- * 这里边收边写本地文件，播放器拿这个「正在增长的文件」当数据源边读边播。
+ * 流式语音播放（方案丙）+ 多任务串行队列。
  *
- * 为什么用文件而不是内存队列：ExoPlayer 要能 seek（它会先探 mp3 头、可能回退重读），
- * 文件天然支持随机读；内存队列要把 seek 语义自己实现一遍，容易出杂音。块到达即落盘，
- * 播完文件就是完整的，重播/兜底都用它。
+ * 服务端边合成边把 mp3 块通过 SSE 的 audio.delta 推过来，这里边收边写本地文件，
+ * 播放器拿「正在增长的文件」当数据源边读边播：首块约 1 秒就出声（原来要等整段合成完）。
+ * 为什么用文件不用内存队列：ExoPlayer 要 seek（探 mp3 头、可能回退重读），文件天然支持随机读。
  *
- * 出声时间：实测首块 1.05 秒就绪 → 约 1 秒就能开始播（原来要等整段合成完，
- * 1000 字 14 秒、3000 字 21 秒）。
+ * 2.116 起改成队列：一条任务的语音正在播时，别的任务完成的语音不再抢麦把它打断，
+ * 而是各自收完、落盘、按到达顺序排队，等前一条播完再依次播。
+ * 外部播放器（气泡重播按钮 / 老的整段附件）要出声时，只让「正在播的这条」让位，
+ * 排队的其余任务保留，等它播完自动接着播。
  *
- * 降级：服务端关掉 api_server_tts_stream 时走原来的整段 MEDIA 附件，
- * 由 VoicePlayer 那条老路播放，本类完全不参与。
- *
- * 线程约束（2.111 修复）：ExoPlayer 硬性要求「创建、prepare、play、release」都发生在
- * 带 Looper 的线程（主线程）。本类的方法是从 SSE 回调线程（OkHttp 线程池，无 Looper）
- * 调进来的，直接在上面 new ExoPlayer 会抛异常并被 catch 吞掉 → 播放器从未起播 →
- * nowPlaying 被清空 → 后续 audio.delta 因「nowPlaying 为空」全被忽略 → 全程无声。
- * 所以所有播放器操作统一 post 到主线程；文件读写仍在原线程（文件 IO 无所谓线程）。
+ * 线程约束（2.111 修复）：ExoPlayer 硬性要求创建/prepare/play/release 都发生在
+ * 带 Looper 的线程（主线程）。本类方法从 SSE 回调线程（OkHttp 线程池，无 Looper）调进来，
+ * 直接 new ExoPlayer 会抛异常并被 catch 吞掉 -> 全程无声。所以播放器操作统一 post 到主线程，
+ * 文件读写留在原线程。
  */
 object StreamVoicePlayer {
 
-    @Volatile
-    private var player: ExoPlayer? = null
+    /** 一条任务的语音流：文件、写句柄、收尾标志。多个任务各持一份，互不覆盖。 */
+    private class Item(val key: String, val runId: String, val file: File) {
+        @Volatile var raf: RandomAccessFile? = null
+        @Volatile var player: ExoPlayer? = null
+        @Volatile var ended = false
+        @Volatile var firstLogged = false
+    }
 
-    @Volatile
-    private var file: File? = null
+    private val items = ConcurrentHashMap<String, Item>()
 
-    @Volatile
-    private var raf: RandomAccessFile? = null
+    /** 到达顺序：队首 = 下一条该播的。 */
+    private val order = ArrayDeque<String>()
 
-    @Volatile
-    private var finished = false
+    /** 当前在播的 key；空闲为空串。 */
+    @Volatile private var activeKey = ""
 
-    /** 当前流式播放的会话/来源标识；空闲为空串。界面靠它切按钮状态。 */
+    @Volatile private var appCtx: Context? = null
+
+    /** 语速（与 VoicePlayer / VoiceReplayPlayer 同源，由设置页写入）。 */
+    @Volatile var rate: Float = 1.0f
+
+    /** 当前流式播放的 key；空闲为空串。 */
     private val _nowPlaying = MutableStateFlow("")
     val nowPlaying: StateFlow<String> = _nowPlaying.asStateFlow()
 
-    /** 语速（与 VoicePlayer 同源，由设置页写入）。 */
-    @Volatile
-    var rate: Float = 1.0f
+    private val dropped = ConcurrentHashMap.newKeySet<String>()
 
-    /** 主线程 Handler：所有 ExoPlayer 操作都投到这里执行（见类注释的线程约束）。 */
+    /** 主线程 Handler：所有 ExoPlayer 操作都投到这里执行。 */
     private val main = Handler(Looper.getMainLooper())
 
-    /** 已在主线程就直跑，否则 post 过去（保持调用顺序）。 */
     private fun onMain(block: () -> Unit) {
         if (Looper.myLooper() == Looper.getMainLooper()) block() else main.post(block)
     }
-
-    /**
-     * 收到 audio.start：开一条新的流式播报。
-     * 会先掐掉上一条（同一个 App 只响一条，避免叠着念）。
-     */
-    fun begin(ctx: Context, key: String, runId: String = "") {
-        stop()
-        // 互斥：新一条流式播报起播前，掐掉另两个播放器。
-        VoicePlayer.stop()
-        VoiceReplayPlayer.stop()
-        try {
-            // 按 run 命名：一条消息对应一个文件，重播按钮与流式播放共用它。
-            val f = voiceFile(ctx, runId)
-            // 清掉上一轮残留：ExoPlayer 会读到旧字节，导致先播上一段语音。
-            runCatching { f.delete() }
-            f.createNewFile()
-            file = f
-            raf = RandomAccessFile(f, "rw")
-            ended = false
-            finished = false
-            firstDeltaLogged = false
-            dropLogged = false
-            _nowPlaying.value = key
-            AppLog.log("voice", "流式语音开始 key=" + key + " 文件=" + f.absolutePath)
-        } catch (e: Exception) {
-            AppLog.err("voice", "流式语音开文件失败", e)
-            _nowPlaying.value = ""
-        }
-    }
-
-    /** 诊断：首个音频块、以及「块到了却没有文件句柄」各只记一次，平时零噪声。 */
-    @Volatile private var firstDeltaLogged = false
-    @Volatile private var dropLogged = false
 
     /** 某个 run 的语音文件（重播与流式共用同一份）。runId 为空时退回单文件。 */
     fun voiceFile(ctx: Context, runId: String): File {
@@ -105,76 +77,165 @@ object StreamVoicePlayer {
         return File(dir, runId + ".mp3")
     }
 
-    /** 收到 audio.delta：把这一块追加进文件。 */
-    fun append(ctx: Context, b64: String) {
-        val r = raf
-        if (r == null) {
-            if (!dropLogged) {
-                dropLogged = true
-                AppLog.log("voice", "音频块到达但无文件句柄（nowPlaying=" + _nowPlaying.value +
-                    "）——begin 未生效或已被 stop")
+    /**
+     * 收到 audio.start：建文件、入队。
+     * 不再掐掉别人——前面有语音在播就排队等，保证同一时刻只响一条。
+     */
+    @Synchronized
+    fun begin(ctx: Context, key: String, runId: String = "") {
+        appCtx = ctx.applicationContext
+        if (items.containsKey(key)) return          // 同一个 run 重复 start：忽略
+        try {
+            val f = voiceFile(ctx, runId)
+            runCatching { f.delete() }              // 清上一轮残留，避免先播旧字节
+            f.createNewFile()
+            val it = Item(key, runId, f)
+            it.raf = RandomAccessFile(f, "rw")
+            items[key] = it
+            order.addLast(key)
+            AppLog.log("voice", "语音入队 key=" + key + " 文件=" + f.absolutePath + " 队列=" + order.size)
+        } catch (e: Exception) {
+            AppLog.err("voice", "语音开文件失败", e)
+        }
+        pump()
+    }
+
+    /** 收到 audio.delta：按 key 追加进对应任务的文件（不管有没有轮到它播）。 */
+    fun append(ctx: Context, key: String, b64: String) {
+        val it = items[key]
+        val r = it?.raf
+        if (it == null || r == null) {
+            if (dropped.add(key)) {
+                AppLog.log("voice", "音频块到达但无对应条目 key=" + key + "（begin 未生效或已被取消）")
             }
             return
         }
         try {
             val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
             if (bytes.isEmpty()) return
-            r.seek(r.length())
-            r.write(bytes)
-            if (!firstDeltaLogged) {
-                firstDeltaLogged = true
-                AppLog.log("voice", "首个音频块 " + bytes.size + " 字节 文件长=" + r.length())
+            synchronized(it) {
+                r.seek(r.length())
+                r.write(bytes)
             }
-            startIfReady(ctx)     // 有数据就起播：首个 6KB 块到达即出声
+            if (!it.firstLogged) {
+                it.firstLogged = true
+                AppLog.log("voice", "首个音频块 " + bytes.size + " 字节 key=" + key + " 文件长=" + r.length())
+            }
+            pump()
         } catch (e: Exception) {
             AppLog.err("voice", "流式语音写入失败", e)
         }
     }
 
-    /**
-     * 收到 audio.end：标记写完，并启动播放（若还没开始播）。
-     * 提前 start 会读不到数据；这里等有数据了再起。
-     */
-    fun end(ctx: Context) {
-        ended = true           // 告诉数据源：写完可以收尾了（read 才会给 -1）
-        startIfReady(ctx)     // 兜底：块都很小时也能起播
+    /** 收到 audio.end：标记写完；轮到它时 pump 会起播（数据源读到末尾自然收尾）。 */
+    fun end(ctx: Context, key: String) {
+        items[key]?.ended = true
+        pump()
     }
 
     /**
-     * 第一块到达后就可以起播：ExoPlayer 读不到数据会自动重试等待，
-     * 但要给它一个能算出长度的数据源，所以用「文件当前长度」当已知上限、
-     * 文件增长时后续继续读。
-     *
-     * 注意：这里只是把真正的起播动作投到主线程，绝不在调用线程 new ExoPlayer。
+     * 队列推进：没有别的语音在响时，让队首那条「已有数据」的起播。
+     * 只在这里起播，保证同一时刻只有一条出声。
      */
-    fun startIfReady(ctx: Context) {
-        onMain { startOnMain(ctx) }
+    @Synchronized
+    private fun pump() {
+        if (activeKey.isNotEmpty()) return
+        if (VoicePlayer.nowPlaying.value.isNotEmpty()) return        // 老附件路径在响
+        if (VoiceReplayPlayer.nowPlaying.value.isNotEmpty()) return  // 手动重播在响
+        val ctx = appCtx ?: return
+        while (true) {
+            val k = order.peekFirst() ?: return
+            val it = items[k]
+            if (it == null) {
+                order.removeFirst()
+                continue
+            }
+            val len = it.file.length()
+            if (len <= 0L) {
+                if (it.ended) {          // 空音频：丢掉，别堵住队列
+                    order.removeFirst()
+                    items.remove(k)
+                    closeItem(it)
+                    continue
+                }
+                return                   // 还没数据，等下一块
+            }
+            activeKey = k
+            _nowPlaying.value = k
+            onMain { startOnMain(ctx, k) }
+            return
+        }
+    }
+
+    /** 外部播放器播完了 / 用户按了停止：让队列接着走。 */
+    fun resumeQueue() {
+        pump()
     }
 
     /**
-     * 立刻把当前正在播的流式语音改成新的 rate（设置页调语速时用）。
-     * 没有在播就什么都不做——rate 字段已经更新，下次起播自然用新速度。
-     * ExoPlayer 允许播放中改速；失败静默（个别机型/状态会抛，不影响后续播放）。
+     * 外部播放器（重播 / 老附件）要出声：只让「正在播的这条」让位。
+     * 条目保留在队首，等外部播完从头接着播（队列不丢）。
+     */
+    @Synchronized
+    fun yield() {
+        val k = activeKey
+        if (k.isEmpty()) return
+        activeKey = ""
+        _nowPlaying.value = ""
+        val it = items[k]
+        val old = it?.player
+        it?.player = null
+        onMain {
+            runCatching { old?.stop() }
+            runCatching { old?.release() }
+        }
+    }
+
+    /** 去掉某个 run 的流式条目（用户已用重播按钮放它，留着会播两遍）。 */
+    @Synchronized
+    fun cancelRun(runId: String) {
+        if (runId.isEmpty()) return
+        val keys = items.values.filter { it.runId == runId }.map { it.key }
+        for (k in keys) {
+            val it = items.remove(k) ?: continue
+            order.remove(k)
+            if (activeKey == k) {
+                activeKey = ""
+                _nowPlaying.value = ""
+            }
+            val old = it.player
+            it.player = null
+            onMain {
+                runCatching { old?.stop() }
+                runCatching { old?.release() }
+            }
+            closeItem(it)
+        }
+    }
+
+    /**
+     * 立刻把当前正在播的流式语音改成新 rate（设置页调语速时用）。
+     * 没在播就什么都不做——rate 字段已更新，下次起播自然用新速度。
      */
     fun applyRateNow() {
         val r = rate
+        val k = activeKey
+        val it = if (k.isEmpty()) null else items[k]
         onMain {
-            runCatching {
-                player?.setPlaybackSpeed(r.coerceIn(0.5f, 2.0f))
-            }
+            runCatching { it?.player?.setPlaybackSpeed(r.coerceIn(0.5f, 2.0f)) }
         }
     }
 
     /** 真正起播：必须在主线程执行（ExoPlayer 的硬性要求）。 */
-    private fun startOnMain(ctx: Context) {
-        val p = player
-        if (p != null) return              // 已经在播
-        val f = file ?: return
-        if (f.length() <= 0) return        // 还没有数据，等下一块
+    private fun startOnMain(ctx: Context, key: String) {
+        val it = items[key] ?: return
+        if (it.player != null) return
+        val f = it.file
+        if (f.length() <= 0) return
         try {
             val exo = ExoPlayer.Builder(ctx).build()
-            player = exo
-            val ds = GrowingFileDataSource(f) { ended }
+            it.player = exo
+            val ds = GrowingFileDataSource(f) { it.ended }
             val src = ProgressiveMediaSource.Factory { ds }
                 .createMediaSource(MediaItem.fromUri("file://stream_voice"))
             exo.setMediaSource(src)
@@ -186,62 +247,85 @@ object StreamVoicePlayer {
             exo.playWhenReady = true
             exo.addListener(object : androidx.media3.common.Player.Listener {
                 override fun onPlaybackStateChanged(state: Int) {
-                    if (state == androidx.media3.common.Player.STATE_ENDED) {
-                        releaseQuietly()
+                    if (state == androidx.media3.common.Player.STATE_ENDED && it.player === exo) {
+                        finishItem(key)
                     }
                 }
             })
-            AppLog.log("voice", "流式语音已起播 已知长度=" + f.length())
+            AppLog.log("voice", "流式语音已起播 key=" + key + " 已知长度=" + f.length() + " 队列剩=" + order.size)
         } catch (e: Exception) {
             AppLog.err("voice", "流式语音起播失败", e)
-            releaseQuietly()
+            it.player = null
+            if (activeKey == key) {
+                activeKey = ""
+                _nowPlaying.value = ""
+            }
+            order.remove(key)
+            items.remove(key)
+            closeItem(it)
+            pump()
         }
     }
 
-    /**
-     * 停掉并释放当前播放器。
-     *
-     * 关键：先在**调用线程**把 player/raf 引用摘下来（存局部变量），再把「旧对象」交给主线程关闭，
-     * 并且**不在这里动 _nowPlaying**（由调用方按顺序维护）。
-     *
-     * 为什么不能把清空写进主线程的延迟块：begin() 是「先 stop()、再设 key/raf」，两步都在调用线程
-     * 顺序执行；若 stop() 的清空动作被 post 到主线程延后执行，它就会在 begin() 设好新 key 之后
-     * 才跑来清空 —— nowPlaying 变空 → 后续 audio.delta 全被 `isNotEmpty()` 判假丢弃；
-     * raf 被置空 → append() 直接 return，一个字节都不写。这正是 2.111 真机无声的真因。
-     */
-    private fun releaseQuietly() {
-        val oldPlayer = player
-        val oldRaf = raf
-        player = null
-        raf = null
+    /** 一条播完：释放它，队列推进到下一条。 */
+    @Synchronized
+    private fun finishItem(key: String) {
+        val it = items.remove(key) ?: return
+        order.remove(key)
+        if (activeKey == key) {
+            activeKey = ""
+            _nowPlaying.value = ""
+        }
+        val old = it.player
+        it.player = null
         onMain {
-            runCatching { oldPlayer?.stop() }
-            runCatching { oldPlayer?.release() }
-            runCatching { oldRaf?.close() }
+            runCatching { old?.stop() }
+            runCatching { old?.release() }
         }
+        closeItem(it)
+        AppLog.log("voice", "流式语音播完 key=" + key + " 队列剩=" + order.size)
+        pump()
     }
 
-    /** 停止播放（用户按钮 / 新一轮开始）。同步清 nowPlaying，避免与 begin 的顺序错位。 */
+    private fun closeItem(it: Item) {
+        val r = it.raf
+        it.raf = null
+        onMain { runCatching { r?.close() } }
+    }
+
+    /** 停止全部流式播放并清空队列（用户按停止 / 关掉语音开关）。 */
+    @Synchronized
     fun stop() {
-        ended = true
+        val olds = items.values.map { it.player }
+        val rafs = items.values.map { it.raf }
+        items.values.forEach {
+            it.player = null
+            it.raf = null
+        }
+        items.clear()
+        order.clear()
+        activeKey = ""
         _nowPlaying.value = ""
-        releaseQuietly()
+        onMain {
+            for (p in olds) {
+                runCatching { p?.stop() }
+                runCatching { p?.release() }
+            }
+            for (r in rafs) runCatching { r?.close() }
+        }
     }
 
     /**
      * 数据源：读一个「边写边读」的文件。
      *
-     * 关键：**文件还没写完时绝不能返回 -1**。media3 把 read() == -1 当成「流结束」，
-     * 会在首块播完时立刻 STATE_ENDED 并释放播放器 —— 后面的块全部丢掉（只响半句）。
-     * 所以这里在没数据可读时「等一小会再试」（最多等 WAIT_MS），只有真的收尾了
-     * （audio.end 已到 + 数据读完）才返回 -1。
-     *
-     * 读操作跑在 ExoPlayer 的加载线程上，短暂 sleep 不会卡界面。
-     * open() 返回 C.LENGTH_UNSET：长度未知，让它一直读到我们给 -1 为止。
+     * 关键：文件还没写完时绝不能返回 -1。media3 把 read() == -1 当「流结束」，会在首块播完
+     * 立刻 STATE_ENDED 释放播放器，后面的块全丢（只响半句）。所以没数据可读时「等一小会再试」
+     * （最多 WAIT_MS），只有真的收尾（audio.end 已到 + 数据读完）才返回 -1；等待超时也返回 -1，
+     * 宁可提前收尾，也不把加载线程永久卡住。
+     * 嵌套类读不到外部 object 的成员，收尾标志只能由构造参数传进来。
      */
     private class GrowingFileDataSource(
         private val f: File,
-        /** 收尾标志：audio.end 已到。嵌套类读不到外部 object 的成员，只能传进来。 */
         private val isEnded: () -> Boolean,
     ) : DataSource {
         private var raf: RandomAccessFile? = null
@@ -255,7 +339,7 @@ object StreamVoicePlayer {
             val r = RandomAccessFile(f, "r")
             raf = r
             r.seek(pos)
-            return -1L    // 长度未知：让它一直读到我们给 -1 为止（C.LENGTH_UNSET 是 Int，返回 Long 处不能直接用）
+            return -1L    // 长度未知：让它一直读到我们给 -1 为止
         }
 
         override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
@@ -272,8 +356,6 @@ object StreamVoicePlayer {
                         return n
                     }
                 }
-                // 收尾了就是真结束；否则等一小会再试（合成比播放慢时属正常）。
-                // 等待超时也返回 -1：宁可提前收尾，也不把 ExoPlayer 的加载线程永久卡住。
                 if (isEnded() || System.currentTimeMillis() >= deadline) return -1
                 Thread.sleep(20)
             }
@@ -288,8 +370,4 @@ object StreamVoicePlayer {
 
         override fun addTransferListener(transferListener: TransferListener) {}
     }
-
-    /** audio.end 已到：数据读完就可以给 -1（否则 read 会一直等）。 */
-    @Volatile
-    private var ended = false
 }

@@ -338,13 +338,19 @@ private const val REWRITTEN_ROW_WINDOW_MS = 120_000L
 
 /**
  * 历史域名 → 当前域名。App 把服务器地址存在 prefs 里（登录时填的那次），
- * 就地升级不会改；域名一换（如 2026-10-06 从 .example-old.com 换到 .example.com），
- * 老用户的地址就成了死链，表现正是「一直重连连不上」。
+ * 就地升级不会改；域名一换，老用户的地址就成了死链，表现正是「一直重连连不上」。
  * 命中即静默改写成新地址，用户不用重新登录。
+ *
+ * 具体域名对不写进源码：由 local.properties 的 HERMES_LEGACY_HOSTS
+ * （形如 old.example.com=new.example.com，多个用逗号分隔）在构建期注入。
  */
-private val LEGACY_HOSTS = mapOf(
-    "your-gateway.example.com" to "your-gateway.example.com",
-)
+private val LEGACY_HOSTS: Map<String, String> = BuildConfig.LEGACY_HOSTS
+    .split(",")
+    .mapNotNull {
+        val i = it.indexOf('=')
+        if (i <= 0) null else it.substring(0, i).trim() to it.substring(i + 1).trim()
+    }
+    .toMap()
 
 /** 断线丢事件时补进正文的提示行。 */
 private const val TRUNCATED_NOTICE = "\n[提示] 断线期间有内容未收到，已从服务端补拉最新结果\n"
@@ -1162,8 +1168,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * 老域名静默迁移：把 prefs 里存的历史域名换成当前域名。
      *
      * 为什么必须做：服务器地址是登录时写进 prefs 的，就地升级（不重新登录）
-     * 时不会更新。域名一旦迁移（2026-10-06 .example-old.com → .example.com），
-     * 老用户的地址就指向死链，表现就是「一直重连连不上、怎么都连不上」。
+     * 时不会更新。域名一旦迁移，老用户的地址就指向死链，
+     * 表现就是「一直重连连不上、怎么都连不上」。
+     * 新老域名对照见 local.properties 的 HERMES_LEGACY_HOSTS（构建期注入，源码不留真值）。
      * 这里只做主机名替换，路径/端口/协议原样保留。
      */
     private fun migrateLegacyHost(p: Prefs) {
@@ -3308,14 +3315,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     "audio.delta" -> {
                         if (prefs.playCompletionVoice) {
-                            StreamVoicePlayer.append(getApplication(), ev.data.optString("data", ""))
+                            StreamVoicePlayer.append(getApplication(), "stream:" + rid, ev.data.optString("data", ""))
                         }
                     }
                     "audio.end" -> {
                         AppLog.log("stream", "语音流结束 run=" + rid.take(12) +
                             " 块数=" + ev.data.optInt("chunks", 0))
                         if (prefs.playCompletionVoice) {
-                            StreamVoicePlayer.end(getApplication())
+                            StreamVoicePlayer.end(getApplication(), "stream:" + rid)
                         }
                     }
                     "approval.request" -> attachApproval(r, ev)

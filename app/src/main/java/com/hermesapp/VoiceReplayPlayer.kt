@@ -49,10 +49,13 @@ object VoiceReplayPlayer {
 
     /** 取字节（本机留档优先）→ 落盘 → 播放；先置状态，界面立刻切成「停止」。 */
     private fun play(ctx: Context, runId: String) {
-        // 互斥：点重播先掐掉正在响的流式自动播报，否则两条叠着念、且都停不掉对方。
-        VoicePlayer.stop()
-        StreamVoicePlayer.stop()
+        // 互斥：点重播先让流式自动播报让位（正在播的那条停下、排队的保留）。
+        // 然后取消这条 run 自己的流式排队项——用户已经手动放了它，留着会再播一遍。
+        StreamVoicePlayer.yield()
+        StreamVoicePlayer.cancelRun(runId)
+        // 同上：先标「在播」再停对方，防队列抢跑。
         _nowPlaying.value = runId
+        VoicePlayer.stop()
         Thread {
             try {
                 // 先看本机留档：流式播过的那条已经落盘，这里是纯本地读，即时。
@@ -90,6 +93,7 @@ object VoiceReplayPlayer {
                 if (player === it) {
                     player = null
                     _nowPlaying.value = ""
+                    StreamVoicePlayer.resumeQueue()   // 重播结束，队列接着播
                 }
             }
             mp.setOnErrorListener { p, what, extra ->
@@ -98,6 +102,7 @@ object VoiceReplayPlayer {
                 if (player === p) {
                     player = null
                     _nowPlaying.value = ""
+                    StreamVoicePlayer.resumeQueue()
                 }
                 true
             }
@@ -119,8 +124,11 @@ object VoiceReplayPlayer {
         val p = player
         player = null
         _nowPlaying.value = ""
-        if (p == null) return
-        runCatching { if (p.isPlaying) p.stop() }
-        runCatching { p.release() }
+        if (p != null) {
+            runCatching { if (p.isPlaying) p.stop() }
+            runCatching { p.release() }
+        }
+        // 让位结束：排队的流式语音接着播（「停全部」时队列已清空，这里是空操作）。
+        StreamVoicePlayer.resumeQueue()
     }
 }

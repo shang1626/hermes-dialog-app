@@ -73,11 +73,14 @@ object VoicePlayer {
     /** 取字节 → 落临时文件 → 播放；先置状态，界面立刻切成「停止」。 */
     private fun playTarget(ctx: Context, target: String) {
         if (target.isEmpty()) return
-        // 互斥：同一时刻只允许一条语音在响。三个播放器各持一份状态、互不相识，
-        // 不在这里掐掉另外两个，就会出现「两条一起响、只停得掉自己那条」。
-        StreamVoicePlayer.stop()
-        VoiceReplayPlayer.stop()
+        // 互斥：同一时刻只允许一条语音在响。
+        // 流式那边只让「正在播的那条」让位（yield），排队的其余任务保留，等这里播完接着播；
+        // 重播播放器则整个停掉（用户主动切到这条，旧的重播不该再续）。
+        StreamVoicePlayer.yield()
+        // 先把自己标成「在播」，再停对方——否则 stop() 触发的队列推进会以为没人播、
+        // 抢先起播下一条（pump 会检查本播放器的 nowPlaying，非空即让路）。
         _nowPlaying.value = target
+        VoiceReplayPlayer.stop()
         Thread {
             var fail: Throwable? = null
             val bytes = runCatching {
@@ -113,6 +116,7 @@ object VoicePlayer {
                 if (player === it) {
                     player = null
                     _nowPlaying.value = ""
+                    StreamVoicePlayer.resumeQueue()   // 本播放器让位结束，队列接着播
                 }
             }
             mp.setOnErrorListener { p, what, extra ->
@@ -121,6 +125,7 @@ object VoicePlayer {
                 if (player === p) {
                     player = null
                     _nowPlaying.value = ""
+                    StreamVoicePlayer.resumeQueue()
                 }
                 true
             }
@@ -143,8 +148,11 @@ object VoicePlayer {
         val p = player
         player = null
         _nowPlaying.value = ""
-        if (p == null) return
-        runCatching { if (p.isPlaying) p.stop() }
-        runCatching { p.release() }
+        if (p != null) {
+            runCatching { if (p.isPlaying) p.stop() }
+            runCatching { p.release() }
+        }
+        // 让位结束：排队的流式语音接着播（若本次是「停全部」，队列已被清空，这里是空操作）。
+        StreamVoicePlayer.resumeQueue()
     }
 }

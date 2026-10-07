@@ -1,14 +1,18 @@
 package com.hermesapp
 
-/** Self-use build: profile keys + app login gate. */
+/**
+ * 构建期注入的配置。
+ *
+ * 真值不写进源码：本地开发时由 local.properties（已被 .gitignore 排除）在构建期
+ * 通过 BuildConfig 注入；公开仓库里的源码这些字段为空，部署者自行在
+ * local.properties 里填写自己的服务域名、更新域名与密钥。
+ */
 object Keys {
-    const val APP_PASSWORD = "YOUR_APP_PASSWORD"
-    const val DEFAULT_KEY = "YOUR_DEFAULT_PROFILE_API_KEY"
-    const val FRIEND_KEY = "YOUR_FRIEND_PROFILE_API_KEY"
-    // 2026-10-06 起走腾讯 EdgeOne（国内节点，首字节约 0.25s，原 CF 约 1.1s）。
-    // 对话走 hermes.*，更新分发走 gx.*（EdgeOne 上两条独立域名，各指不同源站端口）。
-    const val DEFAULT_URL = "https://your-gateway.example.com"
-    const val UPDATE_URL = "https://your-update.example.com/update/version.json"
+    val APP_PASSWORD = BuildConfig.APP_PASSWORD
+    val DEFAULT_KEY = BuildConfig.DEFAULT_KEY
+    val FRIEND_KEY = BuildConfig.FRIEND_KEY
+    val DEFAULT_URL = BuildConfig.DEFAULT_URL
+    val UPDATE_URL = BuildConfig.UPDATE_URL
 }
 
 data class UpdateInfo(
