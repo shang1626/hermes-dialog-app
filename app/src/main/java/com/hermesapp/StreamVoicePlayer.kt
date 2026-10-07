@@ -1,6 +1,8 @@
 package com.hermesapp
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
@@ -26,6 +28,12 @@ import kotlinx.coroutines.flow.asStateFlow
  *
  * 降级：服务端关掉 api_server_tts_stream 时走原来的整段 MEDIA 附件，
  * 由 VoicePlayer 那条老路播放，本类完全不参与。
+ *
+ * 线程约束（2.111 修复）：ExoPlayer 硬性要求「创建、prepare、play、release」都发生在
+ * 带 Looper 的线程（主线程）。本类的方法是从 SSE 回调线程（OkHttp 线程池，无 Looper）
+ * 调进来的，直接在上面 new ExoPlayer 会抛异常并被 catch 吞掉 → 播放器从未起播 →
+ * nowPlaying 被清空 → 后续 audio.delta 因「nowPlaying 为空」全被忽略 → 全程无声。
+ * 所以所有播放器操作统一 post 到主线程；文件读写仍在原线程（文件 IO 无所谓线程）。
  */
 object StreamVoicePlayer {
 
@@ -48,6 +56,14 @@ object StreamVoicePlayer {
     /** 语速（与 VoicePlayer 同源，由设置页写入）。 */
     @Volatile
     var rate: Float = 1.0f
+
+    /** 主线程 Handler：所有 ExoPlayer 操作都投到这里执行（见类注释的线程约束）。 */
+    private val main = Handler(Looper.getMainLooper())
+
+    /** 已在主线程就直跑，否则 post 过去（保持调用顺序）。 */
+    private fun onMain(block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) block() else main.post(block)
+    }
 
     /**
      * 收到 audio.start：开一条新的流式播报。
@@ -99,8 +115,15 @@ object StreamVoicePlayer {
      * 第一块到达后就可以起播：ExoPlayer 读不到数据会自动重试等待，
      * 但要给它一个能算出长度的数据源，所以用「文件当前长度」当已知上限、
      * 文件增长时后续继续读。
+     *
+     * 注意：这里只是把真正的起播动作投到主线程，绝不在调用线程 new ExoPlayer。
      */
     fun startIfReady(ctx: Context) {
+        onMain { startOnMain(ctx) }
+    }
+
+    /** 真正起播：必须在主线程执行（ExoPlayer 的硬性要求）。 */
+    private fun startOnMain(ctx: Context) {
         val p = player
         if (p != null) return              // 已经在播
         val f = file ?: return
@@ -132,14 +155,17 @@ object StreamVoicePlayer {
         }
     }
 
+    /** 释放播放器：播放器操作（stop/release）也必须在主线程。 */
     private fun releaseQuietly() {
-        val p = player
-        player = null
-        _nowPlaying.value = ""
-        runCatching { p?.stop() }
-        runCatching { p?.release() }
-        runCatching { raf?.close() }
-        raf = null
+        onMain {
+            val p = player
+            player = null
+            _nowPlaying.value = ""
+            runCatching { p?.stop() }
+            runCatching { p?.release() }
+            runCatching { raf?.close() }
+            raf = null
+        }
     }
 
     fun stop() {
