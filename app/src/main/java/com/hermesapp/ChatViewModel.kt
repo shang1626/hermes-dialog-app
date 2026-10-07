@@ -3435,8 +3435,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // 正文只保留任务真实产出，避免一次抖动就在会话里留一条错行。
                 r.coalescer?.flushNow()
                 if (r.busy.value && !r.finished) {
-                    if (r.retryNote.value.isEmpty()) r.retryNote.value = "连接中断：" + (e.message ?: "未知")
-                    maybeContinue(sid)
+                    // 2026-10-08：404 不是网络抖动，是服务端已经没有这条 run 的 SSE 缓冲了。
+                    // 再按退避重起流只会每次都秒 404（实测一条 run 连撞 24 次，用户得手动点停止），
+                    // 所以这里不走 maybeContinue 的「探测→重起流」，直接转翻历史等答案落盘。
+                    if (e is com.hermesapp.net.RunStreamGoneException) {
+                        AppLog.log("retry", "流 404（服务端缓冲已回收），转翻历史 run=" + rid.take(12))
+                        r.retryNote.value = "事件流已断开，正在从服务端取回结果…"
+                        r.autoContinue = MAX_RECONNECT_ATTEMPTS   // 跳过退避重起流
+                        startHistoryRecovery(sid, rid)
+                    } else {
+                        if (r.retryNote.value.isEmpty()) r.retryNote.value = "连接中断：" + (e.message ?: "未知")
+                        maybeContinue(sid)
+                    }
                 }
             },
             // 心跳等任何一行都刷新活跃时间：长工具执行期间只有心跳、没有真实事件，
