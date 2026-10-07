@@ -502,6 +502,25 @@ class HermesApi(
         ""
     }
 
+    /** 按 run_id 取长期留档的完成语音；服务端没有（未开 TTS/已淘汰）返回 null。 */
+    fun downloadVoice(runId: String): ByteArray? {
+        if (runId.isEmpty()) return null
+        val req = base("/v1/voice/" + runId).get().build()
+        return try {
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    AppLog.log("voice", "取留档语音 HTTP " + resp.code + " run=" + runId.take(12))
+                    null
+                } else {
+                    resp.body?.bytes()?.takeIf { it.isNotEmpty() }
+                }
+            }
+        } catch (e: Exception) {
+            AppLog.err("voice", "取留档语音失败 run=" + runId.take(12), e)
+            null
+        }
+    }
+
     fun streamEvents(
         runId: String,
         lastSeq: Int,

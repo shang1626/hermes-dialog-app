@@ -222,6 +222,7 @@ class SessionStore(ctx: Context, private val profile: String) {
                         subagents = subs,
                         // 进行中气泡的计时起点：不读回来的话，重开 App 后实时耗时会从 0 重新算。
                         startedAt = o.optLong("startedAt", 0L),
+                        runId = o.optString("runId", ""),
                     )
                 )
             }
@@ -249,6 +250,7 @@ class SessionStore(ctx: Context, private val profile: String) {
             for (m in tail) {
                 val o = JSONObject().put("role", m.role).put("text", m.text).put("ts", m.ts)
                 if (m.trace.isNotEmpty()) o.put("trace", m.trace)
+                if (m.runId.isNotEmpty()) o.put("runId", m.runId)
                 if (m.quote.isNotEmpty()) o.put("quote", m.quote)
                 if (m.steer) o.put("steer", true)
                 if (m.images.isNotEmpty()) {

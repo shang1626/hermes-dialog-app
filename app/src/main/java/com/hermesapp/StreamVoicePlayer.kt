@@ -69,10 +69,11 @@ object StreamVoicePlayer {
      * 收到 audio.start：开一条新的流式播报。
      * 会先掐掉上一条（同一个 App 只响一条，避免叠着念）。
      */
-    fun begin(ctx: Context, key: String) {
+    fun begin(ctx: Context, key: String, runId: String = "") {
         stop()
         try {
-            val f = File(ctx.cacheDir, "stream_voice.mp3")
+            // 按 run 命名：一条消息对应一个文件，重播按钮与流式播放共用它。
+            val f = voiceFile(ctx, runId)
             // 清掉上一轮残留：ExoPlayer 会读到旧字节，导致先播上一段语音。
             runCatching { f.delete() }
             f.createNewFile()
@@ -93,6 +94,13 @@ object StreamVoicePlayer {
     /** 诊断：首个音频块、以及「块到了却没有文件句柄」各只记一次，平时零噪声。 */
     @Volatile private var firstDeltaLogged = false
     @Volatile private var dropLogged = false
+
+    /** 某个 run 的语音文件（重播与流式共用同一份）。runId 为空时退回单文件。 */
+    fun voiceFile(ctx: Context, runId: String): File {
+        if (runId.isEmpty()) return File(ctx.cacheDir, "stream_voice.mp3")
+        val dir = File(ctx.cacheDir, "voice_replay").apply { mkdirs() }
+        return File(dir, runId + ".mp3")
+    }
 
     /** 收到 audio.delta：把这一块追加进文件。 */
     fun append(ctx: Context, b64: String) {

@@ -984,8 +984,10 @@ fun Bubble(
                     else -> c.dim
                 }
                 // 语音附件的迷你图标：跟时间并排同一行，不单独占一行。
+                // 流式模式下正文里没有附件，按钮改看消息的 runId（服务端长期留档）。
                 val voiceTarget = remember(m.text) { VoicePlayer.audioTarget(m.text) }
-                if (rc != null || m.ts > 0 || voiceTarget.isNotEmpty() || m.steer) {
+                val replayRunId = m.runId
+                if (rc != null || m.ts > 0 || voiceTarget.isNotEmpty() || replayRunId.isNotEmpty() || m.steer) {
                     Spacer(Modifier.height(4.dp))
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -1015,6 +1017,11 @@ fun Bubble(
                         if (voiceTarget.isNotEmpty()) {
                             Spacer(Modifier.width(6.dp))
                             VoiceMiniButton(voiceTarget)
+                        }
+                        // 流式语音：正文里没有附件，按消息的 runId 显示重播按钮。
+                        if (replayRunId.isNotEmpty()) {
+                            Spacer(Modifier.width(6.dp))
+                            VoiceReplayMiniButton(replayRunId)
                         }
                         if (rc != null) {
                             val tip = when (rc.status) {

@@ -703,6 +703,28 @@ fun VoiceMiniButton(target: String, modifier: Modifier = Modifier) {
 }
 
 /**
+ * 语音重播的迷你播放图标：16dp 纯图标，跟时间并排同一行（与附件版同款）。
+ * 空闲是播放三角，正在播这条时变停止方块，点一下播 / 再点一下停，可反复重播。
+ * 音频不存在（服务端已淘汰该留档）时点了不响，只在日志里记一行。
+ */
+@Composable
+fun VoiceReplayMiniButton(runId: String, modifier: Modifier = Modifier) {
+    val ctx = LocalContext.current
+    val c = LocalAppColors.current
+    val playing by VoiceReplayPlayer.nowPlaying.collectAsState()
+    val isThis = runId.isNotEmpty() && playing == runId
+    Icon(
+        imageVector = if (isThis) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
+        contentDescription = if (isThis) "停止播放" else "播放语音",
+        tint = if (isThis) c.accent else c.dim,
+        modifier = modifier
+            .size(16.dp)
+            .clip(CircleShape)
+            .clickable(enabled = runId.isNotEmpty()) { VoiceReplayPlayer.toggle(ctx, runId) }
+    )
+}
+
+/**
  * 富卡片渲染：左侧一条强调色竖条 + 标题/副标题 + 正文 + 字段表 + 按钮行 + 页脚。
  * 色板按 accent（info/success/warning/danger）取主题色，其余按 info。
  */
