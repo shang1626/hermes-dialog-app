@@ -1087,6 +1087,16 @@ fun JobCard(j: JobItem, onAction: (String) -> Unit) {
                     )
                 }
             }
+            // 投递失败：任务跑成功了，但结果没送到（如微信会话没准备好）。
+            // 以前这条原因只在服务端 last_delivery_error 里，App 完全不显示——
+            // 「任务正常」和「结果没到手」是两件事，必须分开说。
+            if (j.deliveryError.isNotEmpty()) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "投递失败  " + j.deliveryError.replace(Regex("\\s+"), " ").trim().take(160),
+                    color = c.bad, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis
+                )
+            }
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 OutlinedButton(

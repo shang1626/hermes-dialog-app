@@ -1,3 +1,12 @@
+## 2.84 — versionCode 95
+
+修：定时任务卡片上多出一行「原因 null」，以及真故障「投递失败」看不到。
+
+1. **「原因 null」是误报**：org.json 的 `optString(key, "")` 只对**缺失**的键给默认值；键存在但值是 JSON null 时返回字面的 `"null"`。服务端 `latest_execution.error` 本来是 null（= 没出错），被 App 当成错误原因印了出来。新增 `jsonStr()` 统一判空，所有任务字段改走它。
+2. **补显示「投递失败」**：任务本身跑成功、结果没送出去时（服务端 `last_delivery_error`，如微信 iLink 会话未就绪），以前 App 完全看不到这条真原因。现在单独一行红字显示。
+
+（改 ChatViewModel.kt / Screens.kt）
+
 ## 2.83 — versionCode 94
 
 治本：切后台回来丢进度 / 完成不弹通知的根因——运行态跟着 Activity 一起被销毁重建。

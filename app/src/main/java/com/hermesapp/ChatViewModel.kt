@@ -205,6 +205,12 @@ data class JobItem(
     val execDuration: String = "",
     /** 失败原因（仅 failed 时有值）。 */
     val execError: String = "",
+    /**
+     * 投递失败原因：任务本身跑成功、但结果没送到用户手上时才有值。
+     * 与 execError 分开——一个是「活儿干砸了」，一个是「干完了没送到你手上」。
+     * 服务端字段 last_delivery_error，此前 App 完全没读，真故障被藏在日志里。
+     */
+    val deliveryError: String = "",
 )
 
 /** SSE 断流后的最大自动重连次数（退避等待，见 ChatViewModel.backoffDelayMs）。 */
@@ -1411,6 +1417,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 取字符串字段，把「JSON 空值」统一转成空串。
+     *
+     * 为什么必须单列：org.json 的 optString(key, "") 只对**缺失**的键返回默认值；
+     * 键存在但值是 JSON null 时，它返回字面的四个字母 "null"。定时任务卡片上的
+     * 「原因 null」就是这么来的——服务端的 latest_execution.error 本来是 null
+     * （= 没出错），却被当成有错误原因印了出来。
+     */
+    private fun jsonStr(o: org.json.JSONObject?, key: String): String {
+        val v = o?.opt(key) ?: return ""
+        if (v === org.json.JSONObject.NULL) return ""
+        val s = v.toString()
+        return if (s == "null") "" else s
+    }
+
     /** 拉一次任务列表并解析成 JobItem（纯读取，不写 _jobs）。失败抛异常，由调用方兜。 */
     private suspend fun fetchJobs(includeDisabled: Boolean): List<JobItem>? {
         val resp = api?.listJobs(includeDisabled) ?: return null
@@ -1419,28 +1440,29 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
             val sch = o.optJSONObject("schedule")
-            val rawName = o.optString("name", "(未命名)")
-            val rawLast = o.optString("last_status", "")
+            val rawName = jsonStr(o, "name").ifEmpty { "(未命名)" }
+            val rawLast = jsonStr(o, "last_status")
             // 最近一次执行明细：服务端每条 job 都带 latest_execution，
             // 以前 App 整个丢掉，于是「已触发执行」之后看不出跑成没成。
             val ex = o.optJSONObject("latest_execution")
             out.add(
                 JobItem(
-                    id = o.optString("id", ""),
+                    id = jsonStr(o, "id"),
                     name = rawName,
                     zhName = jobZhName(rawName),
                     note = jobZhNote(rawName),
                     schedule = jobZhSchedule(sch),
                     enabled = o.optBoolean("enabled", true),
-                    state = jobZhState(o.optString("state", "")),
+                    state = jobZhState(jsonStr(o, "state")),
                     lastStatus = jobZhStatus(rawLast),
                     lastOk = rawLast == "ok",
-                    lastRun = TimeFmt.isoToBj(o.optString("last_run_at", "")),
-                    nextRun = TimeFmt.isoToBj(o.optString("next_run_at", "")),
-                    execId = ex?.optString("id", "").orEmpty(),
-                    execStatus = ex?.optString("status", "").orEmpty(),
+                    lastRun = TimeFmt.isoToBj(jsonStr(o, "last_run_at")),
+                    nextRun = TimeFmt.isoToBj(jsonStr(o, "next_run_at")),
+                    execId = jsonStr(ex, "id"),
+                    execStatus = jsonStr(ex, "status"),
                     execDuration = execDurationText(ex),
-                    execError = ex?.optString("error", "").orEmpty(),
+                    execError = jsonStr(ex, "error"),
+                    deliveryError = jsonStr(o, "last_delivery_error"),
                 )
             )
         }

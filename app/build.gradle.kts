@@ -11,8 +11,8 @@ android {
         applicationId = "com.hermesapp"
         minSdk = 26
         targetSdk = 34
-        versionCode = 94
-        versionName = "2.83"
+        versionCode = 95
+        versionName = "2.84"
     }
 
     buildTypes {
