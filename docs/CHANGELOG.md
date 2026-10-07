@@ -1,3 +1,15 @@
+## 2.86 — versionCode 97
+
+修：输入框草稿没按会话隔离——在 A 会话打了字没发，切到 B 会话那串字还在。
+
+1. **根因**：草稿全 App 共用一个键 `draft_input`，`MainScaffold` 的 `inputState` 只 `remember`（不带键）初始化一次，切会话时不重新取。于是 A 会话的内容原封不动留在输入框里，看着像「跟着人走」而不是「跟着会话走」。
+2. **草稿按会话存**：`Prefs` 的 `draftInput` 换成 `draftFor(sessionId)` / `setDraft(sessionId, v)` / `clearDraft(sessionId)`，键是 `draft_input:<sessionId>`。
+3. **切会话即切换输入框**：`inputState` 改成 `remember(currentId) { ... }`——会话一变就重新取该会话自己的草稿。
+4. **去抖期间切走也不丢**：加 `pendingDraft` + `flushDraft()`，`LaunchedEffect(currentId)` 在切走时先把待落盘的草稿冲刷到旧会话的键上，再让新会话取自己的。
+5. 删会话时一并清它的草稿；「插话没赶上放回输入框」也改成写当前会话自己的键。
+
+（改 App.kt / Prefs.kt / ChatViewModel.kt）
+
 ## 2.85 — versionCode 96
 
 新：从后台切回 App 时，自动与服务端同步一次会话正文（以前只同步标题）。

@@ -378,10 +378,22 @@ fun MainScaffold(
 ) {
     val c = LocalAppColors.current
     var tab by remember { mutableStateOf(0) }
-    // 输入框内容提到这里，切到状态/设置再回来不丢；草稿写盘，进程被杀重进也能恢复
-    val inputState = remember { mutableStateOf(prefs.draftInput) }
+    val currentId by vm.currentId.collectAsState()
+    // 输入框内容提到这里，切到状态/设置再回来不丢；草稿写盘，进程被杀重进也能恢复。
+    // ⚠️ 草稿按会话隔离：remember(currentId) 让切会话时重新取该会话自己的草稿。
+    // 原来用全局一个 prefs.draftInput，导致「A 会话输入没发出去、切到 B 会话内容还在」。
+    val inputState = remember(currentId) { mutableStateOf(prefs.draftFor(currentId)) }
     // 草稿落盘去抖：长文本时每次按键都写盘会反复整串序列化 → 输入一卡一卡。停手 600ms 再写。
     val draftJob = remember { mutableStateOf<Job?>(null) }
+    // 待落盘的草稿（会话 id to 文本）：切会话/离开前先冲刷，避免去抖期间切走把草稿丢了。
+    val pendingDraft = remember { mutableStateOf<Pair<String, String>?>(null) }
+    val flushDraft: () -> Unit = {
+        pendingDraft.value?.let { (sid, text) -> prefs.setDraft(sid, text) }
+        pendingDraft.value = null
+        draftJob.value?.cancel()
+    }
+    // 会话一变就冲刷上一个会话的草稿，再让 inputState 取新会话自己的草稿。
+    LaunchedEffect(currentId) { flushDraft() }
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     LaunchedEffect(prefs.profile) {
@@ -421,14 +433,19 @@ fun MainScaffold(
                 when (tab) {
                     0 -> ChatScreen(vm, prefs, inputState) { v ->
                         inputState.value = v
-                        // 去抖写盘：输入过程零磁盘开销；清空（发完消息）立即落盘
+                        // 去抖写盘：输入过程零磁盘开销；清空（发完消息）立即落盘。
+                        // 写到「当前会话」自己的键上，切会话各存各的。
+                        val sid = currentId
                         draftJob.value?.cancel()
                         if (v.isEmpty()) {
-                            prefs.draftInput = ""
+                            prefs.setDraft(sid, "")
+                            pendingDraft.value = null
                         } else {
+                            pendingDraft.value = sid to v
                             draftJob.value = scope.launch {
                                 delay(600)
-                                prefs.draftInput = v
+                                prefs.setDraft(sid, v)
+                                pendingDraft.value = null
                             }
                         }
                     }
