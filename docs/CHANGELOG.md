@@ -1,3 +1,14 @@
+## 2.101 — versionCode 112
+
+修「定时任务界面显示：收件箱获取失败」：
+
+- **根因**：`refreshInbox()` / `ackInbox()` 用 `RuntimeHub.scope.launch { }` 起协程，而 `RuntimeHub.scope` 是 `Dispatchers.Main.immediate`，里面调 `a.inbox()` / `a.ackInbox()` 是**阻塞式** HTTP —— 在建立连接那一刻就抛 `NetworkOnMainThreadException`，请求根本没发出去（服务端访问日志里一条都没有，隔壁 `/health` 照常打点，这就是佐证）。同类的坑之前只修了子任务轮询那两处，收件箱这两处漏了。
+- 两处都改成 `launch(Dispatchers.IO)`。
+- 顺带修「错误只显示一个问号」：`NetworkOnMainThreadException` 的 `message` 是 null，老写法 `e.message ?: "?"` 把真实原因吞掉了。新增 `diagText(e)`，报「类名: message」，以后再出问题一眼能看出是什么异常。
+- 全项目扫了一遍其余 `launch` 点：没有别的「主线程做阻塞 HTTP」了（扫描脚本拿修复前的版本验证过，恰好只命中这两处）。
+
+（改 ChatViewModel.kt / app/build.gradle.kts）
+
 ## 2.100 — versionCode 111
 
 子任务入口挤进顶栏那一行：
