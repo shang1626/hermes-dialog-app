@@ -51,7 +51,7 @@ object VoiceReplayPlayer {
     private fun play(ctx: Context, runId: String) {
         // 互斥：点重播先让流式自动播报让位（正在播的那条停下、排队的保留）。
         // 然后取消这条 run 自己的流式排队项——用户已经手动放了它，留着会再播一遍。
-        StreamVoicePlayer.yield()
+        StreamVoicePlayer.yieldAndDrop()
         StreamVoicePlayer.cancelRun(runId)
         // 同上：先标「在播」再停对方，防队列抢跑。
         _nowPlaying.value = runId
@@ -81,7 +81,10 @@ object VoiceReplayPlayer {
 
     private fun startPlayback(ctx: Context, runId: String, bytes: ByteArray) {
         try {
-            stop()
+            // 只本地释放旧播放器，**不要**走公开的 stop()：那个会给流式队列发
+            // 「让位结束」信号，把刚让位的语音又拉起来从头播——表现就是
+            // 「点了别的任务，当前这条停不掉」。详见 StreamVoicePlayer.yieldAndDrop。
+            releaseCurrent()
             _nowPlaying.value = runId
             val f = StreamVoicePlayer.voiceFile(ctx, runId)
             if (!f.isFile || f.length() == 0L) f.writeBytes(bytes)
@@ -115,7 +118,19 @@ object VoiceReplayPlayer {
             AppLog.log("voice", "重播已开始 run=" + runId.take(12) + " " + bytes.size + " 字节")
         } catch (e: Exception) {
             AppLog.err("voice", "重播播放失败 run=" + runId.take(12), e)
-            stop()
+            releaseCurrent()
+            _nowPlaying.value = ""
+            StreamVoicePlayer.resumeQueue()
+        }
+    }
+
+    /** 只释放本播放器当前实例：不改「在播」标记、不推进流式队列。 */
+    private fun releaseCurrent() {
+        val p = player
+        player = null
+        if (p != null) {
+            runCatching { if (p.isPlaying) p.stop() }
+            runCatching { p.release() }
         }
     }
 

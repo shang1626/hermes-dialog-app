@@ -21,8 +21,8 @@ android {
         applicationId = "com.hermesapp"
         minSdk = 26
         targetSdk = 34
-        versionCode = 127
-        versionName = "2.116"
+        versionCode = 128
+        versionName = "2.117"
 
         // 敏感值由 local.properties 注入，源码零真值。
         buildConfigField("String", "APP_PASSWORD", "\"${cfg("HERMES_APP_PASSWORD")}\"")

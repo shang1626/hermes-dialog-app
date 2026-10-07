@@ -43,6 +43,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.foundation.shape.CircleShape
@@ -722,6 +723,30 @@ fun VoiceReplayMiniButton(runId: String, modifier: Modifier = Modifier) {
             .clip(CircleShape)
             .clickable(enabled = runId.isNotEmpty()) { VoiceReplayPlayer.toggle(ctx, runId) }
     )
+}
+
+/**
+ * 「这条语音正在播」的小喇叭：在播时出现、播完消失，跟着时间行显示。
+ *
+ * 为什么要它：播放按钮只在「手动重播」时变成停止方块；自动播报（流式）期间按钮
+ * 始终是三角，多任务排队轮到某条时用户完全看不出在播谁。这里把「在播」显式标出来。
+ */
+@Composable
+fun VoiceSpeakerMark(runId: String) {
+    val c = LocalAppColors.current
+    val streamKey by StreamVoicePlayer.nowPlaying.collectAsState()
+    val replay by VoiceReplayPlayer.nowPlaying.collectAsState()
+    if (runId.isNotEmpty() && (streamKey == "stream:" + runId || replay == runId)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Spacer(Modifier.width(6.dp))
+            Icon(
+                imageVector = Icons.Rounded.VolumeUp,
+                contentDescription = "正在播放这条语音",
+                tint = c.accent,
+                modifier = Modifier.size(14.dp)
+            )
+        }
+    }
 }
 
 /**

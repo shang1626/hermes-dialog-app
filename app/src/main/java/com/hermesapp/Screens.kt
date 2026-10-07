@@ -35,6 +35,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AttachFile
 import androidx.compose.material.icons.outlined.Fullscreen
 import androidx.compose.material.icons.outlined.Photo
+import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -97,6 +98,44 @@ fun ChatScreen(
     val quote by vm.quoteTarget.collectAsState()
 
     Column(Modifier.fillMaxSize()) {
+        // 「正在播放别的会话的语音」提示条：多任务排队时轮到的可能是另一个会话，
+        // 光靠听分辨不出是谁的——这里显式标出来，并给「进入」「跳过」两个出口。
+        val curSid by vm.currentId.collectAsState()
+        val pSess by StreamVoicePlayer.playingSession.collectAsState()
+        val pOwner = pSess
+        if (pOwner != null && pOwner.first.isNotEmpty() && pOwner.first != curSid) {
+            Row(
+                Modifier.fillMaxWidth()
+                    .background(c.accent.copy(alpha = 0.12f))
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.VolumeUp,
+                    contentDescription = null,
+                    tint = c.accent,
+                    modifier = Modifier.size(15.dp)
+                )
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    "正在播放：" + pOwner.second + " 的语音",
+                    color = c.text, fontSize = 12.sp, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
+                )
+                Text(
+                    "进入", color = c.accent, fontSize = 12.sp,
+                    modifier = Modifier
+                        .clickable { vm.switchSession(pOwner.first) }
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+                Text(
+                    "跳过", color = c.dim, fontSize = 12.sp,
+                    modifier = Modifier
+                        .clickable { vm.skipVoice() }
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+            }
+        }
         // 子任务汇总面板已挪进顶部栏本身（App.kt 的 TopBar），不在这里再放一份。
         MessageList(vm, Modifier.weight(1f))
         // 引用条：长按气泡选「引用」后出现，点 × 取消。发送时把片段拼在正文前。
@@ -1019,6 +1058,10 @@ fun Bubble(
                         if (replayRunId.isNotEmpty()) {
                             Spacer(Modifier.width(6.dp))
                             VoiceReplayMiniButton(replayRunId)
+                            // 正在播这条时额外点一个喇叭：播放按钮只在「手动重播」时
+                            // 变停止方块，自动播报（流式）期间它一直是三角，
+                            // 用户看不出队列轮到哪条了。
+                            VoiceSpeakerMark(replayRunId)
                         } else if (voiceTarget.isNotEmpty()) {
                             Spacer(Modifier.width(6.dp))
                             VoiceMiniButton(voiceTarget)
