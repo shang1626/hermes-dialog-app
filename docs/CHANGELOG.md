@@ -1,3 +1,16 @@
+## 2.110 — versionCode 121
+
+语音播报提速：合成前剥 markdown（乙）+ 流式边合成边播（丙）。
+
+- **原来的问题**：run 收尾时同步把整段回复合成 mp3，合成完才发 `run.completed`，所以正文和语音一起被拖住。实测 300 字 4.3 秒、1000 字 14.2 秒、3000 字 21.4 秒才开始出声。
+- **乙（剥 markdown）**：合成前去掉代码块、表格、链接、加粗、标题等，只念纯文字。实测「表格+代码」类回复字数省 77%，纯正文只省 4%（不伤正文）。带代码的回复总时长直接减半。
+- **丙（流式）**：服务端改用 edge_tts 的流式接口，边合成边把 mp3 块通过新事件 `audio.start` / `audio.delta` / `audio.end` 推进同一条 SSE 流；App 用 media3 播放「边写边读的本地文件」，首块到达即起播。实测首块 1.05 秒就绪（1000 字全量要 7 秒）→ **出声从十几秒降到 1 秒级**。
+- run 收尾不再等语音：`run.completed` 立即下发，正文秒出，音频随后在同一流上继续推。
+- **整体可回退**：服务端 `voice.api_server_tts_stream` 关掉即回落原来的整段 MEDIA 附件路径，App 对 audio.* 事件是纯增量、不认识就忽略。
+- 服务端配套补丁 `apply_tts_stream_patch.py`，已按铁律三处登记（脚本 / README-patches.md / verify_patches.py CHECKS）。
+
+（改 StreamVoicePlayer.kt（新增）/ ChatViewModel.kt / app/build.gradle.kts）
+
 ## 2.109 — versionCode 120
 
 新：收件箱支持删除。
