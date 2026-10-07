@@ -39,6 +39,8 @@ class RunService : Service() {
      * 只在有任务在跑时持锁，无任务立刻释放，避免空转耗电。
      */
     private var wakeLock: PowerManager.WakeLock? = null
+    /** Wi-Fi 高性能锁：防某些机型在省电模式下把 Wi-Fi 收包节流/掐断（唤醒锁管不了这一层）。 */
+    private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -59,8 +61,11 @@ class RunService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        // 保活 CPU：有任务在跑才持锁，无任务立刻释放。
-        if (intent?.getBooleanExtra(EXTRA_ACTIVE, false) == true) acquireWakeLock() else releaseWakeLock()
+        // 保活：有任务在跑才持锁，无任务立刻释放。
+        // intent 为 null 时拿不到 EXTRA_ACTIVE（系统重建/异常路径），按「无任务」处理并留痕。
+        val active = intent?.getBooleanExtra(EXTRA_ACTIVE, false) ?: false
+        AppLog.log("service", "onStartCommand active=" + active + " intentNull=" + (intent == null))
+        if (active) acquireLocks() else releaseLocks()
         // 不用 START_STICKY：进程被杀后系统在后台把它拉回来，正好会撞上
         // 「后台不许起前台服务」的限制，反而制造崩溃。任务本身在服务端跑，
         // 重开 App 会重新拉结果，不需要系统替我们拉活。
@@ -68,24 +73,53 @@ class RunService : Service() {
     }
 
     override fun onDestroy() {
-        releaseWakeLock()
+        releaseLocks()
         super.onDestroy()
     }
 
-    private fun acquireWakeLock() {
-        if (wakeLock?.isHeld == true) return
-        runCatching {
-            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "hermes:run").apply {
-                setReferenceCounted(false)
-                acquire()
+    /**
+     * 取两把锁：CPU 唤醒锁（防 CPU 休眠）+ Wi-Fi 高性能锁（防省电模式节流收包）。
+     * 每一步都落日志——「锁到底拿没拿到」必须可查，不能再靠猜。
+     */
+    private fun acquireLocks() {
+        if (wakeLock?.isHeld == true && wifiLock?.isHeld == true) return
+        try {
+            if (wakeLock?.isHeld != true) {
+                val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "hermes:run").apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
             }
+        } catch (e: Throwable) {
+            AppLog.err("service", "唤醒锁获取失败", e)
         }
+        AppLog.log("service", "唤醒锁 held=" + (wakeLock?.isHeld == true))
+        try {
+            if (wifiLock?.isHeld != true) {
+                val wm = applicationContext.getSystemService(Context.WIFI_SERVICE)
+                    as android.net.wifi.WifiManager
+                wifiLock = wm.createWifiLock(
+                    android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "hermes:run"
+                ).apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            }
+        } catch (e: Throwable) {
+            AppLog.err("service", "WifiLock 获取失败", e)
+        }
+        AppLog.log("service", "WifiLock held=" + (wifiLock?.isHeld == true))
     }
 
-    private fun releaseWakeLock() {
-        runCatching { if (wakeLock?.isHeld == true) wakeLock?.release() }
+    private fun releaseLocks() {
+        val w = wakeLock?.isHeld == true
+        val f = wifiLock?.isHeld == true
+        runCatching { if (w == true) wakeLock?.release() }
         wakeLock = null
+        runCatching { if (f == true) wifiLock?.release() }
+        wifiLock = null
+        AppLog.log("service", "释放锁 wake=" + w + " wifi=" + f)
     }
 
     private fun buildNotification(): Notification {
