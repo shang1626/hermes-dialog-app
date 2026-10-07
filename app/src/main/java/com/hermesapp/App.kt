@@ -21,6 +21,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -181,6 +183,13 @@ class MainActivity : ComponentActivity() {
         // 光靠 30 秒读超时要等很久，这里主动判定一次并重连。
         vm.onAppForeground()
         openFromNotification()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // 退到后台：把待写的正文/索引与日志队列立刻落盘。
+        // 写盘已经全异步化了，进程随时可能被系统回收，这一步保证「最后一段不丢」。
+        runCatching { vm.flushSaves() }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -587,8 +596,11 @@ fun DrawerPanel(
                     color = c.dim, fontSize = 11.sp
                 )
                 Spacer(Modifier.height(6.dp))
-                Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-                    for (h in gHits) {
+                // LazyColumn：原来整个结果列表一次性铺出来，条目多时每次重组都要全量测量。
+                // 惰性化后只渲染看得见的几行。
+                LazyColumn(Modifier.weight(1f)) {
+                    items(gHits.size) { gi ->
+                        val h = gHits[gi]
                         Column(
                             Modifier.fillMaxWidth()
                                 .clickable { vm.openGlobalHit(h); onTab(0); onClose() }
@@ -621,8 +633,11 @@ fun DrawerPanel(
                         color = c.dim, fontSize = 12.sp, modifier = Modifier.padding(vertical = 8.dp)
                     )
                 } else {
-                    Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-                        for (s in list) {
+                    // LazyColumn + 稳定 key：原来整个会话列表一次性铺出来，切会话会整体
+                    // 重组一遍（会话越多越卡）。惰性化后只渲染看得见的行，且 key 稳定时
+                    // 只有真正变化的行重组。
+                    LazyColumn(Modifier.weight(1f)) {
+                        items(list, key = { it.id }) { s ->
                             SessionRow(
                                 meta = s,
                                 selected = s.id == currentId && !showArchived,

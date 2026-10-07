@@ -32,6 +32,19 @@ object AppLog {
     private val lock = Any()
     private var app: Context? = null
 
+    /**
+     * 待落盘队列 + 唯一写线程。
+     *
+     * 为什么改成异步：原来每条日志都在调用线程上 appendText（一次 open/write/close），
+     * 必要时还读全文截断；而日志几乎遍布每个关键路径（流式期间每条事件一条）。这些开销
+     * 全落在 UI 线程上，切会话、滚动、流式渲染都会被它拖慢。改成入队 + 单写线程批量落盘后，
+     * 调用线程只做一次入队（微秒级），且只有一个线程写文件，不会互相截断。
+     * ERROR 行仍然立即落盘 —— 崩溃前那几行必须在文件里。
+     */
+    private val pending = java.util.concurrent.ConcurrentLinkedQueue<String>()
+    @Volatile private var writerThread: Thread? = null
+    private const val MAX_PENDING = 5000
+
     fun install(ctx: Context) {
         app = ctx.applicationContext
         // 首行写环境摘要：只发一段日志就能知道是哪台设备、哪个版本、什么系统。
@@ -58,19 +71,64 @@ object AppLog {
         }
         val line = sb.toString()
         val c = app
-        // 内存队列与文件追加放同一把锁里：原来只锁内存，多个线程同时
-        // appendText/trim 会互相截断（trim 把别的线程刚写的行覆盖掉），
-        // 表现为日志莫名少行——正是排查断流时最需要的那几行。
+        // 内存队列（界面即时显示用）：仍然要在锁里维护，多个线程会同时写。
         synchronized(lock) {
             mem.addLast(line)
             while (mem.size > MAX_MEM) mem.removeFirst()
-            if (c == null) return
-            runCatching {
-                val f = File(c.filesDir, FILE)
-                f.appendText(line + "\n")
-                if (f.length() > MAX_FILE_BYTES) trim(f)
-            }
         }
+        if (c == null) return
+        while (pending.size > MAX_PENDING) pending.poll()   // 极端情况丢最旧的，绝不无界增长
+        pending.add(line)
+        if (tag.startsWith("ERROR")) {
+            drainToFile(c)          // 错误行立即落盘
+        } else {
+            ensureWriter(c)
+        }
+    }
+
+    /** 唯一写线程：每 400ms 批量落盘一次，避免每条日志一次 open/write/close。 */
+    private fun ensureWriter(c: Context) {
+        if (writerThread?.isAlive == true) return
+        synchronized(lock) {
+            if (writerThread?.isAlive == true) return
+            val th = Thread {
+                while (true) {
+                    try {
+                        Thread.sleep(400L)
+                        drainToFile(c)
+                    } catch (e: InterruptedException) {
+                        return@Thread
+                    } catch (e: Throwable) {
+                        // 写日志自己绝不往外抛
+                    }
+                }
+            }
+            th.isDaemon = true
+            th.name = "hermes-log"
+            writerThread = th
+            th.start()
+        }
+    }
+
+    /** 把队列里的行一次性追加落盘。只有写线程（或 ERROR 行当场）会进来。 */
+    private fun drainToFile(c: Context) {
+        if (pending.isEmpty()) return
+        val batch = StringBuilder()
+        while (true) {
+            val l = pending.poll() ?: break
+            batch.append(l).append('\n')
+        }
+        runCatching {
+            val f = File(c.filesDir, FILE)
+            f.appendText(batch.toString())
+            if (f.length() > MAX_FILE_BYTES) trim(f)
+        }
+    }
+
+    /** 立刻把待写的日志落盘（退到后台 / 进程可能被杀之前调）。 */
+    fun flush() {
+        val c = app ?: return
+        runCatching { drainToFile(c) }
     }
 
     /** 只保留最近 MAX_FILE 行，避免日志无限增长。 */
@@ -82,6 +140,7 @@ object AppLog {
 
     /** 日志全文（落盘优先，没有则用内存）。绝不抛异常。 */
     fun read(ctx: Context): String = runCatching {
+        flush()   // 先把队列里还没落盘的写下去，界面/导出看到的是最新的
         val f = File(ctx.filesDir, FILE)
         if (f.exists() && f.length() > 0) f.readText()
         else synchronized(lock) { mem.joinToString("\n") }

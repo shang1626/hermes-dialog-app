@@ -62,6 +62,15 @@ internal class SessionRuntime(val id: String) {
     var resumed: Boolean = false
     var startedAt: Long = 0L
     var loaded: Boolean = false
+    /** 正在异步读盘（防并发重复读）。 */
+    var loading: Boolean = false
+    /**
+     * 已删除/作废：待执行或正在跑的保存任务据此放弃写盘。
+     * 没有它的话，「删除会话」之后刚到点的异步保存会把文件又写回来（文件复活）。
+     */
+    var dead: Boolean = false
+    /** 本次切到该会话的墙钟时刻：算「点一下到能看」的总耗时（perf 日志用）。 */
+    var switchStartedAt: Long = 0L
     var saveJob: Job? = null
     /** 最近一次收到事件的墙钟时间，用于「回到前台」判断流是否已假死。 */
     var lastEventAt: Long = 0L
