@@ -723,6 +723,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun stamp(): Long = System.currentTimeMillis()
 
+    /** 新会话的排序键：取现有最小 order − 1，保证新会话永远排第一。 */
+    private fun nextTopOrder(): Long {
+        val min = _sessions.value.minOfOrNull { it.order } ?: 1L
+        return min - 1L
+    }
+
     /** 本轮计时起点：优先会话级的（整轮唯一、不会被气泡重建冲掉），没有才取当下。 */
     private fun turnStart(r: SessionRuntime): Long = if (r.startedAt > 0) r.startedAt else stamp()
 
@@ -942,13 +948,35 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         AppLog.log("ui", "新建会话")
         saveCurrentAsync()
         val id = UUID.randomUUID().toString()
-        val meta = SessionMeta(id, "新对话", stamp(), false)
-        _sessions.value = _sessions.value + meta
+        // 新会话永远排第一：手动模式给它最小 order − 1；非手动模式留 0（重启按更新时间排也在最前）。
+        val nOrder = if (_sessions.value.any { it.order > 0L }) nextTopOrder() else 0L
+        val meta = SessionMeta(id, "新对话", stamp(), false, nOrder)
+        _sessions.value = listOf(meta) + _sessions.value
         saveIndexAsync(debounceMs = 0L)
         _currentId.value = id
         prefs.sessionId = id
         rt(id).loaded = true
         rt(id).loading = false
+    }
+
+    /**
+     * 手动调整会话顺序：dir = -1 上移，+1 下移。
+     * 列表按「归档态」过滤展示，跨态移动没有视觉意义，所以只在同态相邻项之间换位；
+     * 换完把「位置」写回 order，保证落盘 / 重启后顺序不变。
+     */
+    fun moveSession(id: String, dir: Int) {
+        val list = _sessions.value.toMutableList()
+        val i = list.indexOfFirst { it.id == id }
+        if (i < 0) return
+        val arch = list[i].archived
+        var j = i + dir
+        while (j >= 0 && j < list.size && list[j].archived != arch) j += dir
+        if (j < 0 || j >= list.size) return
+        val tmp = list[i]; list[i] = list[j]; list[j] = tmp
+        for (k in list.indices) list[k].order = k.toLong()
+        _sessions.value = list
+        saveIndexAsync(debounceMs = 0L)
+        AppLog.log("ui", "会话排序 sid=" + id.take(8) + " 方向=" + dir + " 新位置=" + j)
     }
 
     fun archiveSession(id: String, archived: Boolean) {
@@ -1071,7 +1099,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             ensureLoaded(migrated.id)
             return
         }
-        val list = idx.sortedByDescending { it.updatedAt }
+        // 排序：只要用户手动排过（存在非 0 的 order），就按 order 升序（手动顺序）；
+        // 否则回落到按最近更新时间降序——同时把当前顺序钉成 order（1..N），
+        // 作为手动排序的起点，免得第一次上/下移时整表乱跳。
+        val manual = idx.any { it.order > 0L }
+        val list = if (manual) idx.sortedBy { it.order } else idx.sortedByDescending { it.updatedAt }
         // 优先恢复上次停留的会话（prefs.sessionId）；找不到才回退到最近更新的未归档会话。
         val preferred = profileSessionId?.takeIf { it.isNotEmpty() }
             ?.let { pid -> list.firstOrNull { it.id == pid && !it.archived } }
@@ -2110,7 +2142,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val id = UUID.randomUUID().toString()
             _currentId.value = id
             prefs.sessionId = id
-            _sessions.value = _sessions.value + SessionMeta(id, "新对话", stamp(), false)
+            val nOrder0 = if (_sessions.value.any { it.order > 0L }) nextTopOrder() else 0L
+            _sessions.value = listOf(SessionMeta(id, "新对话", stamp(), false, nOrder0)) + _sessions.value
             saveIndexAsync(debounceMs = 0L)
             rt(id).loaded = true
         }

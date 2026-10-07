@@ -23,8 +23,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -637,13 +641,17 @@ fun DrawerPanel(
                     // 重组一遍（会话越多越卡）。惰性化后只渲染看得见的行，且 key 稳定时
                     // 只有真正变化的行重组。
                     LazyColumn(Modifier.weight(1f)) {
-                        items(list, key = { it.id }) { s ->
+                        itemsIndexed(list, key = { _, it -> it.id }) { idx, s ->
                             SessionRow(
                                 meta = s,
                                 selected = s.id == currentId && !showArchived,
                                 archived = showArchived,
                                 running = runFlags[s.id]?.busy == true,
                                 flag = runFlags[s.id],
+                                canUp = idx > 0,
+                                canDown = idx < list.size - 1,
+                                onMoveUp = { vm.moveSession(s.id, -1) },
+                                onMoveDown = { vm.moveSession(s.id, +1) },
                                 onOpen = { vm.switchSession(s.id); onTab(0); onClose() },
                                 onArchive = { vm.archiveSession(s.id, !s.archived) },
                                 onDelete = { vm.deleteSession(s.id) },
@@ -728,6 +736,11 @@ fun SessionRow(
     onArchive: () -> Unit,
     onDelete: () -> Unit,
     onExport: () -> Unit = {},
+    /** 是否可上/下移（顶行不能上、底行不能下）。 */
+    canUp: Boolean = false,
+    canDown: Boolean = false,
+    onMoveUp: () -> Unit = {},
+    onMoveDown: () -> Unit = {},
 ) {
     val c = LocalAppColors.current
     var menu by remember { mutableStateOf(false) }
@@ -768,6 +781,20 @@ fun SessionRow(
             }
             Text(
                 TimeFmt.mdhm(meta.updatedAt), color = c.dim, fontSize = 10.sp
+            )
+        }
+        // 手动排序：一对迷你箭头（上移/下移）。顶行▲、底行▼ 置灰。
+        // 用图标而非长按——长按会和行的点击、菜单抢手势，容易误触。
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(
+                Icons.Rounded.KeyboardArrowUp, contentDescription = "上移",
+                tint = if (canUp) c.accent else c.dim.copy(alpha = 0.25f),
+                modifier = Modifier.size(20.dp).clickable(enabled = canUp) { onMoveUp() }
+            )
+            Icon(
+                Icons.Rounded.KeyboardArrowDown, contentDescription = "下移",
+                tint = if (canDown) c.accent else c.dim.copy(alpha = 0.25f),
+                modifier = Modifier.size(20.dp).clickable(enabled = canDown) { onMoveDown() }
             )
         }
         Box {

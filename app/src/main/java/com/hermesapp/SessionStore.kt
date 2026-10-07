@@ -12,6 +12,8 @@ data class SessionMeta(
     var title: String,
     var updatedAt: Long,
     var archived: Boolean = false,
+    /** 手动排序键：越小越靠前。0 是「未排过」的哨兵；首次进入手动模式时按当前顺序钉成 1..N。 */
+    var order: Long = 0L,
 )
 
 /**
@@ -78,6 +80,7 @@ class SessionStore(ctx: Context, private val profile: String) {
                         title = o.optString("title", "新对话"),
                         updatedAt = o.optLong("updatedAt", 0L),
                         archived = o.optBoolean("archived", false),
+                        order = o.optLong("order", 0L),
                     )
                 )
             }
@@ -104,6 +107,7 @@ class SessionStore(ctx: Context, private val profile: String) {
                         .put("title", s.title)
                         .put("updatedAt", s.updatedAt)
                         .put("archived", s.archived)
+                        .put("order", s.order)
                 )
             }
             indexFile().writeText(arr.toString())
