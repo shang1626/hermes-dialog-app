@@ -2843,7 +2843,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (sid.isEmpty()) return
         val r = rt(sid)
         if (r.subSweep?.isActive == true) return
-        r.subSweep = RuntimeHub.scope.launch {
+        // 必须显式切到 IO：RuntimeHub.scope 是 Dispatchers.Main.immediate，
+        // 而 sessionDetail() 是阻塞式 HTTP。挂主线程的话，打开有子任务的会话时
+        // 第一次拉进度就把 UI 卡住（这正是「有子任务的会话打开卡顿」的根因）。
+        r.subSweep = RuntimeHub.scope.launch(Dispatchers.IO) {
             val a = api ?: return@launch
             val deadline = System.currentTimeMillis() + 6 * 60 * 60 * 1000L
             while (isActive && System.currentTimeMillis() < deadline) {
@@ -2907,6 +2910,26 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * 打开「子任务进度」面板：拉这个子代理会话的末尾消息，拆成步骤流水。
      * 面板开着时每 3 秒刷新一次，子任务收工就停（不再空转）。
      */
+    /**
+     * 停止一个正在跑的子任务。
+     *
+     * 为什么不复用 stop()：子任务是后台子代理，可能比父轮次活得久，父 run 的
+     * /v1/runs/{id}/stop 管不到它。服务端另开了 POST /api/subagents/{id}/stop，
+     * 对子代理对象直接发协作式中断（与 TUI 的 subagent.interrupt 同一条链路）。
+     * 「停止」语义是到下一个迭代边界就停，不是立即杀进程；found=false 表示它已经不在跑了。
+     */
+    fun stopSubagent(sid: String, key: String) {
+        if (sid.isEmpty() || key.isEmpty()) return
+        val a = api ?: return
+        AppLog.log("stop", "停止子任务 sid=" + sid.take(8) + " key=" + key)
+        RuntimeHub.scope.launch(Dispatchers.IO) {
+            val resp = runCatching { a.stopSubagent(key) }.getOrNull()
+            val found = resp?.optBoolean("found", false) ?: false
+            rt(sid).retryNote.value =
+                if (found) "已请求停止该子任务（到下一个步骤边界停下）" else "那个子任务已经不在跑了"
+        }
+    }
+
     fun openSubagentDetail(sid: String, key: String) {
         val line = rt(sid).messages.value.flatMap { it.subagents }.firstOrNull { it.id == key } ?: return
         _subDetail.value = SubagentDetail(
@@ -2914,7 +2937,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             status = line.status, startedAt = line.startedAt, endedAt = line.endedAt, tokens = line.tokens,
         )
         subDetailJob?.cancel()
-        subDetailJob = RuntimeHub.scope.launch {
+        // 同上：面板的 3 秒刷新也是阻塞 HTTP，不能在主线程上跑。
+        subDetailJob = RuntimeHub.scope.launch(Dispatchers.IO) {
             val a = api ?: return@launch
             val deadline = System.currentTimeMillis() + 6 * 60 * 60 * 1000L
             while (isActive && System.currentTimeMillis() < deadline) {

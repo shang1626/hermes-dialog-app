@@ -97,8 +97,7 @@ fun ChatScreen(
     val quote by vm.quoteTarget.collectAsState()
 
     Column(Modifier.fillMaxSize()) {
-        // 子任务汇总面板：贴在对话窗口顶部（顶栏下面），消息再长也不用往回翻。
-        SubagentPanel(vm)
+        // 子任务汇总面板已挪进顶部栏本身（App.kt 的 TopBar），不在这里再放一份。
         MessageList(vm, Modifier.weight(1f))
         // 引用条：长按气泡选「引用」后出现，点 × 取消。发送时把片段拼在正文前。
         // 取一份本地快照再判空：委托属性（by collectAsState）不能被智能转换，
@@ -570,8 +569,8 @@ fun SubagentPanel(vm: ChatViewModel) {
     if (subs.isEmpty()) return
     val running = subs.count { it.status == "running" }
     // 长会话里子任务会一直累积，默认只列最近 5 条，其余靠「看全部」展开，
-    // 免得面板把整个对话窗口吃掉。
-    var open by remember { mutableStateOf(true) }
+    // 免得面板把整个对话窗口吃掉。进会话时默认折叠：只露一行标题，展开才占高度。
+    var open by remember { mutableStateOf(false) }
     val cap = 5
     var showAll by remember { mutableStateOf(false) }
     val rows = if (showAll) subs else subs.take(cap)
@@ -605,7 +604,11 @@ fun SubagentPanel(vm: ChatViewModel) {
         if (open) {
             Spacer(Modifier.height(4.dp))
             for (s in rows) {
-                SubagentRow(s, tick) { vm.openSubagentDetail(curId, s.id) }
+                SubagentRow(
+                    s, tick,
+                    onStop = { vm.stopSubagent(curId, s.id) },
+                    onClick = { vm.openSubagentDetail(curId, s.id) },
+                )
             }
             if (!showAll && subs.size > cap) {
                 Text(
@@ -621,7 +624,12 @@ fun SubagentPanel(vm: ChatViewModel) {
 
 /** 一条子任务：目标 + 实时进度 + 入口提示，点整行打开进度面板。 */
 @Composable
-private fun SubagentRow(s: SubagentLine, tick: State<Long>, onClick: () -> Unit) {
+private fun SubagentRow(
+    s: SubagentLine,
+    tick: State<Long>,
+    onStop: () -> Unit,
+    onClick: () -> Unit,
+) {
     val c = LocalAppColors.current
     val mark = when (s.status) {
         "running" -> "▶"
@@ -648,7 +656,18 @@ private fun SubagentRow(s: SubagentLine, tick: State<Long>, onClick: () -> Unit)
         if (prog.isNotEmpty()) {
             Text(prog, color = c.dim, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        Text("查看进度 ▸", color = c.accent, fontSize = 10.sp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("查看进度 ▸", color = c.accent, fontSize = 10.sp)
+            if (s.status == "running") {
+                Spacer(Modifier.width(12.dp))
+                // 停止是协作式的：子代理到下一个步骤边界才停，不是立即杀进程。
+                Text(
+                    "停止", color = c.bad, fontSize = 10.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(4.dp))
+                        .clickable { onStop() }.padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+            }
+        }
     }
 }
 

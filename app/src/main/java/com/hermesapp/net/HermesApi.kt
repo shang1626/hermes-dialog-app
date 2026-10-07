@@ -277,6 +277,16 @@ class HermesApi(
     }
 
     /**
+     * 停止一个正在跑的子任务：POST /api/subagents/{id}/stop。
+     *
+     * 为什么不能复用 stopRun：子任务是后台子代理，可能比父轮次活得久，父 run 的
+     * /v1/runs/{id}/stop 管不到它。服务端对子代理对象直接发协作式中断，返回
+     * {"ok":true,"found":bool}；found=false 表示那个子任务已经不在跑了（不算失败）。
+     */
+    fun stopSubagent(subagentId: String): JSONObject =
+        sync(base("/api/subagents/" + subagentId + "/stop").post("{}".toRequestBody(jsonType)).build())
+
+    /**
      * 中途插话：把这句话注入本轮。返回是否被服务端接受（HTTP 2xx）。
      * 服务端只在 run 状态为 running 且 agent 支持 steer 时接受（409 = 本轮已收尾/不接受）；
      * 调用方据此给用户明确反馈，不再静默吞掉结果。

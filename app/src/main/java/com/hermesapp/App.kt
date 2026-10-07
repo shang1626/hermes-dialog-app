@@ -464,8 +464,11 @@ fun TopBar(vm: ChatViewModel, prefs: Prefs, tab: Int, onMenu: () -> Unit) {
     val c = LocalAppColors.current
     val online by vm.online.collectAsState()
     val title = when (tab) { 0 -> "对话"; 1 -> "状态"; 3 -> "定时任务"; else -> "设置" }
+    // 顶部栏改成上下两层：上面还是原来那行（菜单/标题/搜索/在线），
+    // 下面挂本会话的子任务汇总面板 —— 用户要求「位置在顶部栏，不是顶部栏下面」。
+    Column(Modifier.fillMaxWidth().background(c.panel)) {
     Row(
-        Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 10.dp, vertical = 8.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
@@ -483,6 +486,8 @@ fun TopBar(vm: ChatViewModel, prefs: Prefs, tab: Int, onMenu: () -> Unit) {
             Spacer(Modifier.width(6.dp))
         }
         Text(if (online) "● 在线" else "● 离线", color = if (online) c.ok else c.bad, fontSize = 12.sp)
+    }
+    if (tab == 0) SubagentPanel(vm)
     }
 }
 
