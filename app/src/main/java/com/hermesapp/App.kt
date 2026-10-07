@@ -464,8 +464,8 @@ fun TopBar(vm: ChatViewModel, prefs: Prefs, tab: Int, onMenu: () -> Unit) {
     val c = LocalAppColors.current
     val online by vm.online.collectAsState()
     val title = when (tab) { 0 -> "对话"; 1 -> "状态"; 3 -> "定时任务"; else -> "设置" }
-    // 顶部栏改成上下两层：上面还是原来那行（菜单/标题/搜索/在线），
-    // 下面挂本会话的子任务汇总面板 —— 用户要求「位置在顶部栏，不是顶部栏下面」。
+    // 子任务小标展开状态：默认折叠，点顶栏那个小标才在下面列明细。
+    var subOpen by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().background(c.panel)) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
@@ -477,6 +477,12 @@ fun TopBar(vm: ChatViewModel, prefs: Prefs, tab: Int, onMenu: () -> Unit) {
         )
         Spacer(Modifier.width(10.dp))
         Text(title, color = c.text, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        if (tab == 0) {
+            // 「子任务 N」挤进这一行（标题右侧）；右侧 Spacer(weight) 顶住，
+            // 搜索与在线原位不动，没有子任务时它不出现、顶栏不变。
+            Spacer(Modifier.width(8.dp))
+            SubagentChip(vm, subOpen) { subOpen = !subOpen }
+        }
         Spacer(Modifier.weight(1f))
         if (tab == 0) {
             Text(
@@ -487,7 +493,8 @@ fun TopBar(vm: ChatViewModel, prefs: Prefs, tab: Int, onMenu: () -> Unit) {
         }
         Text(if (online) "● 在线" else "● 离线", color = if (online) c.ok else c.bad, fontSize = 12.sp)
     }
-    if (tab == 0) SubagentPanel(vm)
+    // 展开的明细挂在那一行下面；收起状态下一行都不渲染。
+    if (tab == 0 && subOpen) SubagentList(vm)
     }
 }
 
