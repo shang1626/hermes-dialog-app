@@ -1,3 +1,15 @@
+## 2.113 — versionCode 124
+
+新：语音可随时重播（点消息气泡里的播放按钮）。
+
+- **背景**：流式语音为了不播两遍，回复正文里不再带音频附件，于是气泡里那个「播放」按钮失去了显示依据——旧消息再也点不开。自动播报本身没坏，坏的是重播入口。
+- **做法**：服务端流式合成时顺手把整段 mp3 长期留档（`tts_voice/<run_id>.mp3`，总容量 2GB、超出按最旧淘汰），并新增 `GET /v1/voice/{run_id}` 取件；App 给消息记上 `runId` 并落盘，气泡按钮改看它——本机有留档就即时播，没有就按 runId 取回、缓存后再播（首次约 0.3~1 秒，之后即时）。
+- 自动播报逻辑一行未动，仍是流式首块 1 秒级起播。
+- 容量：按每条 0.1~1MB 算可存 2000~20000 条，多年到不了上限。
+- 服务端配套补丁 `apply_voice_replay_patch.py`，已按铁律三处登记（脚本 / README-patches.md / verify_patches.py CHECKS）。
+
+（改 VoiceReplayPlayer.kt（新增）/ ChatViewModel.kt / SessionStore.kt / Screens.kt / Markdown.kt / StreamVoicePlayer.kt / net/HermesApi.kt / app/build.gradle.kts）
+
 ## 2.112 — versionCode 123
 
 修：流式语音第二个缺陷——stop() 的清理动作被延后到主线程，反把 begin() 刚设好的状态清空。

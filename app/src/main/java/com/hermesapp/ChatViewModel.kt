@@ -79,6 +79,11 @@ data class Msg(
     val idemKey: String = "",
     /** 插话气泡：用户在本轮运行中追加的一句，界面按用户气泡显示并标「插话」。 */
     val steer: Boolean = false,
+    /**
+     * 本轮 run_id（仅助手消息有）。语音重播按钮靠它去服务端取长期留档的 mp3：
+     * 流式模式下回复正文里不再带音频附件，按钮不能再看正文，只能看这个键。
+     */
+    val runId: String = "",
 ) {
     companion object {
         private val counter = java.util.concurrent.atomic.AtomicLong(0)
@@ -1131,6 +1136,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 网关托管媒体：把带鉴权的取文件函数挂给 Markdown 附件卡片
         val a0 = api
         MediaFetch.handler = { token -> a0?.downloadMedia(token) }
+        // 语音重播：点旧消息的播放按钮时按 runId 取长期留档的 mp3
+        VoiceReplayPlayer.fetcher = { rid -> a0?.downloadVoice(rid) }
+        VoiceReplayPlayer.rate = p.voiceRate
         bootstrapSessions(p.sessionId)
         cleanupShellSessionsOnce()
         syncFromServer()
@@ -3295,7 +3303,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         AppLog.log("stream", "语音流开始 run=" + rid.take(12))
                         if (prefs.playCompletionVoice) {
                             StreamVoicePlayer.rate = prefs.voiceRate
-                            StreamVoicePlayer.begin(getApplication(), "stream:" + rid)
+                            StreamVoicePlayer.begin(getApplication(), "stream:" + rid, rid)
                         }
                     }
                     "audio.delta" -> {
@@ -3318,6 +3326,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         r.coalescer?.flushNow()
                         AppLog.log("stream", "run 完成 run=" + rid.take(12) + " 正文长度=" + ev.data.optString("output", "").length)
                         r.finished = true
+                        tagLastAssistantRunId(r, rid)
                         val out = ev.data.optString("output", "")
                         if (out.isNotEmpty()) setPendingText(r, out) else finishPending(r)
                         attachUsage(r, ev)
@@ -3659,6 +3668,20 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         setMsgs(r, list)
     }
 
+    /**
+     * 给最后一条助手消息记上本轮 run_id：语音重播按钮靠它取音频。
+     * 必须在 setPendingText/finishPending 之前调用——那两步用的是 copy()，
+     * 先记上才能被带过去；记晚了这条就永远没有按钮。
+     */
+    private fun tagLastAssistantRunId(r: SessionRuntime, runId: String) {
+        if (runId.isEmpty()) return
+        val list = r.messages.value.toMutableList()
+        val i = list.indexOfLast { it.role == "assistant" }
+        if (i < 0 || list[i].runId.isNotEmpty()) return
+        list[i] = list[i].copy(runId = runId)
+        setMsgs(r, list)
+    }
+
     private fun setPendingText(r: SessionRuntime, t: String) {
         val list = r.messages.value.toMutableList()
         val i = list.indexOfLast { it.role == "assistant" && it.pending }
@@ -3864,7 +3887,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 设置页「完成语音播报」：任务跑完自动播服务端下发的整段语音。 */
     fun setPlayCompletionVoice(on: Boolean) {
         prefs.playCompletionVoice = on
-        if (!on) { VoicePlayer.stop(); StreamVoicePlayer.stop() }
+        if (!on) { VoicePlayer.stop(); StreamVoicePlayer.stop(); VoiceReplayPlayer.stop() }
     }
 
     /** 设置页调播报语速：写入 prefs 并立刻灌进播放器（下次播放即用新速度）。 */
