@@ -1,3 +1,13 @@
+## 2.108 — versionCode 119
+
+定时任务页的中文说明补齐（含朋友那边）。
+
+- 新增 5 条任务的精确中文名与说明：`apk-keep-30`（安装包只留 30 个）、`gradle-idle-reaper`（编译进程空闲回收）、`mem0-upgrade-postcheck`（记忆库升级检查）、`friend-nightly-memory-refactor`（夜间记忆整理）、`ds-upstream-watch`（上游巡检）。
+- 关键词兜底补 `upstream` / `apk` / `keep` / `postcheck`，以后新加任务不必再改代码；`watchdog` 仍排在 `watch` 之前。
+- 两个档案（default / friend）共用同一份翻译表，朋友那边的任务名一并出中文。
+
+（改 ChatViewModel.kt / app/build.gradle.kts）
+
 ## 2.107 — versionCode 118
 
 调：历史对话的手动排序不再常驻显示，收进「排序模式」。

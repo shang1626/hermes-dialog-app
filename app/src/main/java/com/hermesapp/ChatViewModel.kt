@@ -1686,6 +1686,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             "boot-verify-report" -> return "开机自检报告"
             "fix-dup-unit-report" -> return "重复服务修复报告"
             "boot-verify2-report" -> return "开机自检报告（二）"
+            "mem0-upgrade-postcheck" -> return "记忆库升级检查"
+            "gradle-idle-reaper" -> return "编译进程空闲回收"
+            "apk-keep-30" -> return "安装包只留 30 个"
+            "friend-nightly-memory-refactor" -> return "夜间记忆整理"
+            "ds-upstream-watch" -> return "上游巡检（DeepSeek）"
         }
         // 精确表认不出时按关键词兜底：别的档案（friend）和以后新加的任务都能自动出中文，
         // 不用每加一个任务改一次代码。顺序有讲究：watchdog 必须排在 watch 前面。
@@ -1693,8 +1698,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         return when {
             n.contains("memory-refactor") || n.contains("memory_refactor") -> "记忆整理"
             n.contains("watchdog") -> "看门狗"
+            n.contains("upstream") -> "上游巡检"
             n.contains("watch") -> "上游巡检"
             n.contains("reaper") -> "空闲回收"
+            n.contains("apk") || n.contains("keep") -> "安装包清理"
+            n.contains("postcheck") -> "升级检查"
             n.contains("backup") -> "备份"
             n.contains("report") -> "结果报告"
             n.contains("verify") || n.contains("check") -> "自检"
@@ -1717,6 +1725,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 return "一次性任务：修复重复网关服务后把结果发给你，跑完自动删。"
             "boot-verify2-report" ->
                 return "一次性任务：容器重启后的自检（含重启次数与重复服务检查），跑完自动删。"
+            "mem0-upgrade-postcheck" ->
+                return "一次性任务：记忆库升级后的检查报告，跑完自动删。"
+            "gradle-idle-reaper" ->
+                return "每 15 分钟收掉空闲的编译进程，回收内存；正在编译时不动。"
+            "apk-keep-30" ->
+                return "每 15 分钟清一次安装包：只保留最近 30 个，防止旧版本堆满磁盘。"
+            "friend-nightly-memory-refactor" ->
+                return "每天凌晨自动整理记忆：做容量体检，把待落盘的内容并进记忆文件，超限就压缩。"
+            "ds-upstream-watch" ->
+                return "每天巡检 DeepSeek 上游的状态变化，有变化才出报告；无变化时静默。"
         }
         val n = name.lowercase()
         return when {
@@ -1728,6 +1746,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 "定期巡检上游页面的变化，有变化才出报告；无变化时静默。"
             n.contains("reaper") ->
                 "定期收掉闲置的进程，回收内存；没有闲置时静默。"
+            n.contains("apk") || n.contains("keep") ->
+                "定期清理安装包，只保留最近 30 个，防止旧版本堆满磁盘。"
+            n.contains("postcheck") ->
+                "一次性任务：升级后的检查报告，跑完自动删。"
             n.contains("backup") ->
                 "定时备份数据。"
             n.contains("report") ->
