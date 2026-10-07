@@ -22,6 +22,19 @@ import okhttp3.Dns
 data class SseEvent(val id: Int?, val event: String?, val data: JSONObject)
 
 /**
+ * 事件流订阅拿到 404：服务端已经没有这条 run 的 SSE 缓冲了。
+ *
+ * 2026-10-08：服务端 `_run_streams` 的 TTL(300s) 短于状态记录 TTL(3600s)，且清理器原来
+ * 不管任务死活就删缓冲 —— 于是出现「GET /v1/runs/{id} 说 running，但 /events 立刻 404」
+ * 的自相矛盾。客户端把 404 当普通断流去退避重连，就是「连接中断，N 秒后重试」反复刷、
+ * 停不下来的直接来源（实测一条 run 连撞 24 次）。
+ *
+ * 单独一个异常类型，是为了让上层能把「流没了」和「网络抖了」分开处理：前者不再重起流，
+ * 直接转去翻服务端会话记录等答案落盘。服务端清理器已同时修掉（task 活着不删缓冲）。
+ */
+class RunStreamGoneException(val runId: String) : IOException("HTTP 404: run stream gone")
+
+/**
  * 只把 IPv4 地址交给 OkHttp 的连接层。
  *
  * 2026-10-08 实测（App 运行日志）：34 次 `ConnectException: Failed to connect to
@@ -582,6 +595,7 @@ class HermesApi(
             override fun onFailure(call: Call, e: IOException) = onError(e)
             override fun onResponse(call: Call, response: Response) {
                 response.use { resp ->
+                    if (resp.code == 404) { onError(RunStreamGoneException(runId)); return }
                     if (!resp.isSuccessful) { onError(IOException("HTTP " + resp.code)); return }
                     val src = resp.body?.source()
                     if (src == null) { onError(IOException("empty body")); return }
