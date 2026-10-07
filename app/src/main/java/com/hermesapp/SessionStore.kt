@@ -42,11 +42,31 @@ class SessionStore(ctx: Context, private val profile: String) {
     private fun msgFile(id: String) = File(dir, "chat_${profile}_$id.json")
     private fun legacyFile() = File(dir, "chat_$profile.json")
 
+    /**
+     * 本地存储体检：一行交代这台手机上到底有哪些会话文件。
+     *
+     * 用户报历史对话没了时，服务端数据 / 本地索引 / 消息文件三层都可能。
+     * 旧日志只有网络层，看不出本地到底存了什么——启动时打这一行，立刻能分清
+     * 是索引文件丢了（不存在 / 只有几十字节），还是索引在而消息文件没了。
+     */
+    fun diagSummary(): String {
+        val idx = indexFile()
+        val files = dir.listFiles()?.filter { it.isFile } ?: emptyList()
+        val idxFiles = files.filter { it.name.startsWith("sessions_") }
+        val chatFiles = files.filter { it.name.startsWith("chat_") }
+        val names = if (idxFiles.size <= 4) idxFiles.joinToString(",") { it.name }
+                    else "共" + idxFiles.size + "个"
+        return "索引[" + (if (idx.exists()) idx.name + "=" + idx.length() + "B" else idx.name + "=无") + "]" +
+            " 索引文件=" + names +
+            " 消息文件=" + chatFiles.size + "个/" + chatFiles.sumOf { it.length() } + "B" +
+            " 目录共" + files.size + "个文件"
+    }
+
     fun loadIndex(): MutableList<SessionMeta> {
         val out = mutableListOf<SessionMeta>()
-        runCatching {
-            val f = indexFile()
-            if (!f.exists()) return@runCatching
+        val f = indexFile()
+        if (!f.exists()) return out
+        try {
             val arr = JSONArray(f.readText())
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
@@ -61,12 +81,21 @@ class SessionStore(ctx: Context, private val profile: String) {
                     )
                 )
             }
+        } catch (e: Exception) {
+            // 原来整段 runCatching 把解析异常静默吞掉、当成空索引返回——
+            // 界面表现正是历史对话全部没了，而日志里一行线索都没有。
+            // 必须留痕并带上文件大小：文件在但读不出 = 写盘被中断 / 被杀留下的半截 JSON。
+            AppLog.err("store", "读索引失败（按空列表处理）profile=" + profile +
+                " 文件=" + f.name + " 字节=" + f.length(), e)
         }
         return out
     }
 
     fun saveIndex(list: List<SessionMeta>) {
-        runCatching {
+        // 列表变更的唯一落盘点：每次写盘记写了几条、几条归档。
+        // 用户报历史对话没了时，靠这串记录能看出是哪一次操作把列表写空的。
+        val archivedCount = list.count { it.archived }
+        try {
             val arr = JSONArray()
             for (s in list) {
                 arr.put(
@@ -78,6 +107,10 @@ class SessionStore(ctx: Context, private val profile: String) {
                 )
             }
             indexFile().writeText(arr.toString())
+            AppLog.log("store", "存索引 profile=" + profile + " 条数=" + list.size +
+                " 已归档=" + archivedCount)
+        } catch (e: Exception) {
+            AppLog.err("store", "存索引失败 条数=" + list.size + " 已归档=" + archivedCount, e)
         }
     }
 
@@ -183,6 +216,13 @@ class SessionStore(ctx: Context, private val profile: String) {
                 )
             }
         }
+        if (out.isEmpty()) {
+            // 空结果只有两种：文件不在，或文件在但读不出（解析异常被吞了）。
+            // 这两者修法完全不同，必须记清。
+            val mf = msgFile(id)
+            AppLog.log("store", "读消息为空 id=" + id.take(8) +
+                " 文件存在=" + mf.exists() + " 字节=" + (if (mf.exists()) mf.length() else 0L))
+        }
         return out
     }
 
@@ -276,11 +316,17 @@ class SessionStore(ctx: Context, private val profile: String) {
     fun hasMessages(id: String): Boolean {
         val f = msgFile(id)
         if (!f.exists() || f.length() < 3L) return false
-        return runCatching { JSONArray(f.readText()).length() > 0 }.getOrDefault(false)
+        return try {
+            JSONArray(f.readText()).length() > 0
+        } catch (e: Exception) {
+            AppLog.err("store", "判断会话有无消息失败 id=" + id.take(8) + " 字节=" + f.length(), e)
+            false
+        }
     }
 
     fun deleteMessages(id: String) {
-        runCatching { msgFile(id).delete() }
+        val ok = runCatching { msgFile(id).delete() }.getOrDefault(false)
+        AppLog.log("store", "删消息文件 id=" + id.take(8) + " 删除=" + ok)
     }
 
     /**
