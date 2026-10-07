@@ -719,15 +719,6 @@ fun Bubble(
                 )
         ) {
             Column(Modifier.padding(10.dp)) {
-                // 插话气泡：左上角一个「插话」小标，和正常发言区分开
-                if (m.steer) {
-                    Row(
-                        Modifier.clip(RoundedCornerShape(6.dp))
-                            .background(c.accent.copy(alpha = 0.16f))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                    ) { Text("插话", color = c.accent, fontSize = 10.sp) }
-                    Spacer(Modifier.height(4.dp))
-                }
                 // 引用片段：这条消息是引用发送时，先显示被引的一行（左侧竖条 + 灰字）
                 if (m.quote.isNotEmpty()) {
                     Row(
@@ -926,7 +917,7 @@ fun Bubble(
                 }
                 // 语音附件的迷你图标：跟时间并排同一行，不单独占一行。
                 val voiceTarget = remember(m.text) { VoicePlayer.audioTarget(m.text) }
-                if (rc != null || m.ts > 0 || voiceTarget.isNotEmpty()) {
+                if (rc != null || m.ts > 0 || voiceTarget.isNotEmpty() || m.steer) {
                     Spacer(Modifier.height(4.dp))
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -934,6 +925,15 @@ fun Bubble(
                             if (actionable) Modifier.clickable { onReceiptTap(m.id) } else Modifier
                         )
                     ) {
+                        // 插话小标：跟发送时间并排一行（原来它独占气泡顶部一行，白占高度）。
+                        if (m.steer) {
+                            Row(
+                                Modifier.clip(RoundedCornerShape(5.dp))
+                                    .background(c.accent.copy(alpha = 0.16f))
+                                    .padding(horizontal = 5.dp, vertical = 1.dp)
+                            ) { Text("插话", color = c.accent, fontSize = 9.sp) }
+                            Spacer(Modifier.width(5.dp))
+                        }
                         if (rc != null) {
                             Text(mark, color = markCol, fontSize = 11.sp)
                             Spacer(Modifier.width(5.dp))
