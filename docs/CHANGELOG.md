@@ -1,3 +1,14 @@
+## 2.115 — versionCode 126
+
+修：点播放按钮出现两条语音同时播、且互相停不掉。
+
+- **根因**：App 里三个播放器（自动播报 `StreamVoicePlayer`、气泡重播 `VoiceReplayPlayer`、老的整段附件 `VoicePlayer`）各持一份状态，起播前谁都不停别人——点重播只 `stop()` 自己，正在响的流式播报照旧；反过来按停止也只停自己那条。
+- **修法**：三个播放器起播前一律先掐掉另外两个（互斥），保证同一时刻只有一条语音在响；「停止」语义随之变成停全部。
+- 同一条消息不再同时渲染两个语音按钮（附件按钮与重播按钮）：优先按 `runId` 的重播按钮，没有 runId 的老消息才回落正文里的内联附件按钮。
+- 服务端、网关零改动；补丁清单不变。
+
+（改 VoicePlayer.kt / StreamVoicePlayer.kt / VoiceReplayPlayer.kt / Screens.kt）
+
 ## 2.114 — versionCode 125
 
 修：设置页的「播报语速」对自动播报与重播不生效。

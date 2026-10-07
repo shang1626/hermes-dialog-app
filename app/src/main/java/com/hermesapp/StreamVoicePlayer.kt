@@ -71,6 +71,9 @@ object StreamVoicePlayer {
      */
     fun begin(ctx: Context, key: String, runId: String = "") {
         stop()
+        // 互斥：新一条流式播报起播前，掐掉另两个播放器。
+        VoicePlayer.stop()
+        VoiceReplayPlayer.stop()
         try {
             // 按 run 命名：一条消息对应一个文件，重播按钮与流式播放共用它。
             val f = voiceFile(ctx, runId)
