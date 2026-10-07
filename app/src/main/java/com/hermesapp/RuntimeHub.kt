@@ -77,6 +77,12 @@ internal class SessionRuntime(val id: String) {
     var confirmingMsgId: Long = 0L
     /** 断流翻历史的轮询任务；收到正常事件或任务结束时取消。 */
     var recoveryJob: Job? = null
+    /**
+     * 「待同步」标记：回前台想同步、但该会话此刻正在跑（服务端记录还是半成品），
+     * 就先记下，等本轮收尾（doneOk / failPending）时自动补拉一次。
+     * 放在会话运行态上而不是函数局部——收尾可能发生在另一个 ViewModel 实例里。
+     */
+    var needSync: Boolean = false
     /** 本会话排队待发的消息（跑着任务时用户又发的那些），按先后顺序，本轮结束依次发。 */
     val queue = mutableListOf<QueuedSend>()
     /** 队列长度：输入栏显示「排队 N 条」。 */

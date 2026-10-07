@@ -1,3 +1,14 @@
+## 2.85 — versionCode 96
+
+新：从后台切回 App 时，自动与服务端同步一次会话正文（以前只同步标题）。
+
+1. **根因**：`onAppForeground()` 只做三件事——补恢复探测、掐假死流重连、同步标题（30 秒节流），**从不重拉正文**；而真正重拉正文的 `refreshFromServerFor()` 开头有 `if (r.busy.value) return` 守卫，正在跑的会话每次都被挡下。于是「进行中的对话切后台再回来，信息就停在切出去那一刻」。
+2. **回前台自动同步**：`syncOnForeground()` 拉当前会话的服务端消息并用既有的 `mergeByUserAnchor` 合并（按用户消息正文对齐，不丢本地内联图片，服务端压缩删行也不错位）。3 秒节流，防快速切前后台狂打接口。
+3. **正在跑的不硬拉**：服务端记录此刻是半成品，合并会把半截内容写进气泡。改落 `SessionRuntime.needSync` 标记，本轮收尾（`doneOk` / `failPending`）时自动补拉一次；其它正在跑的会话同样各落各的标记。
+4. **改挂进程级作用域**：`refreshFromServerFor` 原挂 `viewModelScope`，而回前台同步与收尾补拉都可能在 Activity 已被重建/销毁之后触发，挂旧实例的作用域会被一起取消 → 改挂 `RuntimeHub.scope`。
+
+（改 ChatViewModel.kt / RuntimeHub.kt）
+
 ## 2.84 — versionCode 95
 
 修：定时任务卡片上多出一行「原因 null」，以及真故障「投递失败」看不到。
