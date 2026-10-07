@@ -23,6 +23,28 @@ object Notifier {
     const val CHANNEL_ID = "hermes_msg"
     const val NOTIF_ID = 2001
 
+    /**
+     * 给通知挂上「App 自己的图标」：小图标 + 大图标。
+     *
+     * 为什么以前通知里看不到应用图标：三条通知的小图标全都用的是系统 drawable
+     * （stat_notify_chat / stat_sys_warning / stat_notify_sync），而且从未 setLargeIcon。
+     * 结果就是状态栏顶着系统那个通用气泡、通知栏里右侧一片空白，看着不像这个软件的消息。
+     *
+     * 两条 Android 规矩决定了必须这么配：
+     * ① **状态栏小图标会被系统强制染成单色**（彩色图会被压成一个实心色块），所以只能给单色
+     *    剪影 —— `ic_stat_hermes` 就是从 App 自己的图标取的白剪影，属于 App 自己的形状；
+     * ② 想在通知栏里看到**彩色的** App 图标，必须走 setLargeIcon 给位图（`ic_notify_app`）。
+     */
+    fun applyAppIcon(b: NotificationCompat.Builder, ctx: Context): NotificationCompat.Builder {
+        b.setSmallIcon(R.drawable.ic_stat_hermes)
+        runCatching {
+            b.setLargeIcon(
+                android.graphics.BitmapFactory.decodeResource(ctx.resources, R.drawable.ic_notify_app)
+            )
+        }
+        return b
+    }
+
     fun ensureChannel(ctx: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val mgr = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -64,8 +86,7 @@ object Notifier {
         val action = NotificationCompat.Action.Builder(
             android.R.drawable.ic_menu_send, "回复", replyPi
         ).addRemoteInput(input).build()
-        val n = NotificationCompat.Builder(ctx, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_notify_chat)
+        val n = applyAppIcon(NotificationCompat.Builder(ctx, CHANNEL_ID), ctx)
             .setContentTitle(title)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
@@ -92,8 +113,7 @@ object Notifier {
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val n = NotificationCompat.Builder(ctx, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_sys_warning)
+        val n = applyAppIcon(NotificationCompat.Builder(ctx, CHANNEL_ID), ctx)
             .setContentTitle(title)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))

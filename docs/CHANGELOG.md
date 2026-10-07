@@ -1,3 +1,15 @@
+## 2.102 — versionCode 113
+
+通知栏挂上 App 自己的图标：
+
+- **原因**：三条通知的小图标全用的系统 drawable（`stat_notify_chat` / `stat_sys_warning` / `stat_notify_sync`），而且从没调用过 `setLargeIcon`。所以状态栏顶着系统那个通用气泡，通知栏里右侧一片空白 —— 看着不像这个软件发来的消息。
+- **改法**：新增 `Notifier.applyAppIcon()`，三处通知统一走它：
+  - 小图标换成 `ic_stat_hermes`（从 App 自己的图标取的白剪影）—— 状态栏小图标会被系统强制染成单色，彩色图会被压成一块实心色，所以这里只能是单色剪影；
+  - `setLargeIcon(ic_notify_app)` 给位图 —— 通知栏里显示**彩色的** App 图标走的是这条。
+- 两份素材都从 App 现有的图标图派生（`res/drawable-nodpi/`），没有另画图案。
+
+（改 Notifier.kt / RunService.kt / 新增 res/drawable-nodpi/ic_stat_hermes.png、ic_notify_app.png / app/build.gradle.kts）
+
 ## 2.101 — versionCode 112
 
 修「定时任务界面显示：收件箱获取失败」：
