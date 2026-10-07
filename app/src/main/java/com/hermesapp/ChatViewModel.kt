@@ -1136,6 +1136,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         syncFromServer()
         // 把设置里存的语速灌进播放器（播放器是单例，重启 App 后要重新初始化）
         VoicePlayer.rate = p.voiceRate
+        StreamVoicePlayer.rate = p.voiceRate
         pingLoop()
         refreshStatus()
         refreshFromServer()
@@ -3288,6 +3289,27 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         val line = toolLine(ev, true)
                         if (line.isNotEmpty()) appendTrace(r, line)
                     }
+                    // 流式语音（方案丙）：服务端边合成边推，这里边收边播。
+                    // run.completed 已先到（finished 已置位），音频晚到不会触发误重连。
+                    "audio.start" -> {
+                        AppLog.log("stream", "语音流开始 run=" + rid.take(12))
+                        if (prefs.playCompletionVoice) {
+                            StreamVoicePlayer.rate = prefs.voiceRate
+                            StreamVoicePlayer.begin(getApplication(), "stream:" + rid)
+                        }
+                    }
+                    "audio.delta" -> {
+                        if (prefs.playCompletionVoice && StreamVoicePlayer.nowPlaying.value.isNotEmpty()) {
+                            StreamVoicePlayer.append(getApplication(), ev.data.optString("data", ""))
+                        }
+                    }
+                    "audio.end" -> {
+                        AppLog.log("stream", "语音流结束 run=" + rid.take(12) +
+                            " 块数=" + ev.data.optInt("chunks", 0))
+                        if (prefs.playCompletionVoice && StreamVoicePlayer.nowPlaying.value.isNotEmpty()) {
+                            StreamVoicePlayer.end(getApplication())
+                        }
+                    }
                     "approval.request" -> attachApproval(r, ev)
                     "clarify.request" -> attachClarify(r, ev)
                     "subagent.start" -> upsertSubagent(r, ev, running = true)
@@ -3842,7 +3864,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 设置页「完成语音播报」：任务跑完自动播服务端下发的整段语音。 */
     fun setPlayCompletionVoice(on: Boolean) {
         prefs.playCompletionVoice = on
-        if (!on) VoicePlayer.stop()
+        if (!on) { VoicePlayer.stop(); StreamVoicePlayer.stop() }
     }
 
     /** 设置页调播报语速：写入 prefs 并立刻灌进播放器（下次播放即用新速度）。 */
