@@ -557,23 +557,46 @@ private fun subagentProgressText(s: SubagentLine, now: Long): String {
 }
 
 /**
- * 会话子任务面板：把本会话全部子任务汇总在对话窗口顶部。
+ * 顶部栏里那个「子任务」小标：挤在顶栏同一行（☰ 对话 … 搜索 ●在线）里，
+ * 点一下在下面展开明细，再点收起。
  *
- * 为什么放到顶部：子任务原来只在它那一条气泡里显示，对话一长就得往回翻半天才能找到
- * 「那个子任务跑到哪了」。汇总到顶部后，不管对话多长都在同一处看；点某条看它每一步在做什么。
+ * 为什么做成行内小标：用户明确要求「位置在顶部栏」并且「挤进去」，同时
+ * 搜索/在线两项原位不动 —— 所以它插在标题右边，右侧靠 Spacer(weight) 顶住，
+ * 那两项不会被推走。没有子任务时它整个不出现，顶栏和以前一模一样。
  */
 @Composable
-fun SubagentPanel(vm: ChatViewModel) {
+fun SubagentChip(vm: ChatViewModel, open: Boolean, onToggle: () -> Unit) {
     val c = LocalAppColors.current
     val subs by vm.sessionSubagents.collectAsState()
     if (subs.isEmpty()) return
     val running = subs.count { it.status == "running" }
-    // 长会话里子任务会一直累积，默认只列最近 5 条，其余靠「看全部」展开，
-    // 免得面板把整个对话窗口吃掉。进会话时默认折叠：只露一行标题，展开才占高度。
-    var open by remember { mutableStateOf(false) }
+    Text(
+        "子任务 " + subs.size + (if (running > 0) " · " + running + " 跑" else "") +
+            (if (open) " ▴" else " ▾"),
+        color = if (running > 0) c.accent else c.dim,
+        fontSize = 12.sp,
+        modifier = Modifier.clip(RoundedCornerShape(6.dp))
+            .clickable { onToggle() }
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+    )
+}
+
+/**
+ * 展开后的子任务明细：挂在顶栏那一行下面（属于 TopBar 组件自身）。
+ *
+ * 默认折叠、点小标才展开：有子任务的会话一进去不该被面板吃掉一截屏幕。
+ * 长会话里子任务会一直累积，默认只列最近 5 条，其余靠「看全部」。
+ */
+@Composable
+fun SubagentList(vm: ChatViewModel) {
+    val c = LocalAppColors.current
+    val subs by vm.sessionSubagents.collectAsState()
+    if (subs.isEmpty()) return
+    val running = subs.count { it.status == "running" }
     val cap = 5
     var showAll by remember { mutableStateOf(false) }
     val rows = if (showAll) subs else subs.take(cap)
+    // 「N 秒前取的进度」的心跳：只在还有子任务在跑时才跳（进度本身 4 秒刷一回）。
     val tick = remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(running > 0) {
         while (running > 0) {
@@ -582,41 +605,31 @@ fun SubagentPanel(vm: ChatViewModel) {
         }
     }
     val curId by vm.currentId.collectAsState()
-    Column(Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 10.dp, vertical = 6.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "子任务（" + subs.size + "）" + (if (running > 0) " · " + running + " 个在跑" else ""),
-                color = if (running > 0) c.accent else c.dim, fontSize = 11.sp,
-            )
-            Spacer(Modifier.weight(1f))
-            if (subs.size > cap) {
+    Column(Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 10.dp, vertical = 4.dp)) {
+        if (subs.size > cap) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Spacer(Modifier.weight(1f))
+                // 收起靠顶栏那个小标（再点一下），这里只放「看全部」切换。
                 Text(
-                    if (showAll) "只显示最近" else "看全部",
+                    if (showAll) "只显示最近" else "看全部（" + subs.size + "）",
                     color = c.accent, fontSize = 11.sp,
                     modifier = Modifier.clickable { showAll = !showAll }.padding(horizontal = 4.dp),
                 )
             }
-            Text(
-                if (open) "收起" else "展开", color = c.accent, fontSize = 11.sp,
-                modifier = Modifier.clickable { open = !open }.padding(horizontal = 4.dp),
+        }
+        for (s in rows) {
+            SubagentRow(
+                s, tick,
+                onStop = { vm.stopSubagent(curId, s.id) },
+                onClick = { vm.openSubagentDetail(curId, s.id) },
             )
         }
-        if (open) {
-            Spacer(Modifier.height(4.dp))
-            for (s in rows) {
-                SubagentRow(
-                    s, tick,
-                    onStop = { vm.stopSubagent(curId, s.id) },
-                    onClick = { vm.openSubagentDetail(curId, s.id) },
-                )
-            }
-            if (!showAll && subs.size > cap) {
-                Text(
-                    "还有 " + (subs.size - cap) + " 条更早的（点「看全部」）",
-                    color = c.dim, fontSize = 10.sp,
-                    modifier = Modifier.padding(vertical = 2.dp),
-                )
-            }
+        if (!showAll && subs.size > cap) {
+            Text(
+                "还有 " + (subs.size - cap) + " 条更早的（点「看全部」）",
+                color = c.dim, fontSize = 10.sp,
+                modifier = Modifier.padding(vertical = 2.dp),
+            )
         }
     }
     HorizontalDivider(color = c.card)
@@ -899,7 +912,7 @@ fun Bubble(
                     }
                 }
                 // 子任务进度不在这里逐条显示了：已统一汇总到对话窗口顶部的面板
-                // （SubagentPanel），消息再长也在同一处看。
+                // （顶栏的 SubagentChip），消息再长也在同一处看。
                 if (m.text.isNotEmpty() || (m.pending && m.trace.isEmpty())) {
                     // 正文走 Markdown 渲染：管道表格画成网格，URL 可点开浏览器；其余按等宽原文
                     RichText(
