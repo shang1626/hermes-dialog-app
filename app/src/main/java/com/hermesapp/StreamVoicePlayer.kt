@@ -80,6 +80,8 @@ object StreamVoicePlayer {
             raf = RandomAccessFile(f, "rw")
             ended = false
             finished = false
+            firstDeltaLogged = false
+            dropLogged = false
             _nowPlaying.value = key
             AppLog.log("voice", "流式语音开始 key=" + key + " 文件=" + f.absolutePath)
         } catch (e: Exception) {
@@ -88,14 +90,30 @@ object StreamVoicePlayer {
         }
     }
 
+    /** 诊断：首个音频块、以及「块到了却没有文件句柄」各只记一次，平时零噪声。 */
+    @Volatile private var firstDeltaLogged = false
+    @Volatile private var dropLogged = false
+
     /** 收到 audio.delta：把这一块追加进文件。 */
     fun append(ctx: Context, b64: String) {
-        val r = raf ?: return
+        val r = raf
+        if (r == null) {
+            if (!dropLogged) {
+                dropLogged = true
+                AppLog.log("voice", "音频块到达但无文件句柄（nowPlaying=" + _nowPlaying.value +
+                    "）——begin 未生效或已被 stop")
+            }
+            return
+        }
         try {
             val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
             if (bytes.isEmpty()) return
             r.seek(r.length())
             r.write(bytes)
+            if (!firstDeltaLogged) {
+                firstDeltaLogged = true
+                AppLog.log("voice", "首个音频块 " + bytes.size + " 字节 文件长=" + r.length())
+            }
             startIfReady(ctx)     // 有数据就起播：首个 6KB 块到达即出声
         } catch (e: Exception) {
             AppLog.err("voice", "流式语音写入失败", e)
@@ -155,21 +173,33 @@ object StreamVoicePlayer {
         }
     }
 
-    /** 释放播放器：播放器操作（stop/release）也必须在主线程。 */
+    /**
+     * 停掉并释放当前播放器。
+     *
+     * 关键：先在**调用线程**把 player/raf 引用摘下来（存局部变量），再把「旧对象」交给主线程关闭，
+     * 并且**不在这里动 _nowPlaying**（由调用方按顺序维护）。
+     *
+     * 为什么不能把清空写进主线程的延迟块：begin() 是「先 stop()、再设 key/raf」，两步都在调用线程
+     * 顺序执行；若 stop() 的清空动作被 post 到主线程延后执行，它就会在 begin() 设好新 key 之后
+     * 才跑来清空 —— nowPlaying 变空 → 后续 audio.delta 全被 `isNotEmpty()` 判假丢弃；
+     * raf 被置空 → append() 直接 return，一个字节都不写。这正是 2.111 真机无声的真因。
+     */
     private fun releaseQuietly() {
+        val oldPlayer = player
+        val oldRaf = raf
+        player = null
+        raf = null
         onMain {
-            val p = player
-            player = null
-            _nowPlaying.value = ""
-            runCatching { p?.stop() }
-            runCatching { p?.release() }
-            runCatching { raf?.close() }
-            raf = null
+            runCatching { oldPlayer?.stop() }
+            runCatching { oldPlayer?.release() }
+            runCatching { oldRaf?.close() }
         }
     }
 
+    /** 停止播放（用户按钮 / 新一轮开始）。同步清 nowPlaying，避免与 begin 的顺序错位。 */
     fun stop() {
         ended = true
+        _nowPlaying.value = ""
         releaseQuietly()
     }
 

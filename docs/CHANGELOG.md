@@ -1,3 +1,13 @@
+## 2.112 — versionCode 123
+
+修：流式语音第二个缺陷——stop() 的清理动作被延后到主线程，反把 begin() 刚设好的状态清空。
+
+- **根因**：2.111 修线程约束时，把 `releaseQuietly()` 整个搬进主线程。但 `begin()` 是「先 `stop()`、再设 `nowPlaying`/`raf`」，两步在 SSE 线程顺序执行；`stop()` 里的清空被 post 到主线程**延后**执行，于是它在 `begin()` 设好新 key 之后才跑，把 `nowPlaying` 清空、`raf` 置空 → 后续 `audio.delta` 全被 `isNotEmpty()` 判假丢弃、`append()` 因 raf 为空直接 return → 又是一个字都不播。
+- **修法**：`releaseQuietly()` 改为先在**调用线程**把 `player`/`raf` 引用摘下来（局部变量），只把「旧对象」交给主线程 `stop/release/close`；`nowPlaying` 的置空移到 `stop()` 里同步执行，绝不在主线程块里改共享状态。两条路径（线程约束 + 清空时序）现已同时正确。
+- 服务端、网关、其它功能零改动。
+
+（改 StreamVoicePlayer.kt / app/build.gradle.kts）
+
 ## 2.111 — versionCode 122
 
 修：2.110 流式语音在真机上完全无声。
