@@ -2555,7 +2555,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.streamGen = gen
         r.call?.let { old -> if (!old.isCanceled()) { AppLog.log("stream", "重起流先掐旧流 run=" + rid.take(12)); old.cancel() } }
         r.lastEventAt = System.currentTimeMillis()   // 重新起流即重置活跃时间，避免刚连上就被判假死
-        AppLog.log("stream", "起流 run=" + rid.take(12) + " lastSeq=" + r.lastSeq + " 第" + r.autoContinue + "次续接 gen=" + gen)
+        r.evCount = 0                                 // 本轮事件计数：流关闭时汇总，一眼看出事件到底到没到
+        r.toolCount = 0
+        AppLog.log("stream", "起流 run=" + rid.take(12) + " lastSeq=" + r.lastSeq + " 第" + r.autoContinue + "次续接 gen=" + gen + "（本轮事件计数清零）")
         // 每轮流一个攒帧器：碎字按帧放送。重起流时丢弃上一轮的残余。
         r.coalescer?.discard()
         r.coalescer = StreamDeltaCoalescer(RuntimeHub.scope, onFlush = { s -> appendDelta(r, s) })
@@ -2567,6 +2569,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 if (ev.id != null) r.lastSeq = ev.id
                 r.lastEventAt = System.currentTimeMillis()
                 val name = ev.event ?: ev.data.optString("event", "")
+                r.evCount++
+                if (name.startsWith("tool.")) r.toolCount++
                 // 收到任何真实事件即视为连接已恢复正常：清掉重试提示与计数。
                 if (name != "replay.truncated" && r.autoContinue != 0) {
                     r.autoContinue = 0
@@ -2593,6 +2597,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         r.coalescer?.flushNow()
                         val line = toolLine(ev, ev.data.optBoolean("error", false))
                         if (line.isNotEmpty()) appendTrace(r, line)
+                        AppLog.log("stream", "过程行已加 工具=" + ev.data.optString("tool", "") +
+                            " 本轮事件=" + r.evCount + " 其中工具=" + r.toolCount)
                     }
                     "tool.failed" -> {
                         r.coalescer?.flushNow()
@@ -2644,12 +2650,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             onClosed = {
                 if (gen != r.streamGen) return@streamEvents   // 已被新流取代，作废
                 r.coalescer?.flushNow()
-                AppLog.log("stream", "流关闭 run=" + rid.take(12) + " busy=" + r.busy.value + " finished=" + r.finished + " lastSeq=" + r.lastSeq)
+                AppLog.log("stream", "流关闭 run=" + rid.take(12) + " busy=" + r.busy.value + " finished=" + r.finished + " lastSeq=" + r.lastSeq +
+                    " 本轮共收事件=" + r.evCount + " 其中工具=" + r.toolCount)
                 if (r.busy.value && !r.finished) maybeContinue(sid)
             },
             onError = { e ->
                 if (gen != r.streamGen) return@streamEvents   // 已被新流取代，作废
-                AppLog.err("stream", "流出错 run=" + rid.take(12) + " busy=" + r.busy.value + " finished=" + r.finished, e)
+                AppLog.err("stream", "流出错 run=" + rid.take(12) + " busy=" + r.busy.value + " finished=" + r.finished +
+                    " 本轮共收事件=" + r.evCount + " 其中工具=" + r.toolCount, e)
                 // 不再往正文塞「[连接断开]」——断流期间的提示统一走 retryNote（气泡上方一行），
                 // 正文只保留任务真实产出，避免一次抖动就在会话里留一条错行。
                 r.coalescer?.flushNow()

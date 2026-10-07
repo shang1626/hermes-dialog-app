@@ -65,6 +65,10 @@ internal class SessionRuntime(val id: String) {
     var saveJob: Job? = null
     /** 最近一次收到事件的墙钟时间，用于「回到前台」判断流是否已假死。 */
     var lastEventAt: Long = 0L
+    /** 本轮（当前这条流）收到的 SSE 事件条数：排查「步骤不显示」时看事件到底到没到。 */
+    var evCount: Int = 0
+    /** 本轮收到的工具事件（tool.started/completed/failed）条数。 */
+    var toolCount: Int = 0
     /** 流式攒帧器：把碎字按帧放送，避免一大块一大块地跳。 */
     var coalescer: StreamDeltaCoalescer? = null
     /** 本轮发送前该会话已有多少条用户消息：断流翻历史时的位置锚点。 */
