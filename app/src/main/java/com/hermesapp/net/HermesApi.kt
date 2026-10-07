@@ -14,9 +14,36 @@ import okhttp3.Response
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.net.Inet4Address
+import java.net.InetAddress
 import java.util.concurrent.TimeUnit
+import okhttp3.Dns
 
 data class SseEvent(val id: Int?, val event: String?, val data: JSONObject)
+
+/**
+ * 只把 IPv4 地址交给 OkHttp 的连接层。
+ *
+ * 2026-10-08 实测（App 运行日志）：34 次 `ConnectException: Failed to connect to
+ * your-gateway.example.com/[2001:db8:...]:443` **全部**打在 IPv6 上，而同一时刻 IPv4 一路通畅
+ * （curl -4 与 -6 都能 200，但用户所在移动网络到 EdgeOne 的 IPv6 路由是黑洞：SYN 发出去
+ * 没有任何回应）。内核按 TCP SYN 重传退避死等 —— 1+2+4+8≈15s、再加 16≈31s、再加 32≈63s ——
+ * 这正是日志里普通请求「200 但要 14s / 28s / 67s」的来源：先撞 IPv6 撞满一整个超时才换地址。
+ *
+ * 后果分两种：主 client 开着 `retryOnConnectionFailure`，撞穿了会换地址重连，所以只是慢；
+ * `probeClient` 关着重试，一撞上就立刻抛错 —— 而「右上角在线/离线」和「连接中断重连」全由它驱动，
+ * 于是界面全程报离线、一直重连。
+ *
+ * 取 IPv4 优先（而不是彻底禁 IPv6）：IPv6 可用时仍会作为后备，只是不再排在前面被黑洞吃掉。
+ */
+private val IPv4FirstDns = object : Dns {
+    override fun lookup(hostname: String): List<InetAddress> {
+        val all = Dns.SYSTEM.lookup(hostname)
+        val v4 = all.filterIsInstance<Inet4Address>()
+        val v6 = all.filterNot { it is Inet4Address }
+        return if (v4.isEmpty()) all else v4 + v6
+    }
+}
 
 class HermesApi(
     private val baseUrl: String,
@@ -24,6 +51,7 @@ class HermesApi(
     private val prefix: String = "",
 ) {
     private val client = OkHttpClient.Builder()
+        .dns(IPv4FirstDns)
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
@@ -37,14 +65,16 @@ class HermesApi(
      * 在线状态冻结在最后一次结果（表现为「掉线了还显示在线」）。
      */
     private val probeClient = OkHttpClient.Builder()
-        // 2026-10-08：原为 5s/6s，移动网络下一次 DNS 慢或丢包重传就整轮失败，
-        // 连续 2 次即翻「离线」，用户实测「一直显示离线」而服务端日志 6195 次全是 200。
-        // 放宽到 15s（仍远小于 SSE 的 30s 读超时），只用来判「到底通不通」。
+        .dns(IPv4FirstDns)
+        // 2026-10-08：超时放宽到 15s 只是治标（仍远小于 SSE 的 30s 读超时）。
+        // 真正的病根是「连着就走 IPv6 黑洞」+ 这里关着重试，见 IPv4FirstDns 的注释。
+        // 重试必须打开：主 client 一直开着它才没报错（只是慢），探针关掉就等于把
+        // 一次 IPv6 撞墙直接判成「离线 / 断线」。
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
         .callTimeout(15, TimeUnit.SECONDS)
-        .retryOnConnectionFailure(false)
+        .retryOnConnectionFailure(true)
         .build()
 
     /**
@@ -59,6 +89,7 @@ class HermesApi(
      * 真假死时 30 秒抛 SocketTimeoutException，交给上层走重连。
      */
     private val streamClient = OkHttpClient.Builder()
+        .dns(IPv4FirstDns)
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
