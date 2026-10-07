@@ -309,6 +309,15 @@ class SessionStore(ctx: Context, private val profile: String) {
                 arr.put(o)
             }
             msgFile(id).writeText(arr.toString())
+            if (clean.size > max) {
+                AppLog.log("store", "会话消息超上限裁剪 id=" + id.take(8) +
+                    " 原=" + clean.size + " 保留=" + tail.size)
+            }
+        }.onFailure {
+            // 以前整段被 runCatching 静默吞掉：写盘失败一行日志都没有，
+            // 表现是「消息看着发了、重开就没了」，却查不到任何线索。
+            AppLog.err("store", "落盘会话消息失败 id=" + id.take(8) +
+                " 条数=" + list.size + " 目标=" + msgFile(id).absolutePath, it)
         }
     }
 

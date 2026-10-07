@@ -75,7 +75,9 @@ private fun sanitizeName(name: String): String {
  * 再用 ACTION_VIEW 拉起系统应用：HTML/SVG 走浏览器，图片走图库，PDF 走阅读器。
  */
 fun openAttachment(ctx: Context, name: String, data: DecodedData) {
-    runCatching {
+    // 失败不能静默：原来整段 runCatching 什么都不留，点一下毫无反应，
+    // 用户分不清是「没点到」还是「打不开」。
+    val ok = runCatching {
         val dir = File(ctx.filesDir, "attachments").apply { mkdirs() }
         val safe = sanitizeName(name)
         val withExt = if (safe.contains('.')) safe else safe + extFor(data.mime)
@@ -87,6 +89,11 @@ fun openAttachment(ctx: Context, name: String, data: DecodedData) {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         ctx.startActivity(intent)
+        true
+    }.getOrDefault(false)
+    if (!ok) {
+        AppLog.log("attach", "打开附件失败（无可用应用或写入失败）name=" + name)
+        Toast.makeText(ctx, "打开失败：手机上没有能打开这个文件的应用", Toast.LENGTH_SHORT).show()
     }
 }
 
@@ -166,6 +173,8 @@ private fun persistAttachment(ctx: Context, name: String, data: DecodedData): Fi
     val f = File(dir, withExt)
     f.writeBytes(data.bytes)
     f
+}.onFailure {
+    AppLog.err("attach", "附件落盘失败 name=" + name, it)
 }.getOrNull()
 
 /**
@@ -191,6 +200,7 @@ fun shareAttachment(ctx: Context, name: String, data: DecodedData) {
         true
     }.getOrDefault(false)
     if (!ok) {
+        AppLog.log("attach", "分享附件失败 name=" + name)
         Toast.makeText(ctx, "分享失败：没有可用的分享应用，或文件写入失败", Toast.LENGTH_SHORT).show()
     }
 }
@@ -227,4 +237,6 @@ fun saveAttachmentToDownloads(ctx: Context, name: String, data: DecodedData): St
         MediaScannerConnection.scanFile(ctx, arrayOf(f.absolutePath), arrayOf(mime), null)
         display
     }
+}.onFailure {
+    AppLog.err("attach", "保存附件到下载失败 name=" + name, it)
 }.getOrNull()

@@ -1175,7 +1175,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 // 守卫：该会话此刻已在跑任务则不覆盖（切换会话不影响——只写它自己的缓冲）。
                 if (r.busy.value) return@launch
-                if (list.isEmpty()) return@launch
+                if (list.isEmpty()) {
+                    AppLog.log("sync", "服务端会话无消息（本地保留 " + r.messages.value.size +
+                        " 条）sid=" + id.take(8))
+                    return@launch
+                }
                 // 合并而不是覆盖：本地消息正文里带内联图片（data URL），而服务端存的是
                 // 原始 MEDIA: 路径——直接覆盖会把图片弄丢（用户报「更新后图片不见了」）。
                 // 对齐方式不能用数组下标：服务端会滤掉「内容为空的助手行」与工具行，
@@ -1187,6 +1191,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 r.messages.value = merged
                 r.loaded = true
                 store.saveMessages(id, merged, maxHistory)
+                AppLog.log("sync", "合并服务端记录 sid=" + id.take(8) +
+                    " 本地=" + local.size + " 服务端=" + list.size + " 合并后=" + merged.size)
             } catch (e: Exception) {
                 AppLog.err("sync", "拉服务端消息失败 sid=" + id.take(8), e)
                 // 服务端无此会话或网络异常：保留本地内容
@@ -1488,7 +1494,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val out = fetchJobs(includeDisabled) ?: return@launch
                 _jobs.value = out
                 _jobsErr.value = ""
+                AppLog.log("job", "任务列表加载 " + out.size + " 条 includeDisabled=" + includeDisabled)
             } catch (e: Exception) {
+                AppLog.err("job", "任务列表加载失败", e)
                 _jobsErr.value = "获取失败：" + (e.message ?: "?")
             }
         }
@@ -1552,6 +1560,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val who = jobLabel.ifEmpty { jobId }
         viewModelScope.launch(Dispatchers.IO) {
             val a = api ?: return@launch
+            AppLog.log("job", "操作 " + action + " id=" + jobId.take(12) + " 名=" + who)
             try {
                 when (action) {
                     "pause" -> { a.pauseJob(jobId); _jobsNote.value = "已暂停：" + who }
@@ -1573,6 +1582,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 _jobsErr.value = ""
             } catch (e: Exception) {
+                AppLog.err("job", "操作失败 " + action + " id=" + jobId.take(12), e)
                 _jobsNote.value = ""
                 _jobsErr.value = "操作失败：" + (e.message ?: "?")
             }
@@ -1609,6 +1619,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             when (job.execStatus) {
                 "completed" -> {
                     val tail = job.execDuration
+                    AppLog.log("job", "执行完成 " + who + " 耗时=" + tail)
                     _jobsNote.value = "已完成：" + who + (if (tail.isEmpty()) "" else "（耗时 " + tail + "）")
                     val summary = fetchRunSummary(a, jobId)
                     if (summary.isNotEmpty()) {
@@ -1619,6 +1630,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 "failed" -> {
                     val why = job.execError.ifEmpty { "未知原因" }
                     _jobsNote.value = ""
+                    AppLog.log("job", "执行失败 " + who + " — " + why.take(200))
                     _jobsErr.value = "执行失败：" + who + " — " + why.take(200)
                     return
                 }
