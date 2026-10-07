@@ -3310,7 +3310,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         AppLog.log("stream", "语音流开始 run=" + rid.take(12))
                         if (prefs.playCompletionVoice) {
                             StreamVoicePlayer.rate = prefs.voiceRate
-                            StreamVoicePlayer.begin(getApplication(), "stream:" + rid, rid)
+                            // 带上归属会话：多任务排队时提示条要显示「正在播放：X 的语音」。
+                            val vTitle = _sessions.value.firstOrNull { it.id == sid }?.title ?: "对话"
+                            StreamVoicePlayer.begin(getApplication(), "stream:" + rid, rid, sid, vTitle)
                         }
                     }
                     "audio.delta" -> {
@@ -3895,6 +3897,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun setPlayCompletionVoice(on: Boolean) {
         prefs.playCompletionVoice = on
         if (!on) { VoicePlayer.stop(); StreamVoicePlayer.stop(); VoiceReplayPlayer.stop() }
+    }
+
+    /**
+     * 提示条上的「跳过」：跳过当前正在播的这条语音，接着播队列里的下一条。
+     * 流式那条在播就跳过它；否则是手动重播在响，停掉它（会接着推进流式队列）。
+     */
+    fun skipVoice() {
+        if (StreamVoicePlayer.nowPlaying.value.isNotEmpty()) {
+            StreamVoicePlayer.skipCurrent()
+        } else {
+            VoiceReplayPlayer.stop()
+        }
     }
 
     /**

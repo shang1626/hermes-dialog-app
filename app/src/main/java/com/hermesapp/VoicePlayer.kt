@@ -76,7 +76,7 @@ object VoicePlayer {
         // 互斥：同一时刻只允许一条语音在响。
         // 流式那边只让「正在播的那条」让位（yield），排队的其余任务保留，等这里播完接着播；
         // 重播播放器则整个停掉（用户主动切到这条，旧的重播不该再续）。
-        StreamVoicePlayer.yield()
+        StreamVoicePlayer.yieldAndDrop()
         // 先把自己标成「在播」，再停对方——否则 stop() 触发的队列推进会以为没人播、
         // 抢先起播下一条（pump 会检查本播放器的 nowPlaying，非空即让路）。
         _nowPlaying.value = target
@@ -104,7 +104,9 @@ object VoicePlayer {
 
     private fun play(ctx: Context, target: String, bytes: ByteArray) {
         try {
-            stop()
+            // 只本地释放，不走公开 stop()：它会给流式队列发「让位结束」信号，
+            // 可能把刚让位的语音又拉起来从头播。详见 StreamVoicePlayer.yieldAndDrop。
+            releaseCurrent()
             _nowPlaying.value = target
             val f = File(ctx.cacheDir, "completion_voice.mp3")
             f.writeBytes(bytes)
@@ -139,7 +141,19 @@ object VoicePlayer {
             AppLog.log("voice", "语音已开始播放 " + bytes.size + " 字节")
         } catch (e: Exception) {
             AppLog.err("voice", "语音播放失败", e)
-            stop()
+            releaseCurrent()
+            _nowPlaying.value = ""
+            StreamVoicePlayer.resumeQueue()
+        }
+    }
+
+    /** 只释放本播放器当前实例：不动「在播」标记、不推进流式队列。 */
+    private fun releaseCurrent() {
+        val p = player
+        player = null
+        if (p != null) {
+            runCatching { if (p.isPlaying) p.stop() }
+            runCatching { p.release() }
         }
     }
 
