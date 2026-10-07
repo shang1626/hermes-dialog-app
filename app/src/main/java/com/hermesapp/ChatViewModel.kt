@@ -255,6 +255,21 @@ data class JobItem(
 )
 
 /**
+ * 一个会话的运行态摘要（侧边栏显示「执行中 / 子任务 N / 排队 N」用）。
+ * 三者任一为真就算「有动静」。
+ */
+data class SessionRunFlag(
+    /** 本会话本地正跑着一轮。 */
+    val busy: Boolean = false,
+    /** 本会话里正在跑的子任务（delegate_task 子代理）个数。 */
+    val subagents: Int = 0,
+    /** 排队待发的条数。 */
+    val queued: Int = 0,
+) {
+    val active: Boolean get() = busy || subagents > 0 || queued > 0
+}
+
+/**
  * 收件箱里一条定时任务产出（服务端 GET /api/inbox 的一条）。
  * 为什么走收件箱而不是推送：App 走 api_server 通道，那条适配器声明不支持推送
  * （supports_async_delivery=False），定时任务结果没法主动送过来，只能 App 来拉。
@@ -387,6 +402,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 正在跑任务的会话 id 集合：会话列表里给它们显示「执行中」标识。 */
     private val _runningIds = MutableStateFlow<Set<String>>(emptySet())
     val runningIds = _runningIds.asStateFlow()
+
+    /**
+     * 侧边栏每条会话的状态提示：跑着任务 / 几个子任务在跑 / 排队几条。
+     *
+     * 为什么单独一份（而不是只有一个 running 集合）：子任务是后台子代理，可能比父轮次活得久
+     * （父 run 结束了子代理还在干），只按「本地 busy」打点会漏掉这种情况——用户看着会话列表
+     * 一片安静，其实里面还有活。见 refreshRunFlags。
+     */
+    private val _runFlags = MutableStateFlow<Map<String, SessionRunFlag>>(emptyMap())
+    val runFlags = _runFlags.asStateFlow()
+    private var runFlagsTicker: Job? = null
 
     /** -1 未下载；0..100 下载中百分比。 */
     private val _downloadPct = MutableStateFlow(-1)
@@ -968,6 +994,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         resumeActiveRun()
         // 启动就先看一眼定时任务收件箱：App 这个通道收不到推送，产出只能自己来拉。
         refreshInbox()
+        // 侧边栏会话状态提示的心跳（子任务/排队/busy 都算）。
+        startRunFlagsTicker()
         drainPendingReply()
         checkUpdateSilently()
     }
@@ -3450,7 +3478,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun updateRunService() {
         val running = runtimes.filterValues { it.busy.value }.keys.toSet()
-        _runningIds.value = running
+        // 顺带刷一次侧边栏提示：子任务/排队也算「有动静」，只按 busy 打点会漏。
+        refreshRunFlags()
         // 治本：只要有任务在跑就举牌保活（抄 relay 的「活跃轮次登记」），
         // 不再只看「后台运行」开关：开关关着时切后台照样会被系统冻结，
         // 进度与完成通知都丢。
@@ -3473,6 +3502,40 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 进主界面时调一次：开关开着但还没发过消息，也要把常驻通知挂上。 */
     fun ensureRunService() {
         updateRunService()
+    }
+
+    /**
+     * 侧边栏会话说状态提示的心跳：每 2 秒扫一遍内存里的运行态，有变化才推给界面。
+     *
+     * 为什么用「定时扫」而不是在每处状态变化打点：状态有三个来源（本地 busy、子任务行、
+     * 待发队列），而子任务是个后台子代理——它可能比父轮次活得久，靠「任务开始/结束」打点
+     * 会漏掉这段窗口。扫描纯读内存、不发请求，开销可忽略；值没变就不推，界面也不重组。
+     */
+    private fun startRunFlagsTicker() {
+        if (runFlagsTicker?.isActive == true) return
+        runFlagsTicker = RuntimeHub.scope.launch {
+            while (isActive) {
+                refreshRunFlags()
+                delay(2_000L)
+            }
+        }
+    }
+
+    /** 重算每条会话的运行态摘要（只留有动静的），并同步旧的 runningIds。 */
+    private fun refreshRunFlags() {
+        val out = LinkedHashMap<String, SessionRunFlag>()
+        for ((sid, r) in runtimes) {
+            val flag = SessionRunFlag(
+                busy = r.busy.value,
+                // 正在跑的子任务数：子代理可能比父轮次活得久，这是「会话里还有活」的证据。
+                subagents = r.messages.value.sumOf { m -> m.subagents.count { it.status == "running" } },
+                queued = r.queue.size,
+            )
+            if (flag.active) out[sid] = flag
+        }
+        if (out != _runFlags.value) _runFlags.value = out
+        val busyIds = out.filterValues { it.busy }.keys
+        if (busyIds != _runningIds.value) _runningIds.value = busyIds
     }
 
     /**

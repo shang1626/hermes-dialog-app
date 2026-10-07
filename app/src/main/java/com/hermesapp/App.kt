@@ -503,7 +503,7 @@ fun DrawerPanel(
     val sessions by vm.sessions.collectAsState()
     val currentId by vm.currentId.collectAsState()
     val updateBadge by vm.updateBadge.collectAsState()
-    val runningIds by vm.runningIds.collectAsState()
+    val runFlags by vm.runFlags.collectAsState()
     var showArchived by remember { mutableStateOf(false) }
 
     ModalDrawerSheet(
@@ -614,7 +614,8 @@ fun DrawerPanel(
                                 meta = s,
                                 selected = s.id == currentId && !showArchived,
                                 archived = showArchived,
-                                running = s.id in runningIds,
+                                running = runFlags[s.id]?.busy == true,
+                                flag = runFlags[s.id],
                                 onOpen = { vm.switchSession(s.id); onTab(0); onClose() },
                                 onArchive = { vm.archiveSession(s.id, !s.archived) },
                                 onDelete = { vm.deleteSession(s.id) },
@@ -693,6 +694,8 @@ fun SessionRow(
     selected: Boolean,
     archived: Boolean,
     running: Boolean,
+    /** 本会话的运行态摘要：跑着任务 / 子任务 N / 排队 N。null = 没动静。 */
+    flag: SessionRunFlag? = null,
     onOpen: () -> Unit,
     onArchive: () -> Unit,
     onDelete: () -> Unit,
@@ -710,17 +713,29 @@ fun SessionRow(
     ) {
         Column(Modifier.weight(1f).clickable { onOpen() }) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (running) {
-                    Text("●", color = c.warn, fontSize = 9.sp)
+                val sub = flag?.subagents ?: 0
+                val queued = flag?.queued ?: 0
+                // 亮点不只代表「本轮在跑」：子任务是后台子代理，可能比父轮次活得久
+                // （父 run 结束了它还在干），这种情况也要让用户在列表上看得见。
+                if (running || sub > 0 || queued > 0) {
+                    Text("●", color = if (running) c.warn else c.accent, fontSize = 9.sp)
                     Spacer(Modifier.width(4.dp))
                 }
                 Text(
                     meta.title, color = if (selected) c.accent else c.text, fontSize = 13.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false)
                 )
-                if (running) {
+                val marks = mutableListOf<String>()
+                if (running) marks.add("执行中")
+                if (sub > 0) marks.add("子任务 " + sub)
+                if (queued > 0) marks.add("排队 " + queued)
+                if (marks.isNotEmpty()) {
                     Spacer(Modifier.width(6.dp))
-                    Text("执行中", color = c.warn, fontSize = 10.sp)
+                    Text(
+                        marks.joinToString(" · "),
+                        color = if (running) c.warn else c.accent, fontSize = 10.sp,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
             Text(
