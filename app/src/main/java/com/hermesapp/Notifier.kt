@@ -68,6 +68,10 @@ object Notifier {
             ctx, 0,
             Intent(ctx, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                // 2026-10-08：原来这里收了 sessionId 却从没 putExtra —— 点「任务完成 / 新消息」
+                // 通知只是把 App 拉到前台，停在原来的会话（用户报「点了不进对应会话」）。
+                // 与 notifyAction 对齐，带上会话 id；MainActivity.openFromNotification 已有跳转逻辑。
+                if (sessionId.isNotEmpty()) putExtra(EXTRA_OPEN_SESSION, sessionId)
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )

@@ -37,10 +37,13 @@ class HermesApi(
      * 在线状态冻结在最后一次结果（表现为「掉线了还显示在线」）。
      */
     private val probeClient = OkHttpClient.Builder()
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(5, TimeUnit.SECONDS)
-        .writeTimeout(5, TimeUnit.SECONDS)
-        .callTimeout(6, TimeUnit.SECONDS)
+        // 2026-10-08：原为 5s/6s，移动网络下一次 DNS 慢或丢包重传就整轮失败，
+        // 连续 2 次即翻「离线」，用户实测「一直显示离线」而服务端日志 6195 次全是 200。
+        // 放宽到 15s（仍远小于 SSE 的 30s 读超时），只用来判「到底通不通」。
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .writeTimeout(15, TimeUnit.SECONDS)
+        .callTimeout(15, TimeUnit.SECONDS)
         .retryOnConnectionFailure(false)
         .build()
 
