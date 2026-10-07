@@ -1,3 +1,14 @@
+## 2.99 — versionCode 110
+
+子任务面板四件事：
+
+1. **默认折叠**。进会话时只露一行「子任务（N） · M 个在跑」，点「展开」才列出各行——此前默认展开，有子任务的会话一进去就被面板吃掉一截屏幕。
+2. **能停止**。运行中的那一行右下角多一个「停止」；走服务端新开的 `POST /api/subagents/{id}/stop`（对子代理对象发协作式中断），不是复用父 run 的 stop——子代理可能比父轮次活得久，父 run 管不到它。语义是到下一个步骤边界就停，不是立即杀进程；已经跑完的会回「已经不在跑了」。
+3. **位置挪进顶部栏本身**。原来面板是对话区里的第一个元素（视觉上贴在顶栏下面）；现在 TopBar 改成上下两层，上面那行照旧（菜单/标题/搜索/在线），面板直接挂在它下面，属于顶部栏组件自身。
+4. **修打开卡顿**。根因是子任务进度轮询挂在 `RuntimeHub.scope`（`Dispatchers.Main.immediate`）上，而 `sessionDetail()` 是阻塞式 HTTP——打开有子任务的会话时第一次拉进度就把 UI 线程堵住。轮询与进度面板的刷新都显式切到 `Dispatchers.IO`。
+
+（改 ChatViewModel.kt / Screens.kt / App.kt / net/HermesApi.kt / app/build.gradle.kts；服务端 gateway/platforms/api_server.py 加 /api/subagents/{id}/stop）
+
 ## 2.98 — versionCode 109
 
 两处布局调整：
