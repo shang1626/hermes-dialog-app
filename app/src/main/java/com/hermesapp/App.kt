@@ -264,6 +264,7 @@ fun HermesApp(vm: ChatViewModel, prefs: Prefs) {
                 when {
                     !loggedIn -> LoginScreen(prefs) {
                         loggedIn = true
+                        AppLog.log("ui", "登录完成 profile=" + prefs.profile)
                         vm.onProfileChanged(prefs)
                     }
                     else -> MainScaffold(
@@ -417,7 +418,7 @@ fun MainScaffold(
                 tab = tab,
                 mode = mode,
                 onMode = onMode,
-                onTab = { tab = it; scope.launch { drawer.close() } },
+                onTab = { tab = it; AppLog.log("ui", "切页 tab=" + it); scope.launch { drawer.close() } },
                 onClose = { scope.launch { drawer.close() } },
             )
         }
@@ -742,7 +743,7 @@ fun SessionRow(
                 )
                 DropdownMenuItem(
                     text = { Text("删除", color = c.bad, fontSize = 13.sp) },
-                    onClick = { menu = false; confirmDelete = true }
+                    onClick = { menu = false; confirmDelete = true; AppLog.log("ui", "点删除(待确认) sid=" + meta.id.take(8)) }
                 )
             }
         }

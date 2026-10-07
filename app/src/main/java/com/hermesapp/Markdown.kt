@@ -610,6 +610,7 @@ private fun MdAttachmentCard(name: String, dataUrl: String, token: String) {
                     val bytes = withContext(Dispatchers.IO) { MediaFetch.download(token) }
                     busy = false
                     if (bytes != null && bytes.isNotEmpty()) action(DecodedData(guessMime(name), bytes))
+                    else AppLog.log("attach", "网关托管附件下载失败 name=" + name)
                 }
             }
         }
@@ -631,8 +632,15 @@ private fun MdAttachmentCard(name: String, dataUrl: String, token: String) {
                             busy = false
                             if (bytes != null && bytes.isNotEmpty()) {
                                 openAttachment(ctx, name, DecodedData(guessMime(name), bytes))
+                            } else {
+                                AppLog.log("attach", "打开失败：网关托管附件下载不到 name=" + name)
+                                Toast.makeText(ctx, "打开失败：文件下载不到", Toast.LENGTH_SHORT).show()
                             }
                         }
+                    }
+                    else -> {
+                        AppLog.log("attach", "打开失败：附件解析不出内容 name=" + name)
+                        Toast.makeText(ctx, "打开失败：附件内容解析不出来", Toast.LENGTH_SHORT).show()
                     }
                 }
             }

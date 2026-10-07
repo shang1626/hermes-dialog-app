@@ -75,6 +75,7 @@ object VoicePlayer {
         if (target.isEmpty()) return
         _nowPlaying.value = target
         Thread {
+            var fail: Throwable? = null
             val bytes = runCatching {
                 if (target.startsWith("hermes-media://")) {
                     MediaFetch.download(target.removePrefix("hermes-media://"))
@@ -82,9 +83,11 @@ object VoicePlayer {
                     val comma = target.indexOf(',')
                     if (comma < 0) null else Base64.decode(target.substring(comma + 1), Base64.DEFAULT)
                 }
-            }.getOrNull()
+            }.onFailure { fail = it }.getOrNull()
             if (bytes == null || bytes.isEmpty()) {
-                AppLog.log("voice", "取语音字节失败")
+                AppLog.err("voice", "取语音字节失败 源=" +
+                    (if (target.startsWith("hermes-media://")) "网关托管" else "内联") +
+                    " 长度=" + target.length, fail)
                 _nowPlaying.value = ""
                 return@Thread
             }
@@ -108,7 +111,8 @@ object VoicePlayer {
                     _nowPlaying.value = ""
                 }
             }
-            mp.setOnErrorListener { p, _, _ ->
+            mp.setOnErrorListener { p, what, extra ->
+                AppLog.log("voice", "播放器出错 what=" + what + " extra=" + extra)
                 runCatching { p.release() }
                 if (player === p) {
                     player = null
