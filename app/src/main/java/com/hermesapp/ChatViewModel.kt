@@ -32,6 +32,19 @@ import java.io.File
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
+/**
+ * 异常摘要：优先「类名: message」。
+ *
+ * 为什么要带类名：NetworkOnMainThreadException 这类异常的 message 是 null，
+ * 老写法 `e.message ?: "?"` 会把真实原因吞成「?」，用户只看到「收件箱获取失败：?」，
+ * 排查时等于没有信息。
+ */
+private fun diagText(e: Throwable): String {
+    val m = e.message
+    val n = e.javaClass.simpleName
+    return if (m.isNullOrBlank()) n else n + ": " + m
+}
+
 data class Msg(
     val role: String,
     val text: String,
@@ -1470,7 +1483,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * 同一条只弹一次（按 id 记着）。失败只记错误文案，不打扰。
      */
     fun refreshInbox(notifyNew: Boolean = true) {
-        RuntimeHub.scope.launch {
+        // 必须显式切 IO：RuntimeHub.scope 是 Dispatchers.Main.immediate，而 a.inbox()
+        // 是阻塞式 HTTP。挂在主线程上会抛 NetworkOnMainThreadException（在建立连接那一
+        // 刻就抛，请求根本没发出去——服务端访问日志里一条都不会有），界面显示
+        // 「收件箱获取失败」。而且该异常的 message 是 null，不带上异常类名就只剩一个「?」。
+        RuntimeHub.scope.launch(Dispatchers.IO) {
             try {
                 val a = api ?: return@launch
                 val resp = a.inbox(limit = 50)
@@ -1511,7 +1528,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
             } catch (e: Exception) {
-                _inboxErr.value = "收件箱获取失败：" + (e.message ?: "?")
+                _inboxErr.value = "收件箱获取失败：" + diagText(e)
             }
         }
     }
@@ -1528,7 +1545,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 标记已读：ids 为空表示整箱已读。标记完本地状态与未读数一起更新。 */
     fun ackInbox(ids: List<String> = emptyList(), all: Boolean = false) {
-        RuntimeHub.scope.launch {
+        // 同上：a.ackInbox() 也是阻塞 HTTP，不能在主线程上跑。
+        RuntimeHub.scope.launch(Dispatchers.IO) {
             try {
                 val a = api ?: return@launch
                 a.ackInbox(ids, all)
@@ -1540,7 +1558,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 _inboxUnread.value = _inbox.value.count { it.unread }
             } catch (e: Exception) {
-                _inboxErr.value = "标记已读失败：" + (e.message ?: "?")
+                _inboxErr.value = "标记已读失败：" + diagText(e)
             }
         }
     }
