@@ -142,10 +142,11 @@ class RunService : Service() {
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val b = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Hermes 在线")
             .setContentText("")
-            .setSmallIcon(android.R.drawable.stat_notify_sync)
+        // 前台服务那条也挂 App 图标（三处统一走同一个 helper，见 Notifier.applyAppIcon）。
+        return Notifier.applyAppIcon(b, this)
             .setContentIntent(tap)
             .setOngoing(true)
             .setSilent(true)
