@@ -474,8 +474,6 @@ fun TopBar(vm: ChatViewModel, prefs: Prefs, tab: Int, onMenu: () -> Unit) {
         )
         Spacer(Modifier.width(10.dp))
         Text(title, color = c.text, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.width(8.dp))
-        Text(prefs.profile, color = c.dim, fontSize = 11.sp)
         Spacer(Modifier.weight(1f))
         if (tab == 0) {
             Text(
@@ -517,6 +515,9 @@ fun DrawerPanel(
                     "Hermes", color = c.accent, fontSize = 20.sp, fontWeight = FontWeight.Bold,
                     modifier = Modifier.clickable { onTab(0) }
                 )
+                // 身份标识从对话窗口顶栏挪到这里（顶栏留给标题与状态）。
+                Spacer(Modifier.width(6.dp))
+                Text(prefs.profile, color = c.dim, fontSize = 11.sp)
                 Spacer(Modifier.weight(1f))
                 OutlinedButton(
                     onClick = { vm.newConversation(); onClose() },
