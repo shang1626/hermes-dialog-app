@@ -20,9 +20,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.Call
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.UUID
@@ -138,12 +140,51 @@ data class Usage(
     val durationMs: Long = 0L,
 )
 
-/** 一条子任务进度（subagent.start / subagent.complete）。 */
+/** 一条子任务进度（subagent.start / subagent.complete + 子代理会话轮询回来的进度）。 */
 data class SubagentLine(
     val id: String,
     val goal: String,
     val status: String,
     val summary: String = "",
+    /**
+     * 子代理自己的会话 id（subagent.start 事件里带）。
+     * 网关那条 run 事件流只转发 start/complete，中间的 subagent.tool / subagent.progress
+     * 被当界面噪音丢了——所以运行中的进度只能靠这个 id 去读子代理自己的会话。
+     */
+    val childSessionId: String = "",
+    /** 已执行步数（子代理会话的 tool_call_count）。 */
+    val steps: Int = 0,
+    /** 子代理开跑墙钟毫秒（算「已跑多久」用）。 */
+    val startedAt: Long = 0L,
+    /** 最近一次取到进度的时间（算「N 秒前更新」用）；0 表示还没取过。 */
+    val seenAt: Long = 0L,
+    /** 子代理会话结束时间（毫秒）；>0 表示这批已经收工。 */
+    val endedAt: Long = 0L,
+    /** 子代理自己的 token 用量（会话详情的输入+输出）。 */
+    val tokens: Int = 0,
+)
+
+/** 子任务进度面板里的一步：子代理调了一次什么工具、参数是什么、结果一句话。 */
+data class SubagentStep(
+    val n: Int,
+    val tool: String,
+    val arg: String,
+    val result: String,
+)
+
+/** 子任务进度面板的数据。 */
+data class SubagentDetail(
+    val key: String,
+    val goal: String,
+    val childSessionId: String,
+    val status: String,
+    val steps: List<SubagentStep> = emptyList(),
+    val startedAt: Long = 0L,
+    val endedAt: Long = 0L,
+    val tokens: Int = 0,
+    val updatedAt: Long = 0L,
+    /** 拉不到（会话被清、网络断）时的说明，界面照实显示。 */
+    val note: String = "",
 )
 
 /** 服务端会话记录的一行（翻历史兜底时用来认锚点、认答案）。 */
@@ -634,6 +675,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (!r.loaded) {
             r.messages.value = store.loadMessages(id)
             r.loaded = true
+        }
+        // 落盘里还有「运行中」的子任务（长任务跑一半重开 App）：把进度轮询接回去，
+        // 否则界面上那行会一直停在重开前的步数。
+        if (r.messages.value.any { it.subagents.any { s -> s.status == "running" && s.childSessionId.isNotEmpty() && s.endedAt == 0L } }) {
+            ensureSubagentSweep(id)
         }
     }
 
@@ -2568,6 +2614,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val goal = ev.data.optString("goal", "")
         val summary = ev.data.optString("summary", "")
         val statusRaw = ev.data.optString("status", "")
+        val child = ev.data.optString("child_session_id", "")
+        val toks = ev.data.optInt("input_tokens", 0) + ev.data.optInt("output_tokens", 0)
         val key = id.ifEmpty { goal }
         if (key.isEmpty()) return
         val status = when {
@@ -2576,14 +2624,225 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             else -> "completed"
         }
         val list = r.messages.value.toMutableList()
-        val mi = list.indexOfLast { it.role == "assistant" && it.pending }
+        // 优先挂在本轮那条「进行中」的助手气泡上；本轮已收尾（后台子代理跑得比父 run 久，
+        // 完成事件晚到）就退而挂在最后一条助手气泡上——旧逻辑找不到 pending 直接 return，
+        // 这类事件会整条被丢掉，进度永远停在「▶ 运行中」。
+        val pendingIdx = list.indexOfLast { it.role == "assistant" && it.pending }
+        val mi = if (pendingIdx >= 0) pendingIdx else list.indexOfLast { it.role == "assistant" }
         if (mi < 0) return
         val old = list[mi].subagents
         val idx = old.indexOfFirst { it.id == key }
-        val line = SubagentLine(key, goal.ifEmpty { old.getOrNull(idx)?.goal ?: "" }, status, summary)
+        val prev = old.getOrNull(idx)
+        val now = System.currentTimeMillis()
+        val line = SubagentLine(
+            id = key,
+            goal = goal.ifEmpty { prev?.goal ?: "" },
+            status = status,
+            summary = summary.ifEmpty { prev?.summary ?: "" },
+            childSessionId = child.ifEmpty { prev?.childSessionId ?: "" },
+            steps = prev?.steps ?: 0,
+            startedAt = prev?.startedAt?.takeIf { it > 0 } ?: if (running) now else 0L,
+            seenAt = prev?.seenAt ?: 0L,
+            endedAt = if (running) 0L else now,
+            tokens = if (toks > 0) toks else (prev?.tokens ?: 0),
+        )
         val next = if (idx >= 0) old.toMutableList().also { it[idx] = line } else old + line
         list[mi] = list[mi].copy(subagents = next)
         setMsgs(r, list)
+        // 开跑就把进度轮询挂上：运行中的进度只能靠读子代理自己的会话拿到。
+        if (running && line.childSessionId.isNotEmpty()) ensureSubagentSweep(r.id)
+    }
+
+    /** 子任务进度面板：null = 没打开。 */
+    private val _subDetail = MutableStateFlow<SubagentDetail?>(null)
+    val subDetail = _subDetail.asStateFlow()
+    private var subDetailJob: Job? = null
+
+    /**
+     * 子代理实时进度轮询（每个会话一条，全部收工自动退出）。
+     *
+     * 为什么必须轮询：网关那条 run 事件流只转发 subagent.start / subagent.complete，
+     * 中间的 subagent.tool（子代理每调一次工具）与 subagent.progress（每满 5 次一批）
+     * 被当「界面噪音」丢掉了，所以推送里根本没有运行中的进度。
+     * 但子代理自己的会话是实时的（source=subagent），读它的 tool_call_count / ended_at
+     * 就够出进度。全程只读，不改服务端。
+     */
+    private fun ensureSubagentSweep(sid: String) {
+        if (sid.isEmpty()) return
+        val r = rt(sid)
+        if (r.subSweep?.isActive == true) return
+        r.subSweep = RuntimeHub.scope.launch {
+            val a = api ?: return@launch
+            val deadline = System.currentTimeMillis() + 6 * 60 * 60 * 1000L
+            while (isActive && System.currentTimeMillis() < deadline) {
+                val kids = runningChildren(r)
+                if (kids.isEmpty()) break
+                var changed = false
+                for (k in kids) {
+                    val s = runCatching { a.sessionDetail(k.childSessionId).optJSONObject("session") }
+                        .getOrNull() ?: continue
+                    if (applyChildProgress(r, k.id, s)) changed = true
+                }
+                delay(if (changed) 4_000L else 8_000L)
+            }
+            r.subSweep = null
+        }
+    }
+
+    /** 本会话还在跑、且拿到了子会话 id 的子任务。 */
+    private fun runningChildren(r: SessionRuntime): List<SubagentLine> =
+        r.messages.value.flatMap { it.subagents }
+            .filter { it.status == "running" && it.childSessionId.isNotEmpty() && it.endedAt == 0L }
+
+    /** 把子代理会话的进度写回对应那一行。返回是否有变化。 */
+    private fun applyChildProgress(r: SessionRuntime, key: String, s: JSONObject): Boolean {
+        val list = r.messages.value.toMutableList()
+        for (i in list.indices.reversed()) {
+            val m = list[i]
+            val idx = m.subagents.indexOfFirst { it.id == key }
+            if (idx < 0) continue
+            val old = m.subagents[idx]
+            val endSec = s.optDouble("ended_at", 0.0)
+            val endMs = if (endSec > 0) (endSec * 1000.0).toLong() else 0L
+            // 子代理会话已结束、但那条 subagent.complete 没等到（后台子代理跑得比父 run 久时
+            // 很常见，父 run 的事件流早断了）：按 end_reason 据实标注，不一律当成功。
+            val st = if (endMs > 0 && old.status == "running") {
+                val why = s.optString("end_reason", "")
+                if (why.isEmpty() || why.contains("close") || why.contains("complete") ||
+                    why.contains("normal")) "completed" else "ended"
+            } else old.status
+            val toks = s.optInt("input_tokens", 0) + s.optInt("output_tokens", 0)
+            val next = old.copy(
+                steps = s.optInt("tool_call_count", old.steps),
+                seenAt = System.currentTimeMillis(),
+                endedAt = endMs,
+                status = st,
+                tokens = if (toks > 0) toks else old.tokens,
+            )
+            if (next == old) return false
+            val ns = m.subagents.toMutableList()
+            ns[idx] = next
+            list[i] = m.copy(subagents = ns)
+            setMsgs(r, list)
+            // 返回「真有进度」与否：只影响下一轮隔多久再拉（4 秒 / 8 秒），
+            // seenAt 每轮都写，界面上的「刚刚取的进度」才不会看着像卡死。
+            return next.steps != old.steps || next.status != old.status
+        }
+        return false
+    }
+
+    /**
+     * 打开「子任务进度」面板：拉这个子代理会话的末尾消息，拆成步骤流水。
+     * 面板开着时每 3 秒刷新一次，子任务收工就停（不再空转）。
+     */
+    fun openSubagentDetail(sid: String, key: String) {
+        val line = rt(sid).messages.value.flatMap { it.subagents }.firstOrNull { it.id == key } ?: return
+        _subDetail.value = SubagentDetail(
+            key = key, goal = line.goal, childSessionId = line.childSessionId,
+            status = line.status, startedAt = line.startedAt, endedAt = line.endedAt, tokens = line.tokens,
+        )
+        subDetailJob?.cancel()
+        subDetailJob = RuntimeHub.scope.launch {
+            val a = api ?: return@launch
+            val deadline = System.currentTimeMillis() + 6 * 60 * 60 * 1000L
+            while (isActive && System.currentTimeMillis() < deadline) {
+                val cur = _subDetail.value ?: break
+                if (cur.key != key) break
+                if (cur.childSessionId.isEmpty()) {
+                    _subDetail.value = cur.copy(note = "这次派发没带回子会话 id，看不到它的内部步骤")
+                    break
+                }
+                val resp = runCatching { a.sessionMessagesTail(cur.childSessionId, 40) }.getOrNull()
+                val nowLine = rt(sid).messages.value.flatMap { it.subagents }.firstOrNull { it.id == key }
+                _subDetail.value = cur.copy(
+                    steps = if (resp != null) parseSubagentSteps(resp.optJSONArray("data")) else cur.steps,
+                    status = nowLine?.status ?: cur.status,
+                    endedAt = nowLine?.endedAt ?: cur.endedAt,
+                    tokens = nowLine?.tokens ?: cur.tokens,
+                    startedAt = nowLine?.startedAt?.takeIf { it > 0 } ?: cur.startedAt,
+                    updatedAt = System.currentTimeMillis(),
+                    note = if (resp == null) "这一下没读到，正在重试…" else "",
+                )
+                if ((nowLine?.status ?: "running") != "running") break
+                delay(3_000L)
+            }
+        }
+    }
+
+    fun closeSubagentDetail() {
+        subDetailJob?.cancel()
+        subDetailJob = null
+        _subDetail.value = null
+    }
+
+    /**
+     * 把子代理会话末尾的消息拆成步骤流水：一次工具调用 = 一步。
+     * 参数从它前面那条 assistant 消息的 tool_calls 取（结果行里没有参数），
+     * 对不上就退化成只有工具名——不编造。
+     */
+    private fun parseSubagentSteps(arr: JSONArray?): List<SubagentStep> {
+        if (arr == null) return emptyList()
+        val args = HashMap<String, Pair<String, String>>()
+        val out = mutableListOf<SubagentStep>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            when (o.optString("role", "")) {
+                "assistant" -> {
+                    val tcs = o.optJSONArray("tool_calls") ?: continue
+                    for (j in 0 until tcs.length()) {
+                        val tc = tcs.optJSONObject(j) ?: continue
+                        val fn = tc.optJSONObject("function") ?: continue
+                        val nm = fn.optString("name", "")
+                        val tcid = tc.optString("id", "").ifEmpty { tc.optString("call_id", "") }
+                        if (tcid.isNotEmpty()) args[tcid] = nm to toolArgBrief(fn.optString("arguments", ""))
+                    }
+                }
+                "tool" -> {
+                    val pair = args[o.optString("tool_call_id", "")]
+                    val nm = pair?.first?.takeIf { it.isNotEmpty() } ?: o.optString("tool_name", "")
+                    out.add(
+                        SubagentStep(
+                            out.size + 1, nm, pair?.second ?: "",
+                            toolResultBrief(o.optString("content", "")),
+                        )
+                    )
+                }
+            }
+        }
+        return out
+    }
+
+    /** 工具参数一句话：从参数 JSON 里挑最能说明意图的字段（路径/命令/搜索词）。 */
+    private fun toolArgBrief(raw: String): String {
+        val s = raw.trim()
+        if (s.isEmpty()) return ""
+        val obj = runCatching { JSONObject(s) }.getOrNull() ?: return oneLine(s, 90)
+        for (k in listOf("path", "command", "pattern", "query", "url", "file", "name", "goal", "prompt", "text")) {
+            val v = obj.optString(k, "")
+            if (v.isNotEmpty()) return oneLine(v, 110)
+        }
+        return oneLine(s, 90)
+    }
+
+    /** 工具结果一句话：是 JSON 就挑 output/content/success 之类，纯文本直接截断。 */
+    private fun toolResultBrief(raw: String): String {
+        val s = raw.trim()
+        if (s.isEmpty()) return ""
+        runCatching { JSONObject(s) }.getOrNull()?.let { o ->
+            for (k in listOf("output", "content", "error", "message", "text")) {
+                val v = o.optString(k, "")
+                if (v.isNotEmpty()) return oneLine(v, 110)
+            }
+            if (o.has("total_count")) return "命中 " + o.optInt("total_count") + " 处"
+            if (o.has("success")) return if (o.optBoolean("success", false)) "成功" else "失败"
+            if (o.has("exit_code")) return "exit " + o.optInt("exit_code")
+        }
+        return oneLine(s, 110)
+    }
+
+    private fun oneLine(s: String, n: Int): String {
+        val t = s.replace(Regex("\\s+"), " ").trim()
+        return if (t.length > n) t.take(n) + "…" else t
     }
 
     private fun toolLine(ev: com.hermesapp.net.SseEvent, failed: Boolean): String {

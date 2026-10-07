@@ -87,6 +87,11 @@ internal class SessionRuntime(val id: String) {
      * 放在会话运行态上而不是函数局部——收尾可能发生在另一个 ViewModel 实例里。
      */
     var needSync: Boolean = false
+    /**
+     * 子任务进度轮询：本会话有子代理在跑时挂一条，全部收工自动退出。
+     * 加在会话运行态上（而不是函数局部）——Activity 被系统重建后，进度还接着刷。
+     */
+    var subSweep: Job? = null
     /** 本会话排队待发的消息（跑着任务时用户又发的那些），按先后顺序，本轮结束依次发。 */
     val queue = mutableListOf<QueuedSend>()
     /** 队列长度：输入栏显示「排队 N 条」。 */

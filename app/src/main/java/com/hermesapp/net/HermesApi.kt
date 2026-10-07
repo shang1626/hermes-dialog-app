@@ -246,6 +246,20 @@ class HermesApi(
         sync(base("/api/sessions/" + sessionId + "/messages").get().build())
 
     /**
+     * 会话最近 N 条消息（order=latest 取末尾）。子任务进度面板用：
+     * 只取末尾一小段，避免把子代理读过的整份文件内容都拉回来。
+     */
+    fun sessionMessagesTail(sessionId: String, limit: Int = 40): JSONObject =
+        sync(base("/api/sessions/" + sessionId + "/messages?limit=" + limit + "&order=latest").get().build())
+
+    /**
+     * 单个会话详情：含 tool_call_count / message_count / ended_at。
+     * 子任务实时进度用它——比拉消息轻得多，一眼能看出「跑了几步、收工没有」。
+     */
+    fun sessionDetail(sessionId: String): JSONObject =
+        sync(base("/api/sessions/" + sessionId).get().build())
+
+    /**
      * 拉取服务端会话列表（每行带模型生成的 title）。
      * 用途：把服务端的正式标题同步回本地会话索引——本地只会生成「新对话」和首句截断，
      * 服务端由小模型生成 3~7 词的正式标题，质量更好，且历史会话也有。

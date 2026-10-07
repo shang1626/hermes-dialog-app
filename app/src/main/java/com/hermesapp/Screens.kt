@@ -209,6 +209,12 @@ fun ChatScreen(
             onDone = { v -> onInput(v); fullscreen = false },
         )
     }
+
+    // 子任务进度面板：点气泡里的子任务行打开。数据由 vm 在刷（运行中每 3 秒一次），
+    // 关掉即停；拿不到内容时面板里照实写「读不到」，不假装有进度。
+    val subDetail by vm.subDetail.collectAsState()
+    val sd = subDetail
+    if (sd != null) SubagentDetailDialog(vm, sd)
 }
 
 /** 消息列表独立成 composable：打字时它不参与重组，长对话滑动也顺。 */
@@ -222,12 +228,23 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
     val hits by vm.searchIds.collectAsState()
     val hitIdx by vm.searchIdx.collectAsState()
     val rcMenu by vm.receiptMenu.collectAsState()
+    val curId by vm.currentId.collectAsState()
     val listState = rememberLazyListState()
     val focus = LocalFocusManager.current
     val ctx = LocalContext.current
     val view = LocalView.current
     // 变化即重建各气泡的 SelectionContainer：用来取消文本选中（点空白/点正文时 +1）。
     var selReset by remember { mutableStateOf(0) }
+    // 子任务进度的心跳：只在「本会话有子任务在跑」时才每 3 秒跳一次（进度本身 4 秒刷一回），
+    // 没在跑就完全不跳，免得空转。
+    val subTick = remember { mutableStateOf(System.currentTimeMillis()) }
+    val anySubRunning = msgs.any { m -> m.subagents.any { it.status == "running" } }
+    LaunchedEffect(anySubRunning) {
+        while (anySubRunning) {
+            subTick.value = System.currentTimeMillis()
+            delay(3000L)
+        }
+    }
 
     // 末尾放一个 1dp 占位项，永远滚到它 = 永远贴底（正文增长也能跟上）
     //
@@ -332,6 +349,9 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
                     hitQuery = if (hl) q else "",
                     selectionReset = selReset,
                     onClearSelection = { selReset++ },
+                    // 子任务的进度面板按「当前会话 + 子任务 key」打开。
+                    onOpenSubagent = { key -> vm.openSubagentDetail(curId, key) },
+                    subTick = subTick,
                 )
             }
             item { Spacer(Modifier.height(1.dp)) }
@@ -517,6 +537,133 @@ private fun LiveElapsed(startedAt: Long, color: Color) {
     Text("耗时 " + fmtDuration(ms), color = color, fontSize = 10.sp)
 }
 
+/** 子任务进度里「多久以前」的文案。 */
+private fun subAgo(ms: Long): String = when {
+    ms < 5_000L -> "刚刚"
+    ms < 60_000L -> (ms / 1000).toString() + " 秒前"
+    ms < 3_600_000L -> (ms / 60_000).toString() + " 分钟前"
+    else -> (ms / 3_600_000L).toString() + " 小时前"
+}
+
+/**
+ * 子任务进度一句话。
+ *
+ * 步数来自子代理自己的会话（tool_call_count），运行中每 4 秒刷一次。为什么不在推送里拿：
+ * 网关那条 run 事件流只转发 subagent.start / subagent.complete，中间的 subagent.tool
+ * 与 subagent.progress 被当「界面噪音」丢掉了，所以运行中的进度只能这么读（详见
+ * ChatViewModel.ensureSubagentSweep）。
+ */
+private fun subagentProgressText(s: SubagentLine, now: Long): String {
+    val parts = mutableListOf<String>()
+    if (s.steps > 0) parts.add("已 " + s.steps + " 步")
+    when {
+        s.status == "running" -> {
+            if (s.startedAt > 0) parts.add("已跑 " + fmtDuration(now - s.startedAt))
+            parts.add(if (s.seenAt > 0) subAgo(now - s.seenAt) + "取的进度" else "正在取进度…")
+        }
+        s.endedAt > 0 && s.startedAt > 0 -> {
+            parts.add("耗时 " + fmtDuration(s.endedAt - s.startedAt))
+            if (s.tokens > 0) parts.add("子代理 " + s.tokens + " tokens")
+        }
+    }
+    return parts.joinToString(" · ")
+}
+
+/** 一条子任务：目标 + 实时进度 + 入口提示，点整行打开进度面板。 */
+@Composable
+private fun SubagentRow(s: SubagentLine, tick: State<Long>, onClick: () -> Unit) {
+    val c = LocalAppColors.current
+    val mark = when (s.status) {
+        "running" -> "▶"
+        "completed" -> "✓"
+        "ended" -> "■"
+        else -> "✗"
+    }
+    val col = when (s.status) {
+        "running" -> c.accent
+        "completed" -> c.ok
+        "ended" -> c.warn
+        else -> c.bad
+    }
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))
+            .clickable { onClick() }
+            .padding(vertical = 3.dp, horizontal = 4.dp)
+    ) {
+        Text(
+            mark + " " + (if (s.goal.isNotEmpty()) s.goal else s.id),
+            color = col, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis
+        )
+        val prog = subagentProgressText(s, tick.value)
+        if (prog.isNotEmpty()) {
+            Text(prog, color = c.dim, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Text("查看进度 ▸", color = c.accent, fontSize = 10.sp)
+    }
+}
+
+/** 子任务进度面板：这个子代理做了什么、每一步的参数与结果。 */
+@Composable
+fun SubagentDetailDialog(vm: ChatViewModel, d: SubagentDetail) {
+    val c = LocalAppColors.current
+    val st = when (d.status) {
+        "running" -> "运行中"
+        "completed" -> "已完成"
+        "ended" -> "已结束（没等到完成事件）"
+        else -> d.status
+    }
+    val bits = mutableListOf<String>()
+    if (d.steps.isNotEmpty()) bits.add("已 " + d.steps.size + " 步")
+    if (d.startedAt > 0) {
+        val end = if (d.endedAt > 0) d.endedAt else System.currentTimeMillis()
+        bits.add((if (d.endedAt > 0) "耗时 " else "已跑 ") + fmtDuration(end - d.startedAt))
+    }
+    if (d.tokens > 0) bits.add("子代理 " + d.tokens + " tokens")
+    AlertDialog(
+        onDismissRequest = { vm.closeSubagentDetail() },
+        title = { Text("子任务进度", color = c.text, fontSize = 15.sp) },
+        text = {
+            Column(
+                Modifier.fillMaxWidth().heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(d.goal, color = c.text, fontSize = 12.sp)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    (listOf(st) + bits).joinToString(" · "),
+                    color = if (d.status == "running") c.accent else c.dim, fontSize = 11.sp,
+                )
+                if (d.note.isNotEmpty()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(d.note, color = c.warn, fontSize = 11.sp)
+                }
+                Spacer(Modifier.height(8.dp))
+                if (d.steps.isEmpty()) {
+                    Text("还没有步骤可显示（子代理还没调用工具，或这条会话读不到）", color = c.dim, fontSize = 12.sp)
+                } else {
+                    for (stp in d.steps) {
+                        Column(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                            Text(
+                                stp.n.toString() + ". " + stp.tool +
+                                    (if (stp.arg.isNotEmpty()) "  " + stp.arg else ""),
+                                color = c.accent, fontSize = 12.sp,
+                            )
+                            if (stp.result.isNotEmpty()) {
+                                Text("    ↳ " + stp.result, color = c.dim, fontSize = 11.sp)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { vm.closeSubagentDetail() }) {
+                Text("关闭", color = c.accent, fontSize = 13.sp)
+            }
+        },
+    )
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun Bubble(
@@ -538,6 +685,10 @@ fun Bubble(
     onQuote: (Msg) -> Unit = {},
     /** 富卡片按钮点击：交给 ViewModel 分发（发消息 / 开链接）。 */
     onCardAction: (CardAction) -> Unit = {},
+    /** 点某条子任务：打开「子任务进度」面板（参数是子任务 key）。 */
+    onOpenSubagent: (String) -> Unit = {},
+    /** 子任务进度里「多久前取的进度」用的心跳（只在有子任务在跑时才跳）。 */
+    subTick: State<Long> = mutableStateOf(0L),
     /** 该条是当前搜索命中：加一圈强调边框。 */
     highlight: Boolean = false,
     /** 命中词：正文里加黄底（空表示不高亮）。 */
@@ -691,18 +842,14 @@ fun Bubble(
                         Spacer(Modifier.height(6.dp))
                     }
                 }
-                // 子任务进度：delegate_task 派出的子代理，一行一条
+                // 子任务进度：delegate_task 派出的子代理，一行一条。
+                // 每行带实时进度（步数/已跑多久/多久前取的进度），点整行打开进度面板看它
+                // 每一步在做什么 —— 运行中的进度是轮询子代理自己的会话拿的，见 ChatViewModel。
                 if (m.subagents.isNotEmpty()) {
-                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text("子任务（" + m.subagents.size + "）", color = c.dim, fontSize = 11.sp)
                         for (s in m.subagents) {
-                            val mark = if (s.status == "running") "▶" else "✓"
-                            val col = if (s.status == "running") c.accent else c.dim
-                            Text(
-                                mark + " " + (if (s.goal.isNotEmpty()) s.goal else s.id),
-                                color = col, fontSize = 12.sp,
-                                maxLines = 2, overflow = TextOverflow.Ellipsis
-                            )
+                            SubagentRow(s, subTick) { onOpenSubagent(s.id) }
                         }
                     }
                     if (m.text.isNotBlank() || m.usage != null) Spacer(Modifier.height(6.dp))
