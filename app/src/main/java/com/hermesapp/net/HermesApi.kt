@@ -71,10 +71,23 @@ class HermesApi(
         .header("Authorization", "Bearer " + apiKey)
 
     private fun sync(req: Request): JSONObject {
+        val t0 = System.currentTimeMillis()
         client.newCall(req).execute().use { resp ->
             val text = resp.body?.string().orEmpty()
-            if (!resp.isSuccessful) throw IOException("HTTP " + resp.code + ": " + text.take(300))
-            return JSONObject(text)
+            val ms = System.currentTimeMillis() - t0
+            if (!resp.isSuccessful) {
+                AppLog.err("http", req.method + " " + req.url.encodedPath + " -> " + resp.code +
+                    " " + ms + "ms " + text.take(120))
+                throw IOException("HTTP " + resp.code + ": " + text.take(300))
+            }
+            AppLog.log("http", req.method + " " + req.url.encodedPath + " -> " + resp.code +
+                " " + ms + "ms len=" + text.length)
+            try {
+                return JSONObject(text)
+            } catch (e: Exception) {
+                AppLog.err("http", req.method + " " + req.url.encodedPath + " 响应非 JSON len=" + text.length, e)
+                throw e
+            }
         }
     }
 
@@ -114,9 +127,17 @@ class HermesApi(
             .header("X-Artifact-Filename", filename)
             .post(bytes.toRequestBody(mt))
             .build()
+        val t0 = System.currentTimeMillis()
         client.newCall(req).execute().use { resp ->
             val text = resp.body?.string().orEmpty()
-            if (!resp.isSuccessful) throw IOException("HTTP " + resp.code + ": " + text.take(200))
+            val ms = System.currentTimeMillis() - t0
+            if (!resp.isSuccessful) {
+                AppLog.err("http", "POST /v1/artifacts/upload " + filename + " -> " + resp.code +
+                    " " + ms + "ms " + text.take(120))
+                throw IOException("HTTP " + resp.code + ": " + text.take(200))
+            }
+            AppLog.log("http", "POST /v1/artifacts/upload " + filename + " -> " + resp.code +
+                " " + ms + "ms " + bytes.size + "B")
             return JSONObject(text).optString("artifact_id", "")
         }
     }
@@ -129,18 +150,30 @@ class HermesApi(
      */
     fun respondClarify(runId: String, clarifyId: String, response: String): Boolean = runCatching {
         val body = JSONObject().put("clarify_id", clarifyId).put("response", response)
+        val t0 = System.currentTimeMillis()
         client.newCall(
             base("/v1/runs/" + runId + "/clarify").post(body.toString().toRequestBody(jsonType)).build()
-        ).execute().use { it.isSuccessful }
+        ).execute().use { resp ->
+            AppLog.log("receipt", "澄清回执 run=" + runId.take(12) + " choice=" + response.take(40) +
+                " -> " + resp.code + " " + (System.currentTimeMillis() - t0) + "ms")
+            resp.isSuccessful
+        }
     }.getOrDefault(false)
 
     /** 按需下载网关托管的媒体文件（大附件走这条路，不塞进消息体）。 */
     fun downloadMedia(token: String): ByteArray {
         val req = base("/v1/media/" + token).get().build()
+        val t0 = System.currentTimeMillis()
         client.newCall(req).execute().use { resp ->
-            val text = if (resp.isSuccessful) "" else resp.body?.string().orEmpty()
-            if (!resp.isSuccessful) throw IOException("HTTP " + resp.code + ": " + text.take(200))
-            return resp.body?.bytes() ?: ByteArray(0)
+            val ms = System.currentTimeMillis() - t0
+            if (!resp.isSuccessful) {
+                val text = resp.body?.string().orEmpty()
+                AppLog.err("http", "GET /v1/media/... -> " + resp.code + " " + ms + "ms " + text.take(120))
+                throw IOException("HTTP " + resp.code + ": " + text.take(200))
+            }
+            val bytes = resp.body?.bytes() ?: ByteArray(0)
+            AppLog.log("http", "GET /v1/media/... -> " + resp.code + " " + ms + "ms " + bytes.size + "B")
+            return bytes
         }
     }
 
@@ -177,10 +210,18 @@ class HermesApi(
      * IOException，上层分不清「任务真没了」和「网还没通」。
      */
     fun probeRun(runId: String): RunStatus = try {
+        val t0 = System.currentTimeMillis()
         probeClient.newCall(base("/v1/runs/" + runId).get().build()).execute().use { resp ->
+            val ms = System.currentTimeMillis() - t0
             when {
-                resp.code == 404 -> RunStatus.Missing
-                !resp.isSuccessful -> RunStatus.Unknown
+                resp.code == 404 -> {
+                    AppLog.log("http", "GET /v1/runs/" + runId.take(12) + " -> 404 " + ms + "ms")
+                    RunStatus.Missing
+                }
+                !resp.isSuccessful -> {
+                    AppLog.err("http", "GET /v1/runs/" + runId.take(12) + " -> " + resp.code + " " + ms + "ms")
+                    RunStatus.Unknown
+                }
                 else -> {
                     val text = resp.body?.string().orEmpty()
                     if (text.isEmpty()) RunStatus.Unknown
@@ -195,7 +236,8 @@ class HermesApi(
                 }
             }
         }
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+        AppLog.err("http", "GET /v1/runs/" + runId.take(12) + " 探测异常", e)
         RunStatus.Unknown
     }
 
@@ -214,7 +256,9 @@ class HermesApi(
     fun stopRun(runId: String) {
         runCatching {
             client.newCall(base("/v1/runs/" + runId + "/stop").post("{}".toRequestBody(jsonType)).build())
-                .execute().use { it.body?.string() }
+                .execute().use { resp ->
+                    AppLog.log("stop", "停止请求 run=" + runId.take(12) + " -> " + resp.code)
+                }
         }
     }
 
@@ -226,7 +270,10 @@ class HermesApi(
     fun steer(runId: String, text: String): Boolean = runCatching {
         val body = JSONObject().put("input", text)
         client.newCall(base("/v1/runs/" + runId + "/steer").post(body.toString().toRequestBody(jsonType)).build())
-            .execute().use { it.isSuccessful }
+            .execute().use { resp ->
+                AppLog.log("steer", "插话 run=" + runId.take(12) + " -> " + resp.code + " len=" + text.length)
+                resp.isSuccessful
+            }
     }.getOrDefault(false)
 
     /**
@@ -236,9 +283,14 @@ class HermesApi(
     fun respondApproval(runId: String, requestId: String, choice: String): Boolean = runCatching {
         val body = JSONObject().put("choice", choice)
         if (requestId.isNotEmpty()) body.put("request_id", requestId)
+        val t0 = System.currentTimeMillis()
         client.newCall(
             base("/v1/runs/" + runId + "/approval").post(body.toString().toRequestBody(jsonType)).build()
-        ).execute().use { it.isSuccessful }
+        ).execute().use { resp ->
+            AppLog.log("receipt", "审批回执 run=" + runId.take(12) + " choice=" + choice +
+                " -> " + resp.code + " " + (System.currentTimeMillis() - t0) + "ms")
+            resp.isSuccessful
+        }
     }.getOrDefault(false)
 
     // ---------- 定时任务（服务端 /api/jobs） ----------
@@ -251,7 +303,11 @@ class HermesApi(
         val req = base(path).post("{}".toRequestBody(jsonType)).build()
         client.newCall(req).execute().use { resp ->
             val text = resp.body?.string().orEmpty()
-            if (!resp.isSuccessful) throw IOException("HTTP " + resp.code + ": " + text.take(200))
+            if (!resp.isSuccessful) {
+                AppLog.err("job", "POST " + path + " -> " + resp.code + " " + text.take(120))
+                throw IOException("HTTP " + resp.code + ": " + text.take(200))
+            }
+            AppLog.log("job", "POST " + path + " -> " + resp.code)
         }
     }
 
@@ -266,7 +322,10 @@ class HermesApi(
     fun healthDetailed(): JSONObject = sync(base("/health/detailed").get().build())
 
     fun ping(): Boolean = runCatching {
-        probeClient.newCall(base("/health").get().build()).execute().use { it.isSuccessful }
+        probeClient.newCall(base("/health").get().build()).execute().use { resp ->
+            if (!resp.isSuccessful) AppLog.err("http", "GET /health -> " + resp.code)
+            resp.isSuccessful
+        }
     }.getOrDefault(false)
 
     fun checkUpdate(): UpdateInfo? {
@@ -276,7 +335,10 @@ class HermesApi(
             .url(Keys.UPDATE_URL + sep + "t=" + System.currentTimeMillis())
             .get().build()
         client.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) return null
+            if (!resp.isSuccessful) {
+                AppLog.err("update", "检查更新 HTTP " + resp.code)
+                return null
+            }
             val o = JSONObject(resp.body?.string().orEmpty())
             return UpdateInfo(
                 o.optInt("versionCode", 0),
