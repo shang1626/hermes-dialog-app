@@ -751,13 +751,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (r.runId.isNotEmpty()) prefs.putLastSeq(r.id, r.lastSeq)
     }
 
-    /** 保存当前会话的消息与索引（切换/新建前调用）。 */
-    private fun saveCurrent() {
-        val id = _currentId.value
-        if (id.isNotEmpty()) runtimes[id]?.let { saveRuntime(it) }
-        store.saveIndex(_sessions.value)
-    }
-
     /**
      * 读会话正文（异步）。
      *
@@ -809,18 +802,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun refreshSessions() {
-        // 异步读索引：原来这个函数在主线程上 readText + 全量解析，而切会话会调它。
-        // 另外内容没变就不赋值 —— 换一个新 List 会让抽屉里整个会话列表重组一遍。
-        RuntimeHub.scope.launch(Dispatchers.IO) {
-            val l = runCatching { store.loadIndex() }.getOrDefault(mutableListOf()).sortedByDescending { it.updatedAt }
-            withContext(Dispatchers.Main.immediate) {
-                AppLog.log("store", "刷新列表 条数=" + l.size + " 已归档=" + l.count { it.archived } +
-                    " 当前=" + _currentId.value.take(8))
-                if (l != _sessions.value) _sessions.value = l
-            }
-        }
-    }
+    
 
     /** 上次从服务端同步标题的时间：节流用，避免每个轮末都打一次接口。 */
     private var lastTitleSyncAt = 0L
@@ -893,7 +875,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 " 保留=" + kept.size + " 移除=" + removed)
             if (removed > 0) {
                 _sessions.value = kept
-                store.saveIndex(kept)
+                saveIndexAsync(debounceMs = 0L)
                 if (kept.none { it.id == _currentId.value }) selectNextOrEmpty()
             }
         } catch (e: Exception) {
@@ -958,7 +940,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun newConversation() {
         AppLog.log("ui", "新建会话")
-        saveCurrent()
+        saveCurrentAsync()
         val id = UUID.randomUUID().toString()
         val meta = SessionMeta(id, "新对话", stamp(), false)
         _sessions.value = _sessions.value + meta
@@ -1100,6 +1082,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         _currentId.value = target.id
         prefs.sessionId = target.id
         _sessions.value = list
+        AppLog.log("store", "刷新列表 条数=" + list.size + " 已归档=" + list.count { it.archived } +
+            " 当前=" + target.id.take(8))
         ensureLoaded(target.id)
         prewarmRecentSessions()
     }
@@ -2127,7 +2111,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             _currentId.value = id
             prefs.sessionId = id
             _sessions.value = _sessions.value + SessionMeta(id, "新对话", stamp(), false)
-            store.saveIndex(_sessions.value)
+            saveIndexAsync(debounceMs = 0L)
             rt(id).loaded = true
         }
         val sid = _currentId.value

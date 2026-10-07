@@ -1,3 +1,14 @@
+## 2.105 — versionCode 116
+
+2.104 的三处收尾（发布前自检抓到，2.104 的包不含这些）：
+
+- **`newConversation()` 还在同步写盘**：它是切会话的兄弟路径（点「+ 新对话」），漏改成异步。不修的话新建对话照样卡一下。改成 `saveCurrentAsync()`。
+- **删掉已死的 `refreshSessions()`**：2.104 把它改成异步后已无人调用，留着是死代码（而且它引用的 `_sessions.value` 赋值逻辑已由 bootstrap/落盘路径覆盖）。
+- **补回一条启动日志**：`refreshSessions` 一去，启动分支那行「刷新列表 条数=…」就没了；把等价的日志挪进 `bootstrapSessions` 的「恢复列表」分支，启动体检信息不丢。
+- 顺手把 `send()` 空态新建会话、`cleanupShellSessionsOnce()` 的索引写盘也统一走 `saveIndexAsync(0)`。
+
+（改 ChatViewModel.kt / app/build.gradle.kts）
+
 ## 2.104 — versionCode 115
 
 修「重启后侧边栏切换会话卡顿」。六项一起做（切会话路径全异步化）：
