@@ -16,6 +16,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -1202,8 +1204,12 @@ fun Bubble(
 fun StatusScreen(vm: ChatViewModel, prefs: Prefs) {
     val c = LocalAppColors.current
     val sections by vm.statusSections.collectAsState()
+    val metrics by vm.statusMetrics.collectAsState()
+    val hero by vm.statusHero.collectAsState()
     val err by vm.statusErr.collectAsState()
     val online by vm.online.collectAsState()
+    // 上次刷新时刻：给「每 5 秒自动刷新」配一个会动的秒数，一眼看出数据是新的。
+    var refreshedAt by remember { mutableStateOf(0L) }
     LaunchedEffect(Unit) { vm.refreshStatus() }
     // 每 5 秒自动刷新
     LaunchedEffect(Unit) {
@@ -1212,6 +1218,8 @@ fun StatusScreen(vm: ChatViewModel, prefs: Prefs) {
             vm.refreshStatus()
         }
     }
+    // 状态一到就记一次刷新时间（数据变了才会触发重组，用 metrics/sections 变化当信号）。
+    LaunchedEffect(metrics, sections) { refreshedAt = System.currentTimeMillis() }
 
     Column(Modifier.fillMaxSize()) {
         // 顶部状态条：在线点 + 身份/地址 + 刷新
@@ -1238,12 +1246,133 @@ fun StatusScreen(vm: ChatViewModel, prefs: Prefs) {
         }
 
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(12.dp)) {
+            // ① 顶部概览卡：状态徽章 + 模型 + 运行时长 + 在跑任务数，全部行内标签。
+            hero?.let { StatusHeroCard(it) }
+
+            // ② 动态进度条：CPU / 内存 / Swap / 磁盘 / 负载，数值到条会平滑推进。
+            if (metrics.isNotEmpty()) {
+                Surface(color = c.panel, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text("资源使用", color = c.accent, fontSize = 13.sp)
+                        Spacer(Modifier.height(10.dp))
+                        for (m in metrics) {
+                            StatusMetricBar(m)
+                            Spacer(Modifier.height(10.dp))
+                        }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+            }
+
+            // ③ 原有明细分组（CPU 型号、进程内存、API 与任务…）。
             for (s in sections) {
                 StatusCard(s)
                 Spacer(Modifier.height(10.dp))
             }
-            Text("每 5 秒自动刷新", color = c.dim, fontSize = 10.sp,
-                modifier = Modifier.fillMaxWidth().padding(top = 2.dp))
+            // 心跳指示：点每 5 秒闪一下，说明自动刷新真的在跑。
+            RefreshHeartbeat(refreshedAt)
+        }
+    }
+}
+
+/**
+ * 「每 5 秒自动刷新」下面那颗心跳点：自己带 1 秒 ticker，
+ * 把重组限制在这一小块里（整屏状态数据不跟着每秒重组）。
+ */
+@Composable
+private fun RefreshHeartbeat(refreshedAt: Long) {
+    val c = LocalAppColors.current
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            now = System.currentTimeMillis()
+            delay(1000L)
+        }
+    }
+    val fresh = refreshedAt > 0 && (now - refreshedAt) < 2000L
+    val dot by animateFloatAsState(
+        targetValue = if (fresh) 1f else 0.35f,
+        animationSpec = tween(400), label = "dot"
+    )
+    Row(Modifier.fillMaxWidth().padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(6.dp).clip(CircleShape).background(c.ok.copy(alpha = dot)))
+        Spacer(Modifier.width(6.dp))
+        Text(
+            "每 5 秒自动刷新" + if (refreshedAt > 0) " · 上次 " + TimeFmt.hhmmss(refreshedAt) else "",
+            color = c.dim, fontSize = 10.sp
+        )
+    }
+}
+
+/** 顶部概览卡：状态徽章 + 模型 + 运行时长 + 任务数（同类信息同行、行内标签）。 */
+@Composable
+fun StatusHeroCard(h: StatusHero) {
+    val c = LocalAppColors.current
+    Surface(color = c.panel, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(8.dp).clip(CircleShape).background(if (h.ok) c.ok else c.bad))
+                Spacer(Modifier.width(7.dp))
+                Text(h.statusText, color = if (h.ok) c.ok else c.bad, fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold)
+                Spacer(Modifier.weight(1f))
+                Text("PID " + h.pid, color = c.dim, fontSize = 11.sp)
+            }
+            Spacer(Modifier.height(8.dp))
+            Text("模型：" + h.model, color = c.text, fontSize = 12.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (h.uptimeText.isNotEmpty()) {
+                Spacer(Modifier.height(3.dp))
+                Text("已运行：" + h.uptimeText, color = c.dim, fontSize = 12.sp)
+            }
+            Spacer(Modifier.height(3.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("活跃任务：" + h.activeRuns, color = if (h.activeRuns > 0) c.accent else c.dim, fontSize = 12.sp)
+                Spacer(Modifier.width(14.dp))
+                Text("子任务：" + h.delegations, color = if (h.delegations > 0) c.accent else c.dim, fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+/**
+ * 一根进度条：标签 + 数值在上一行，下面一条会平滑推进的细条。
+ * 颜色分级：<60% 用主色，60~85% 用警示色，≥85% 用危险色。
+ * 负载条按「核数=100%」折算，超核就是满条。
+ */
+@Composable
+fun StatusMetricBar(m: StatusMetric) {
+    val c = LocalAppColors.current
+    val frac by animateFloatAsState(
+        targetValue = (m.percent / 100.0).toFloat().coerceIn(0f, 1f),
+        animationSpec = tween(700), label = m.key
+    )
+    val color = when {
+        m.percent >= 85.0 -> c.bad
+        m.percent >= 60.0 -> c.warn
+        else -> c.accent
+    }
+    Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(m.label, color = c.text, fontSize = 12.sp)
+            Spacer(Modifier.weight(1f))
+            Text(m.valueText, color = color, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.height(4.dp))
+        // 轨道 + 填充；填充宽度按百分比动画推进。
+        Box(
+            Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp))
+                .background(c.card)
+        ) {
+            Box(
+                Modifier.fillMaxWidth(frac).fillMaxHeight()
+                    .clip(RoundedCornerShape(3.dp)).background(color)
+            )
+        }
+        if (m.subText.isNotEmpty()) {
+            Spacer(Modifier.height(3.dp))
+            Text(m.subText, color = c.dim, fontSize = 10.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }

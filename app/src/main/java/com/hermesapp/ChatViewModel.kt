@@ -241,6 +241,29 @@ data class StatusItem(val label: String, val value: String)
 /** 状态页的一个分组：标题 + 若干行。 */
 data class StatusSection(val title: String, val items: List<StatusItem>)
 
+/**
+ * 状态页的一根进度条（CPU / 内存 / Swap / 磁盘 / 负载）。
+ * percent 0..100；valueText 是条右端的数值；subText 是条下方的小字说明。
+ */
+data class StatusMetric(
+    val key: String,
+    val label: String,
+    val percent: Double,
+    val valueText: String,
+    val subText: String = "",
+)
+
+/** 状态页顶部的概览卡：一眼看完「活着没、跑什么模型、跑了多久、在干几件事」。 */
+data class StatusHero(
+    val ok: Boolean,
+    val statusText: String,
+    val model: String,
+    val uptimeText: String,
+    val pid: Int,
+    val activeRuns: Int,
+    val delegations: Int,
+)
+
 /** 定时任务页的一条（来自服务端 /api/jobs）。中文名/说明由本地映射表翻译。 */
 data class JobItem(
     val id: String,
@@ -462,6 +485,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _statusSections = MutableStateFlow<List<StatusSection>>(emptyList())
     val statusSections = _statusSections.asStateFlow()
+
+    /** 顶部概览卡 + 进度条数据（与 _statusSections 同一次 /health/sysinfo 拉取产出）。 */
+    private val _statusHero = MutableStateFlow<StatusHero?>(null)
+    val statusHero = _statusHero.asStateFlow()
+
+    private val _statusMetrics = MutableStateFlow<List<StatusMetric>>(emptyList())
+    val statusMetrics = _statusMetrics.asStateFlow()
 
     private val _statusErr = MutableStateFlow("")
     val statusErr = _statusErr.asStateFlow()
@@ -2146,6 +2176,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val h = api?.sysinfo() ?: return@launch
+                _statusHero.value = buildHero(h)
+                _statusMetrics.value = buildMetrics(h)
                 _statusSections.value = buildStatus(h)
                 _statusErr.value = ""
             } catch (e: Exception) {
@@ -2154,6 +2186,66 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
+
+    /** 顶部概览：网关活着没、跑什么模型、跑了多久、在干几件事。 */
+    private fun buildHero(h: JSONObject): StatusHero {
+        val up = h.optLong("uptime_seconds", -1)
+        val uptime = if (up < 0) "" else
+            (up / 86400).toString() + " 天 " + ((up % 86400) / 3600).toString() + " 时 " + ((up % 3600) / 60).toString() + " 分"
+        return StatusHero(
+            ok = h.optString("status") == "ok",
+            statusText = if (h.optString("status") == "ok") "运行正常" else h.optString("status", "?"),
+            model = h.optString("model", "").ifEmpty { "未知" },
+            uptimeText = uptime,
+            pid = h.optInt("pid", 0),
+            activeRuns = h.optInt("active_runs", 0),
+            delegations = h.optInt("active_delegations", 0),
+        )
+    }
+
+    /**
+     * 进度条数据。只在服务端真的回了该字段时才出条（optDouble 取不到给 -1），
+     * 免得老网关（没打 sysinfo swap 补丁）显示一排 0% 的假条。
+     */
+    private fun buildMetrics(h: JSONObject): List<StatusMetric> {
+        val out = mutableListOf<StatusMetric>()
+        fun bar(key: String, label: String, pctKey: String, sub: String = "") {
+            val p = h.optDouble(pctKey, -1.0)
+            if (p >= 0) out.add(StatusMetric(key, label, p.coerceIn(0.0, 100.0), String.format("%.1f%%", p), sub))
+        }
+        val cores = h.optInt("cpu_count", 0)
+        val freq = h.optInt("cpu_freq_mhz", 0)
+        bar("cpu", "CPU 使用率", "cpu_percent",
+            listOfNotNull(
+                cores.takeIf { it > 0 }?.let { it.toString() + " 核" },
+                freq.takeIf { it > 0 }?.let { it.toString() + " MHz" },
+                h.optString("cpu_model", "").takeIf { it.isNotEmpty() },
+            ).joinToString(" · "))
+        val mUsed = h.optInt("memory_used_mb", 0)
+        val mTotal = h.optInt("memory_total_mb", 0)
+        bar("mem", "内存", "memory_percent",
+            if (mTotal > 0) fmtMb(mUsed) + " / " + fmtMb(mTotal) else "")
+        val swTotal = h.optInt("swap_total_mb", 0)
+        bar("swap", "Swap", "swap_percent",
+            if (swTotal > 0) fmtMb(h.optInt("swap_used_mb", 0)) + " / " + fmtMb(swTotal) else "未启用" )
+        bar("disk", "磁盘", "disk_percent",
+            h.optDouble("disk_total_gb", -1.0).takeIf { it >= 0 }?.let {
+                String.format("已用 %.1f / %.1f GB", h.optDouble("disk_used_gb", 0.0), it)
+            } ?: "")
+        // 负载：百分比按「核数 = 100%」折算，超核即满条并标红。
+        val la = h.optJSONArray("load_avg")
+        if (la != null && la.length() >= 1 && cores > 0) {
+            val l1 = la.optDouble(0, 0.0)
+            val p = (l1 / cores * 100.0).coerceIn(0.0, 100.0)
+            val txt = String.format("%.2f / %.2f / %.2f", l1,
+                la.optDouble(1, 0.0), la.optDouble(2, 0.0))
+            out.add(StatusMetric("load", "系统负载", p, txt, cores.toString() + " 核基准"))
+        }
+        return out
+    }
+
+    private fun fmtMb(mb: Int): String =
+        if (mb >= 1024) String.format("%.1f GB", mb / 1024.0) else mb.toString() + " MB"
 
     /** 把 /health/sysinfo 的扁平字段整理成「分组 → 行」结构，供状态页排版渲染。 */
     private fun buildStatus(h: JSONObject): List<StatusSection> {
