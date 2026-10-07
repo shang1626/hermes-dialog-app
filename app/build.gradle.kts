@@ -1,7 +1,17 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+
+// 构建期配置：真值放在 local.properties（已被 .gitignore 排除），
+// 公开仓库里的源码因此不含任何密钥 / 域名。本地构建照常生效。
+val localProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+fun cfg(key: String, def: String = ""): String = localProps.getProperty(key) ?: def
 
 android {
     namespace = "com.hermesapp"
@@ -11,8 +21,16 @@ android {
         applicationId = "com.hermesapp"
         minSdk = 26
         targetSdk = 34
-        versionCode = 126
-        versionName = "2.115"
+        versionCode = 127
+        versionName = "2.116"
+
+        // 敏感值由 local.properties 注入，源码零真值。
+        buildConfigField("String", "APP_PASSWORD", "\"${cfg("HERMES_APP_PASSWORD")}\"")
+        buildConfigField("String", "DEFAULT_KEY", "\"${cfg("HERMES_DEFAULT_KEY")}\"")
+        buildConfigField("String", "FRIEND_KEY", "\"${cfg("HERMES_FRIEND_KEY")}\"")
+        buildConfigField("String", "DEFAULT_URL", "\"${cfg("HERMES_DEFAULT_URL")}\"")
+        buildConfigField("String", "UPDATE_URL", "\"${cfg("HERMES_UPDATE_URL")}\"")
+        buildConfigField("String", "LEGACY_HOSTS", "\"${cfg("HERMES_LEGACY_HOSTS")}\"")
     }
 
     buildTypes {
@@ -37,6 +55,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.14"
