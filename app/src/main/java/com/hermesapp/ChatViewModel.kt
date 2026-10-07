@@ -2756,6 +2756,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         r.finished = true
                         clearStaleCards(r)
                         finishPending(r)
+                        notifyRecoveredCompletion(sid, st.payload?.optString("output", "").orEmpty())
                         r.busy.value = false
                         prefs.removeActiveRun(sid)
                         updateRunService()
@@ -2768,6 +2769,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     r.finished = true
                     clearStaleCards(r)
                     finishPending(r)
+                    notifyRecoveredCompletion(sid, "")
                     r.busy.value = false
                     prefs.removeActiveRun(sid)
                     updateRunService()
@@ -3050,7 +3052,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 会再调一次这里把服务补上。
         if (AppForeground.isForeground) {
             AppLog.log("service", "起前台服务 运行中会话=" + running.size + " keepAlive=" + prefs.keepAlive)
-            RunService.start(getApplication())
+            RunService.start(getApplication(), running.isNotEmpty())
         } else {
             AppLog.log("service", "跳过起服务（App 不在前台）运行中会话=" + running.size)
         }
@@ -3075,6 +3077,24 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             if (it.isEmpty()) "有任务在等你处理" else if (it.length > 120) it.take(120) + "…" else it
         }
         Notifier.notifyAction(app, title, body, sid)
+    }
+
+    /**
+     * 探测兜底收尾时也要通知+播报。
+     *
+     * 为什么需要：通知与语音原来只写在 run.completed 分支里，而流被掐断时那条事件
+     * 根本收不到，只能靠探测「Known(completed)」收尾——结果任务跑完了手机不响、
+     * 不播报（实测 2.88 用户报「没有任务完成的通知」）。这里用服务端返回的 output，
+     * 没有就回落本地最后一条助手正文。
+     */
+    private fun notifyRecoveredCompletion(sid: String, out: String) {
+        val r = rt(sid)
+        val text = out.ifEmpty {
+            r.messages.value.lastOrNull { it.role == "assistant" && it.text.isNotEmpty() }?.text.orEmpty()
+        }
+        if (text.isEmpty()) return
+        notifyCompletion(sid, text)
+        VoicePlayer.playFromReply(getApplication(), text, prefs.playCompletionVoice)
     }
 
     /**

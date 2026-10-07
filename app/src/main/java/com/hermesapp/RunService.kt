@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 
 /**
@@ -28,6 +29,16 @@ import androidx.core.app.NotificationCompat
  * 所以调用方只在 App 处于前台时才启动（见 ChatViewModel.updateRunService）。
  */
 class RunService : Service() {
+
+    /**
+     * 任务在跑时持有的 CPU 唤醒锁。
+     *
+     * 为什么需要：前台服务只保证「进程不被系统杀掉」，不阻止 CPU 进入休眠。息屏/切后台后
+     * CPU 一睡，TCP 连接还挂着但收不到任何字节，SSE 就这么静默断掉——实测后台 61 秒 0 事件，
+     * 直到系统唤醒才一次性补收（表现为「切回来显示重新连接」「任务跑完不通知」）。
+     * 只在有任务在跑时持锁，无任务立刻释放，避免空转耗电。
+     */
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -48,10 +59,33 @@ class RunService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        // 保活 CPU：有任务在跑才持锁，无任务立刻释放。
+        if (intent?.getBooleanExtra(EXTRA_ACTIVE, false) == true) acquireWakeLock() else releaseWakeLock()
         // 不用 START_STICKY：进程被杀后系统在后台把它拉回来，正好会撞上
         // 「后台不许起前台服务」的限制，反而制造崩溃。任务本身在服务端跑，
         // 重开 App 会重新拉结果，不需要系统替我们拉活。
         return START_NOT_STICKY
+    }
+
+    override fun onDestroy() {
+        releaseWakeLock()
+        super.onDestroy()
+    }
+
+    private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
+        runCatching {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "hermes:run").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        }
+    }
+
+    private fun releaseWakeLock() {
+        runCatching { if (wakeLock?.isHeld == true) wakeLock?.release() }
+        wakeLock = null
     }
 
     private fun buildNotification(): Notification {
@@ -89,11 +123,14 @@ class RunService : Service() {
         const val CHANNEL_ID = "hermes_run2"
         const val LEGACY_CHANNEL_ID = "hermes_run"
         const val NOTIF_ID = 1001
+        const val EXTRA_ACTIVE = "hermes_run_active"
 
-        fun start(ctx: Context) {
+        /** active=true 表示有任务在跑：持 CPU 唤醒锁，保证后台也能持续收 SSE。 */
+        fun start(ctx: Context, active: Boolean = false) {
             AppLog.log("service", "RunService.start")
             runCatching {
                 val i = Intent(ctx, RunService::class.java)
+                i.putExtra(EXTRA_ACTIVE, active)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     ctx.startForegroundService(i)
                 } else {
