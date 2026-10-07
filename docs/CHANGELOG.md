@@ -1,3 +1,13 @@
+## 2.114 — versionCode 125
+
+修：设置页的「播报语速」对自动播报与重播不生效。
+
+- **根因**：App 里有三个播放器，各自持有一份 `rate` 字段、互不同步——自动播报走 `StreamVoicePlayer`，气泡重播走 `VoiceReplayPlayer`，老的整段附件走 `VoicePlayer`。而 `setVoiceRate()` 只灌了 `VoicePlayer` 一个，于是设置页调完语速，流式自动播报和点重播都还用旧速度（重播那个更是只在启动 App 时读过一次）。
+- **修法**：`setVoiceRate()` 改为三个播放器一起灌；并新增 `StreamVoicePlayer.applyRateNow()`，正在播的流式语音也立刻变速（ExoPlayer 支持播放中改速）。
+- 服务端、网关、其它功能零改动；补丁清单不变。
+
+（改 ChatViewModel.kt / StreamVoicePlayer.kt / app/build.gradle.kts）
+
 ## 2.113 — versionCode 124
 
 新：语音可随时重播（点消息气泡里的播放按钮）。

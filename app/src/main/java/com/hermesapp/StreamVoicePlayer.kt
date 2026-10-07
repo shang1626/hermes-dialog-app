@@ -148,6 +148,20 @@ object StreamVoicePlayer {
         onMain { startOnMain(ctx) }
     }
 
+    /**
+     * 立刻把当前正在播的流式语音改成新的 rate（设置页调语速时用）。
+     * 没有在播就什么都不做——rate 字段已经更新，下次起播自然用新速度。
+     * ExoPlayer 允许播放中改速；失败静默（个别机型/状态会抛，不影响后续播放）。
+     */
+    fun applyRateNow() {
+        val r = rate
+        onMain {
+            runCatching {
+                player?.setPlaybackSpeed(r.coerceIn(0.5f, 2.0f))
+            }
+        }
+    }
+
     /** 真正起播：必须在主线程执行（ExoPlayer 的硬性要求）。 */
     private fun startOnMain(ctx: Context) {
         val p = player

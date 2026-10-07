@@ -3890,10 +3890,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (!on) { VoicePlayer.stop(); StreamVoicePlayer.stop(); VoiceReplayPlayer.stop() }
     }
 
-    /** 设置页调播报语速：写入 prefs 并立刻灌进播放器（下次播放即用新速度）。 */
+    /**
+     * 设置页调播报语速：写入 prefs 并立刻灌进**三个**播放器。
+     *
+     * 为什么必须三个都灌：自动播报走 StreamVoicePlayer、重播按钮走 VoiceReplayPlayer、
+     * 老的整段附件走 VoicePlayer。它们各自持有 rate 字段、互不同步；只灌 VoicePlayer 时，
+     * 设置页改完语速对自动播报（流式）与点重播都不生效——正是用户报的「语速功能失效」。
+     */
     fun setVoiceRate(rate: Float) {
         prefs.voiceRate = rate
         VoicePlayer.rate = rate
+        StreamVoicePlayer.rate = rate
+        VoiceReplayPlayer.rate = rate
+        // 正在播的流式语音立刻变速（ExoPlayer 支持播放中改速）；重播是 MediaPlayer，
+        // 用 playWhenReady 的实时 setSpeed 会在部分机型上抛异常，故只对新播放生效。
+        StreamVoicePlayer.applyRateNow()
     }
 
     // ---------- 自更新 ----------
