@@ -1,3 +1,16 @@
+## 2.94 — versionCode 105
+
+新：定时任务跑完后，产出能进 App 了（配服务端新增的收件箱）。
+
+为什么以前收不到：App 走网关的 api_server 通道，而那条适配器在服务端被标成「不能推送」（`supports_async_delivery = False`），投递目标解析里也把 api_server 排除在 origin 之外——定时任务的结果**没法主动推进 App**，只能判成投递失败。所以这一版是「服务端加收件箱 + App 来拉」两半一起上：
+
+1. **服务端新增 `/api/inbox` 与 `/api/inbox/ack`**（见 cron/app_inbox.py）：cron 投递时把产出留一份带未读标记的档，App 拉取、点开即确认已读。
+2. **`deliver: api`（别名 `app`）成为合法的投递目标**：写了它、或任务本来就是从 App 建的（origin = api_server），产出就进收件箱。收件箱收下即算投递成功——不再因为微信会话过期之类的旁路问题把任务标成 `delivery_failed`；旁路的失败照实留在 `last_delivery_unverified` 里，不隐瞒。
+3. **App 侧「定时任务」页顶部多一个收件箱**：未读带红点、顶部显示「N 条未读」与「全部已读」；点某条弹全文（Markdown 渲染），点开即标已读。
+4. **回前台/启动时自动拉一次**：拉到新的未读就弹一条本机通知（只弹最新一条，不连响一串；同一条只响一次），失败只记错误文案不打扰。
+
+（改 net/HermesApi.kt / ChatViewModel.kt / Screens.kt / app/build.gradle.kts；服务端改 cron/app_inbox.py、cron/scheduler_delivery.py、cron/scheduler_preflight.py、gateway/platforms/api_server.py）
+
 ## 2.93 — versionCode 104
 
 新：子任务（delegate_task 派出的子代理）运行时能看它的实时进度了，点一行还能看它每一步在干什么。

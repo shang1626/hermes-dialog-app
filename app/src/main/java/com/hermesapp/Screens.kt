@@ -1116,8 +1116,15 @@ fun JobsScreen(vm: ChatViewModel, prefs: Prefs) {
     val jobs by vm.jobs.collectAsState()
     val err by vm.jobsErr.collectAsState()
     val note by vm.jobsNote.collectAsState()
+    val reports by vm.inbox.collectAsState()
+    val unread by vm.inboxUnread.collectAsState()
+    val inboxErr by vm.inboxErr.collectAsState()
     var showDisabled by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { vm.refreshJobs(showDisabled) }
+    LaunchedEffect(Unit) {
+        vm.refreshJobs(showDisabled)
+        // 进这一页顺手拉一次收件箱（App 走 api_server 通道收不到推送，产出只能来拉）。
+        vm.refreshInbox(notifyNew = false)
+    }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -1150,6 +1157,32 @@ fun JobsScreen(vm: ChatViewModel, prefs: Prefs) {
                 modifier = Modifier.fillMaxWidth().padding(14.dp))
         }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(12.dp)) {
+            // 收件箱：定时任务的产出。App 走 api_server 通道，服务端推不过来
+            // （supports_async_delivery=False），产出在服务端留档、这里拉出来看。
+            if (reports.isNotEmpty()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "收件箱" + (if (unread > 0) "（" + unread + " 条未读）" else "（" + reports.size + " 条）"),
+                        color = if (unread > 0) c.accent else c.dim, fontSize = 12.sp,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    if (unread > 0) {
+                        Text(
+                            "全部已读", color = c.accent, fontSize = 11.sp,
+                            modifier = Modifier.clickable { vm.ackInbox(all = true) },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                for (r in reports) {
+                    CronReportRow(r) { vm.openCronReport(r) }
+                    Spacer(Modifier.height(6.dp))
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+            if (inboxErr.isNotEmpty()) {
+                Text(inboxErr, color = c.bad, fontSize = 11.sp, modifier = Modifier.padding(vertical = 6.dp))
+            }
             if (jobs.isEmpty() && err.isEmpty()) {
                 Text("（没有定时任务）", color = c.dim, fontSize = 12.sp,
                     modifier = Modifier.padding(vertical = 8.dp))
@@ -1163,6 +1196,77 @@ fun JobsScreen(vm: ChatViewModel, prefs: Prefs) {
                 modifier = Modifier.fillMaxWidth().padding(top = 2.dp))
         }
     }
+
+    // 产出全文：点收件箱某一条弹出。
+    val viewing by vm.cronReport.collectAsState()
+    val vr = viewing
+    if (vr != null) CronReportDialog(vm, vr)
+}
+
+/** 收件箱一条：任务名 + 时间 + 正文首行；未读带红点。点开看全文。 */
+@Composable
+private fun CronReportRow(r: CronReport, onClick: () -> Unit) {
+    val c = LocalAppColors.current
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+            .background(c.card)
+            .clickable { onClick() }
+            .padding(10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (r.unread) {
+                Box(Modifier.size(7.dp).background(c.bad, CircleShape))
+                Spacer(Modifier.width(5.dp))
+            }
+            Text(
+                (if (r.failed) "✗ " else "✓ ") + r.jobName.ifEmpty { r.jobId },
+                color = if (r.failed) c.bad else c.text, fontSize = 12.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(TimeFmt.isoToBj(r.at), color = c.dim, fontSize = 10.sp)
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            r.body.replace(Regex("\\s+"), " ").trim().take(90),
+            color = c.dim, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/** 定时任务产出全文（收件箱条目）。 */
+@Composable
+fun CronReportDialog(vm: ChatViewModel, r: CronReport) {
+    val c = LocalAppColors.current
+    AlertDialog(
+        onDismissRequest = { vm.closeCronReport() },
+        title = {
+            Text(
+                (if (r.failed) "定时任务失败 · " else "定时任务产出 · ") + r.jobName.ifEmpty { r.jobId },
+                color = if (r.failed) c.bad else c.text, fontSize = 14.sp,
+                maxLines = 2, overflow = TextOverflow.Ellipsis,
+            )
+        },
+        text = {
+            Column(
+                Modifier.fillMaxWidth().heightIn(max = 430.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(TimeFmt.isoToBj(r.at) + "  ·  " + r.jobId, color = c.dim, fontSize = 11.sp)
+                Spacer(Modifier.height(8.dp))
+                if (r.body.isBlank()) {
+                    Text("（这条没有正文）", color = c.dim, fontSize = 12.sp)
+                } else {
+                    RichText(r.body, color = c.text, fontSize = 12.sp)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { vm.closeCronReport() }) {
+                Text("关闭", color = c.accent, fontSize = 13.sp)
+            }
+        },
+    )
 }
 
 /** 执行记录状态翻译（latest_execution.status），与 ViewModel 内那份保持一致。 */
