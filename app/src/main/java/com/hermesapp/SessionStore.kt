@@ -168,8 +168,14 @@ class SessionStore(ctx: Context, private val profile: String) {
                     for (k in 0 until sa.length()) {
                         val so = sa.optJSONObject(k) ?: continue
                         subs.add(SubagentLine(
-                            so.optString("id", ""), so.optString("goal", ""),
-                            so.optString("status", ""), so.optString("summary", "")
+                            id = so.optString("id", ""), goal = so.optString("goal", ""),
+                            status = so.optString("status", ""), summary = so.optString("summary", ""),
+                            childSessionId = so.optString("childSessionId", ""),
+                            steps = so.optInt("steps", 0),
+                            startedAt = so.optLong("startedAt", 0L),
+                            seenAt = so.optLong("seenAt", 0L),
+                            endedAt = so.optLong("endedAt", 0L),
+                            tokens = so.optInt("tokens", 0),
                         ))
                     }
                 }
@@ -281,7 +287,10 @@ class SessionStore(ctx: Context, private val profile: String) {
                     val sa = JSONArray()
                     for (s in m.subagents) {
                         sa.put(JSONObject().put("id", s.id).put("goal", s.goal)
-                            .put("status", s.status).put("summary", s.summary))
+                            .put("status", s.status).put("summary", s.summary)
+                            .put("childSessionId", s.childSessionId).put("steps", s.steps)
+                            .put("startedAt", s.startedAt).put("seenAt", s.seenAt)
+                            .put("endedAt", s.endedAt).put("tokens", s.tokens))
                     }
                     o.put("subagents", sa)
                 }
