@@ -217,6 +217,12 @@ data class JobItem(
 private const val MAX_RECONNECT_ATTEMPTS = 8
 
 /**
+ * 回前台自动同步的节流窗口：来回快速切前后台时，别每次回前台都打一遍接口。
+ * 3 秒足够挡住「切出去看一眼通知再切回来」这类连击。
+ */
+private const val FOREGROUND_SYNC_THROTTLE_MS = 3_000L
+
+/**
  * 「服务端还在跑」的状态集合：探测到这些状态就续接事件流，不判结束。
  * 注意必须与 api_server 的 run 状态机一致（含 stopping——已请求停止但还没收尾）。
  */
@@ -1060,7 +1066,43 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) { refreshStatus() }
         // 回前台顺带同步一次服务端标题（节流 30 秒，避免频繁切前后台狂打接口）
         syncFromServer(30_000L)
+        // 回前台把当前会话与服务端对齐一次（正文，不只是标题）。
+        syncOnForeground()
     }
+
+    /**
+     * 回前台自动同步：把当前会话与服务端对齐一次。
+     *
+     * 为什么需要它：后台期间 App 可能没收到任何事件（进程被冻结、流被掐），
+     * 或者在别的端（微信 / CLI）产生了新轮次——本地的消息就停在了切出去那一刻。
+     * 以前回前台只同步「标题」，正文永远不会补齐，表现就是「切回来信息不同步」。
+     *
+     * 正在跑的会话不能硬拉：服务端记录此刻是半成品，合并进去会把半截内容写进气泡。
+     * 改落一个「待同步」标记，交给本轮收尾（doneOk / failPending）时补拉一次。
+     */
+    private fun syncOnForeground() {
+        val now = System.currentTimeMillis()
+        if (now - lastFgSyncAt < FOREGROUND_SYNC_THROTTLE_MS) return
+        lastFgSyncAt = now
+        val cur = _currentId.value
+        if (cur.isNotEmpty()) {
+            val r = rt(cur)
+            if (r.busy.value) {
+                r.needSync = true
+                AppLog.log("sync", "回前台：会话在跑，落待同步标记 sid=" + cur.take(8))
+            } else {
+                AppLog.log("sync", "回前台：同步当前会话 sid=" + cur.take(8))
+                refreshFromServerFor(cur)
+            }
+        }
+        // 其它正在跑的会话也各落各的标记，各自收尾时补拉。
+        for ((sid, other) in runtimes) {
+            if (sid != cur && other.busy.value) other.needSync = true
+        }
+    }
+
+    /** 上次回前台同步的时间：节流用。 */
+    private var lastFgSyncAt = 0L
 
     /** 拉一次服务端能力：是否支持原生图片（决定图片是原生附图还是先转文字）。 */
     fun fetchCapabilities() {
@@ -1084,7 +1126,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (id.isEmpty()) return
         val r = rt(id)
         if (r.busy.value) return
-        viewModelScope.launch(Dispatchers.IO) {
+        // 挂进程级作用域而不是 viewModelScope：回前台同步与「收尾补拉」都可能在
+        // Activity 已被重建/销毁之后触发，挂 viewModelScope 会随旧实例一起被取消，
+        // 表现就是「该同步的时候没同步」。
+        RuntimeHub.scope.launch(Dispatchers.IO) {
             try {
                 val resp = a.sessionMessages(id)
                 val arr = resp.optJSONArray("data") ?: return@launch
@@ -2919,6 +2964,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.busy.value = false
         r.runId = ""
         prefs.removeActiveRun(sid)
+        // 同上：本轮失败了也要把「回前台该同步」这件事补上，否则界面会一直停在旧内容。
+        if (r.needSync) {
+            r.needSync = false
+            AppLog.log("sync", "收尾补拉（本轮失败）sid=" + sid.take(8))
+            refreshFromServerFor(sid)
+        }
         updateRunService()
         drainQueue(sid)   // 本轮失败也要把排队的下一条发出去，别把队列卡死
     }
@@ -2933,6 +2984,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.busy.value = false
         r.runId = ""
         prefs.removeActiveRun(sid)
+        // 回前台时若因本轮在跑而没能同步，收尾后补拉一次：后台期间别的端产生的轮次、
+        // 或本地漏收的事件，靠它补齐。标记先清掉，避免反复拉。
+        if (r.needSync) {
+            r.needSync = false
+            AppLog.log("sync", "收尾补拉 sid=" + sid.take(8))
+            refreshFromServerFor(sid)
+        }
         updateRunService()
         if (sid == _currentId.value) drainPendingReply()
         drainQueue(sid)   // 本轮结束：把排队的下一条发出去
