@@ -2,4 +2,7 @@
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/ic_launcher_background" />
     <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <!-- 单色层（Android 13+ 主题图标用）：不给它，部分 ROM 会拿自己的占位图顶替，
+         在通知/状态栏上显示成系统默认图标。 -->
+    <monochrome android:drawable="@drawable/ic_stat_hermes" />
 </adaptive-icon>
