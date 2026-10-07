@@ -528,6 +528,9 @@ fun DrawerPanel(
     val updateBadge by vm.updateBadge.collectAsState()
     val runFlags by vm.runFlags.collectAsState()
     var showArchived by remember { mutableStateOf(false) }
+    // 排序模式：默认关，标题行点「排序」才在每行右侧露出上/下移箭头。
+    // 目的是把常驻的排序控件收进一个入口，平时列表干净。
+    var sortMode by remember { mutableStateOf(false) }
 
     ModalDrawerSheet(
         drawerContainerColor = c.panel,
@@ -563,16 +566,32 @@ fun DrawerPanel(
                     color = c.dim, fontSize = 12.sp
                 )
                 Spacer(Modifier.weight(1f))
-                Text(
-                    "搜索", color = c.accent, fontSize = 12.sp,
-                    modifier = Modifier.clickable { vm.toggleGlobalSearch() }
-                )
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    if (showArchived) "返回" else "已归档",
-                    color = c.accent, fontSize = 12.sp,
-                    modifier = Modifier.clickable { showArchived = !showArchived }
-                )
+                if (sortMode) {
+                    // 排序模式：只剩一个「完成」出口，收起箭头回到常规视图。
+                    Text(
+                        "完成", color = c.accent, fontSize = 12.sp,
+                        modifier = Modifier.clickable { sortMode = false }
+                    )
+                } else {
+                    Text(
+                        "排序", color = c.accent, fontSize = 12.sp,
+                        modifier = Modifier.clickable {
+                            if (showArchived) showArchived = false
+                            sortMode = true
+                        }
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        "搜索", color = c.accent, fontSize = 12.sp,
+                        modifier = Modifier.clickable { vm.toggleGlobalSearch() }
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        if (showArchived) "返回" else "已归档",
+                        color = c.accent, fontSize = 12.sp,
+                        modifier = Modifier.clickable { showArchived = !showArchived }
+                    )
+                }
             }
             Spacer(Modifier.height(6.dp))
 
@@ -648,11 +667,12 @@ fun DrawerPanel(
                                 archived = showArchived,
                                 running = runFlags[s.id]?.busy == true,
                                 flag = runFlags[s.id],
+                                showSort = sortMode,
                                 canUp = idx > 0,
                                 canDown = idx < list.size - 1,
                                 onMoveUp = { vm.moveSession(s.id, -1) },
                                 onMoveDown = { vm.moveSession(s.id, +1) },
-                                onOpen = { vm.switchSession(s.id); onTab(0); onClose() },
+                                onOpen = { sortMode = false; vm.switchSession(s.id); onTab(0); onClose() },
                                 onArchive = { vm.archiveSession(s.id, !s.archived) },
                                 onDelete = { vm.deleteSession(s.id) },
                                 onExport = { vm.exportSession(ctx, s.id) },
@@ -736,6 +756,8 @@ fun SessionRow(
     onArchive: () -> Unit,
     onDelete: () -> Unit,
     onExport: () -> Unit = {},
+    /** 是否处于排序模式（决定是否露出上/下移箭头）。 */
+    showSort: Boolean = false,
     /** 是否可上/下移（顶行不能上、底行不能下）。 */
     canUp: Boolean = false,
     canDown: Boolean = false,
@@ -783,19 +805,21 @@ fun SessionRow(
                 TimeFmt.mdhm(meta.updatedAt), color = c.dim, fontSize = 10.sp
             )
         }
-        // 手动排序：一对迷你箭头（上移/下移）。顶行▲、底行▼ 置灰。
-        // 用图标而非长按——长按会和行的点击、菜单抢手势，容易误触。
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(
-                Icons.Rounded.KeyboardArrowUp, contentDescription = "上移",
-                tint = if (canUp) c.accent else c.dim.copy(alpha = 0.25f),
-                modifier = Modifier.size(20.dp).clickable(enabled = canUp) { onMoveUp() }
-            )
-            Icon(
-                Icons.Rounded.KeyboardArrowDown, contentDescription = "下移",
-                tint = if (canDown) c.accent else c.dim.copy(alpha = 0.25f),
-                modifier = Modifier.size(20.dp).clickable(enabled = canDown) { onMoveDown() }
-            )
+        // 手动排序：仅在排序模式下露出一对迷你箭头（上移/下移）。
+        // 默认收起，避免每行常驻一列箭头把列表搅得很吵。顶行▲、底行▼ 置灰。
+        if (showSort) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                    Icons.Rounded.KeyboardArrowUp, contentDescription = "上移",
+                    tint = if (canUp) c.accent else c.dim.copy(alpha = 0.25f),
+                    modifier = Modifier.size(20.dp).clickable(enabled = canUp) { onMoveUp() }
+                )
+                Icon(
+                    Icons.Rounded.KeyboardArrowDown, contentDescription = "下移",
+                    tint = if (canDown) c.accent else c.dim.copy(alpha = 0.25f),
+                    modifier = Modifier.size(20.dp).clickable(enabled = canDown) { onMoveDown() }
+                )
+            }
         }
         Box {
             Text(
