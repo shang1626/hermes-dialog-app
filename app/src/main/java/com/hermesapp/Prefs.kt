@@ -26,10 +26,27 @@ class Prefs(ctx: Context) {
         get() = sp.getString("theme_mode", "system") ?: "system"
         set(v) { sp.edit().putString("theme_mode", v).apply() }
 
-    /** 对话输入框草稿：进程被系统杀掉后重进也能恢复已输入内容。 */
-    var draftInput: String
-        get() = sp.getString("draft_input", "") ?: ""
-        set(v) { sp.edit().putString("draft_input", v).apply() }
+    /**
+     * 对话输入框草稿：按会话隔离存（键 draft_input:<sessionId>）。
+     * 以前是全局一个键，导致「在 A 会话输入没发出去、切到 B 会话内容还在」——
+     * 草稿必须跟着会话走，切会话各显示各的。
+     */
+    fun draftFor(sessionId: String): String {
+        if (sessionId.isEmpty()) return ""
+        return sp.getString("draft_input:" + sessionId, "") ?: ""
+    }
+
+    fun setDraft(sessionId: String, v: String) {
+        if (sessionId.isEmpty()) return
+        if (v.isEmpty()) sp.edit().remove("draft_input:" + sessionId).apply()
+        else sp.edit().putString("draft_input:" + sessionId, v).apply()
+    }
+
+    /** 删除会话时一并清掉它的草稿。 */
+    fun clearDraft(sessionId: String) {
+        if (sessionId.isEmpty()) return
+        sp.edit().remove("draft_input:" + sessionId).apply()
+    }
 
     /** 通知栏直接回复暂存："sessionId\u0000文本"；App 起来后由 ChatViewModel 取走发送。 */
     var pendingReply: String

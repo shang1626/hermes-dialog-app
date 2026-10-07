@@ -748,6 +748,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 若该会话有正在跑的任务，先停掉（服务端一并停），再删本地记录。
         stopSession(id)
         store.deleteMessages(id)
+        prefs.clearDraft(id)
         runtimes.remove(id)
         val list = _sessions.value.filter { it.id != id }.toMutableList()
         _sessions.value = list
@@ -2615,7 +2616,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         // 放在 doneOk 之后，避免被它的 retryNote 清空覆盖。
                         val ps = ev.data.optString("pending_steer", "").trim()
                         if (ps.isNotEmpty()) {
-                            if (prefs.draftInput.isEmpty()) prefs.draftInput = ps
+                            if (prefs.draftFor(sid).isEmpty()) prefs.setDraft(sid, ps)
                             r.retryNote.value = "上一句插话没赶上本轮，已放回输入框，点发送重发"
                         }
                         notifyCompletion(sid, out)
