@@ -1,3 +1,13 @@
+## 2.111 — versionCode 122
+
+修：2.110 流式语音在真机上完全无声。
+
+- **根因**：ExoPlayer 硬性要求「创建 / prepare / play / release」都发生在带 Looper 的线程（主线程）。`StreamVoicePlayer` 是从 SSE 回调线程（OkHttp 线程池，无 Looper）直接调进来的，`ExoPlayer.Builder(ctx).build()` 抛异常后被 catch 吞掉 → 播放器从未起播 → `nowPlaying` 被清空 → 后续 `audio.delta` 因「nowPlaying 为空」全被忽略 → 全程无声。
+- **修法**：`StreamVoicePlayer` 内新增主线程 Handler，所有 ExoPlayer 操作（建、prepare、play、setPlaybackSpeed、stop、release）统一 post 到主线程；文件读写仍在原线程（文件 IO 无所谓线程）。
+- 服务端、网关、其它功能零改动；`api_server_tts_stream` 关掉仍回落原整段附件路径。
+
+（改 StreamVoicePlayer.kt / app/build.gradle.kts）
+
 ## 2.110 — versionCode 121
 
 语音播报提速：合成前剥 markdown（乙）+ 流式边合成边播（丙）。
