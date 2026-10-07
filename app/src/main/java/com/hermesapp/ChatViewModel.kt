@@ -731,7 +731,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         scheduleSave(r)
     }
 
+    /** 索引落盘的异步去抖任务：切会话/改标题连点也只写一次。 */
+    private var indexSaveJob: Job? = null
+
     private fun scheduleSave(r: SessionRuntime) {
+        if (r.dead) return          // 已删除的会话：别再安排写盘，否则文件会复活
         r.saveJob?.cancel()
         r.saveJob = RuntimeHub.scope.launch(Dispatchers.IO) {
             delay(400)
@@ -754,24 +758,68 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         store.saveIndex(_sessions.value)
     }
 
+    /**
+     * 读会话正文（异步）。
+     *
+     * 为什么必须异步：正文最多 300 条含工具轨迹，readText + 全量 JSON 解析在主线程上就是
+     * 一次几十到几百毫秒的卡顿；重启后每个会话都要现读一次，最明显。
+     *
+     * 数据安全：读盘期间若有推送/续接写进了 messages（非空），说明内存里那份更新，
+     * 这时按用户消息锚点合并，绝不整份覆盖。
+     */
     private fun ensureLoaded(id: String) {
         val r = rt(id)
-        if (!r.loaded) {
-            r.messages.value = store.loadMessages(id)
-            r.loaded = true
+        if (r.loaded || r.loading || r.dead) return
+        r.loading = true
+        val t0 = System.currentTimeMillis()
+        RuntimeHub.scope.launch(Dispatchers.IO) {
+            val msgs = runCatching { store.loadMessages(id) }.getOrDefault(emptyList())
+            val cost = System.currentTimeMillis() - t0
+            withContext(Dispatchers.Main.immediate) {
+                if (r.dead) { r.loading = false; return@withContext }
+                r.messages.value = if (r.messages.value.isEmpty()) msgs
+                                   else mergeByUserAnchor(r.messages.value, msgs)
+                r.loaded = true
+                r.loading = false
+                // 落盘里还有「运行中」的子任务（长任务跑一半重开 App）：把进度轮询接回去，
+                // 否则界面上那行会一直停在重开前的步数。只对当前会话接线（预热其它会话时
+                // 不该替用户去轮询）。
+                if (id == _currentId.value &&
+                    r.messages.value.any { it.subagents.any { s -> s.status == "running" && s.childSessionId.isNotEmpty() && s.endedAt == 0L } }) {
+                    ensureSubagentSweep(id)
+                }
+                val total = if (r.switchStartedAt > 0) System.currentTimeMillis() - r.switchStartedAt else -1L
+                AppLog.log("perf", "读会话正文 " + id.take(8) + " 条数=" + msgs.size + " 读盘=" + cost +
+                    "ms" + (if (total >= 0) " 点击到就绪=" + total + "ms" else ""))
+            }
         }
-        // 落盘里还有「运行中」的子任务（长任务跑一半重开 App）：把进度轮询接回去，
-        // 否则界面上那行会一直停在重开前的步数。
-        if (r.messages.value.any { it.subagents.any { s -> s.status == "running" && s.childSessionId.isNotEmpty() && s.endedAt == 0L } }) {
-            ensureSubagentSweep(id)
+    }
+
+    /**
+     * 启动后预热：后台把最近几个会话的正文读进内存。
+     *
+     * 为什么需要：重启后除当前会话外一条都没加载，用户切到哪个都要现读现解析。
+     * 放在启动 1.2 秒后、IO 线程上，不跟启动期的同步标题/收件箱/更新检查抢，也不挡首帧。
+     */
+    private fun prewarmRecentSessions() {
+        RuntimeHub.scope.launch(Dispatchers.IO) {
+            delay(1200L)
+            val ids = _sessions.value.filter { !it.archived }.take(3).map { it.id }
+            for (id in ids) ensureLoaded(id)   // 内部自带 loaded/loading 守卫与锚点合并
         }
     }
 
     private fun refreshSessions() {
-        val l = store.loadIndex().sortedByDescending { it.updatedAt }
-        AppLog.log("store", "刷新列表 条数=" + l.size + " 已归档=" + l.count { it.archived } +
-            " 当前=" + _currentId.value.take(8))
-        _sessions.value = l
+        // 异步读索引：原来这个函数在主线程上 readText + 全量解析，而切会话会调它。
+        // 另外内容没变就不赋值 —— 换一个新 List 会让抽屉里整个会话列表重组一遍。
+        RuntimeHub.scope.launch(Dispatchers.IO) {
+            val l = runCatching { store.loadIndex() }.getOrDefault(mutableListOf()).sortedByDescending { it.updatedAt }
+            withContext(Dispatchers.Main.immediate) {
+                AppLog.log("store", "刷新列表 条数=" + l.size + " 已归档=" + l.count { it.archived } +
+                    " 当前=" + _currentId.value.take(8))
+                if (l != _sessions.value) _sessions.value = l
+            }
+        }
     }
 
     /** 上次从服务端同步标题的时间：节流用，避免每个轮末都打一次接口。 */
@@ -856,13 +904,56 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 切到某个会话（网关 session_id 同步指过去）。不再停止任何正在跑的任务。 */
     fun switchSession(id: String) {
         if (id == _currentId.value) return
+        val t0 = System.currentTimeMillis()
         AppLog.log("ui", "切会话 -> " + id.take(8))
         clearSearch()   // 搜索只作用于当前会话：切走即收起
-        saveCurrent()
+        // 切会话必须立刻返回。原来这里在 UI 线程上同步做「写上一会话正文 + 写索引 +
+        // 读新会话正文并全量解析 + 再读一次索引」：一次点击 3 写 2 读，重启后没有内存
+        // 缓存，每次都等磁盘 —— 这就是侧边栏切换卡顿的来源。现在写盘异步、读盘走 IO，
+        // 主线程只改状态（下面那行 perf 日志会把实际耗时记下来）。
+        val r = rt(id)
+        r.switchStartedAt = t0
+        saveCurrentAsync()
         _currentId.value = id
         prefs.sessionId = id
         ensureLoaded(id)
-        refreshSessions()
+        AppLog.log("perf", "切会话 " + id.take(8) + " 主线程耗时=" + (System.currentTimeMillis() - t0) + "ms")
+    }
+
+    /**
+     * 落盘当前会话的正文与索引（全异步）。
+     *
+     * 顺序保证：每个会话自己有 saveJob（400ms 去抖）。这里先 cancel 掉待执行的去抖任务，
+     * 再挂一个立刻执行的 IO 写 —— 同一会话任何时刻只有一个写在跑，不会互相覆盖。
+     */
+    private fun saveCurrentAsync() {
+        val id = _currentId.value
+        if (id.isNotEmpty()) {
+            val r = runtimes[id]
+            if (r != null && !r.dead) {
+                r.saveJob?.cancel()
+                r.saveJob = RuntimeHub.scope.launch(Dispatchers.IO) { saveRuntime(r) }
+            }
+        }
+        saveIndexAsync()
+    }
+
+    /**
+     * 索引落盘：异步 +（默认）300ms 去抖。
+     * debounceMs = 0 用于「必须尽快落盘」的场合（新建会话、归档、删除）。
+     */
+    private fun saveIndexAsync(debounceMs: Long = 300L) {
+        indexSaveJob?.cancel()
+        indexSaveJob = RuntimeHub.scope.launch(Dispatchers.IO) {
+            if (debounceMs > 0) delay(debounceMs)
+            store.saveIndex(_sessions.value)
+        }
+    }
+
+    /** 把待写的正文/索引立刻落盘（App 退到后台时调，避免进程被杀丢最后一段）。 */
+    fun flushSaves() {
+        saveCurrentAsync()
+        AppLog.flush()
     }
 
     fun newConversation() {
@@ -871,11 +962,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val id = UUID.randomUUID().toString()
         val meta = SessionMeta(id, "新对话", stamp(), false)
         _sessions.value = _sessions.value + meta
-        store.saveIndex(_sessions.value)
+        saveIndexAsync(debounceMs = 0L)
         _currentId.value = id
         prefs.sessionId = id
         rt(id).loaded = true
-        refreshSessions()
+        rt(id).loading = false
     }
 
     fun archiveSession(id: String, archived: Boolean) {
@@ -885,7 +976,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (i < 0) return
         list[i] = list[i].copy(archived = archived)
         _sessions.value = list
-        store.saveIndex(list)
+        saveIndexAsync(debounceMs = 0L)
         if (id == _currentId.value && archived) selectNextOrEmpty()
     }
 
@@ -893,12 +984,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         AppLog.log("ui", "删除会话 sid=" + id.take(8))
         // 若该会话有正在跑的任务，先停掉（服务端一并停），再删本地记录。
         stopSession(id)
-        store.deleteMessages(id)
-        prefs.clearDraft(id)
+        // 关键顺序：先把该会话的运行态标死、取消待执行的保存任务，再删文件。
+        // 反过来的话，刚挂上去的异步保存会在删除之后把文件又写回来（会话复活）。
+        runtimes[id]?.let { r -> r.dead = true; r.saveJob?.cancel() }
         runtimes.remove(id)
+        prefs.clearDraft(id)
         val list = _sessions.value.filter { it.id != id }.toMutableList()
         _sessions.value = list
-        store.saveIndex(list)
+        saveIndexAsync(debounceMs = 0L)
+        RuntimeHub.scope.launch(Dispatchers.IO) { runCatching { store.deleteMessages(id) } }
         if (id == _currentId.value) selectNextOrEmpty()
     }
 
@@ -1007,6 +1101,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         prefs.sessionId = target.id
         _sessions.value = list
         ensureLoaded(target.id)
+        prewarmRecentSessions()
     }
 
     // ---------- 连接 ----------
