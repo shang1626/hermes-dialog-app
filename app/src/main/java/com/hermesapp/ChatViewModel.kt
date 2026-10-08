@@ -1852,41 +1852,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * 取本次 cron 执行的产出摘要：找该任务最新一次运行会话，取最后一条助手消息。
      * 认不出会话或没有正文就返回空串（绝不编造）。
      */
-    private suspend fun fetchRunSummary(a: HermesApi, jobId: String): String {
-        return try {
-            val resp = a.listSessions(limit = 50)
-            val arr = resp.optJSONArray("data") ?: return ""
-            val prefix = "cron_" + jobId + "_"
-            var best: JSONObject? = null
-            var bestTs = Double.NEGATIVE_INFINITY
-            for (i in 0 until arr.length()) {
-                val s = arr.optJSONObject(i) ?: continue
-                val sid = s.optString("id", "")
-                if (!sid.startsWith(prefix)) continue
-                val ts = s.optDouble("started_at", 0.0)
-                if (ts > bestTs) { bestTs = ts; best = s }
-            }
-            val sid = best?.optString("id", "").orEmpty()
-            if (sid.isEmpty()) return ""
-            val m = a.sessionMessages(sid)
-            val msgs = m.optJSONArray("data") ?: return ""
-            var text = ""
-            for (i in 0 until msgs.length()) {
-                val o = msgs.optJSONObject(i) ?: continue
-                if (o.optString("role", "") != "assistant") continue
-                val c = o.optString("content", "")
-                if (c.isNotBlank()) text = c
-            }
-            val one = text.replace(Regex("\\s+"), " ").trim()
-            when {
-                one.isEmpty() -> ""
-                one.length > 160 -> one.take(160) + "…"
-                else -> one
-            }
-        } catch (_: Exception) {
-            ""
-        }
-    }
 
     fun refreshStatus() {
         viewModelScope.launch(Dispatchers.IO) {
@@ -2360,21 +2325,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         AppLog.log("attach", "移除附件 name=" + (gone?.file?.name ?: "?") + " 剩余=" + _pendingImages.value.size)
     }
 
-    private fun queryNameSize(ctx: Context, uri: Uri): Pair<String, Long> {
-        var name = "image.jpg"
-        var size = 0L
-        runCatching {
-            ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
-                val ni = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                val si = c.getColumnIndex(OpenableColumns.SIZE)
-                if (c.moveToFirst()) {
-                    if (ni >= 0) c.getString(ni)?.let { name = it }
-                    if (si >= 0 && !c.isNull(si)) size = c.getLong(si)
-                }
-            }
-        }
-        return name to size
-    }
 
     private fun startRunWith(
         a: HermesApi,
@@ -2771,11 +2721,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             r.subSweep = null
         }
     }
-
-    /** 本会话还在跑、且拿到了子会话 id 的子任务。 */
-    private fun runningChildren(r: SessionRuntime): List<SubagentLine> =
-        r.messages.value.flatMap { it.subagents }
-            .filter { it.status == "running" && it.childSessionId.isNotEmpty() && it.endedAt == 0L }
 
     /** 把子代理会话的进度写回对应那一行。返回是否有变化。 */
     private fun applyChildProgress(r: SessionRuntime, key: String, s: JSONObject): Boolean {
@@ -3224,18 +3169,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 服务端会话记录解析成位置锚点所需的最小行。 */
-    private fun historyRows(a: HermesApi, sid: String): List<HistRow> {
-        val resp = a.sessionMessages(sid)
-        val arr = resp.optJSONArray("data") ?: return emptyList()
-        val out = ArrayList<HistRow>(arr.length())
-        for (i in 0 until arr.length()) {
-            val o = arr.optJSONObject(i) ?: continue
-            val role = o.optString("role", "")
-            if (role != "user" && role != "assistant") continue
-            out.add(HistRow(role, o.optString("content", ""), o.optString("id", i.toString())))
-        }
-        return out
-    }
 
     /** 答案已落盘：结束本轮并按服务端记录合并回来。 */
     private fun adoptRecovered(sid: String) {
