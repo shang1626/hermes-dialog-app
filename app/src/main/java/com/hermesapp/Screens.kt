@@ -321,9 +321,14 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
         if (msgs.isEmpty() || searchOn) return@LaunchedEffect
         val firstId = msgs.firstOrNull()?.id ?: 0L
         val sameConv = firstId == lastFirstId
-        val increment = sameConv && lastCount >= 0 && msgs.size == lastCount + 1
-        if (increment) listState.animateScrollToItem(msgs.size)
-        else listState.scrollToItem(msgs.size)
+        // user scrolling up history must not be yanked back during streaming
+        if (!sameConv) {
+            listState.scrollToItem(msgs.size)
+        } else if (msgs.size == lastCount + 1) {
+            if (!listState.canScrollForward) listState.animateScrollToItem(msgs.size)
+        } else {
+            if (!listState.canScrollForward) listState.scrollToItem(msgs.size)
+        }
         lastCount = msgs.size
         lastFirstId = firstId
     }
