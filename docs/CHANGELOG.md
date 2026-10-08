@@ -1,3 +1,16 @@
+## 2.136 — versionCode 147
+
+修「发文件时连接被边缘重置、上传永远失败」。
+
+起因：用户上传 md 时 App 报 `stream was reset: INTERNAL_ERROR`（约 300ms 失败、重试一次同样失败），而服务端网关日志里**完全没有这条请求**——请求在到达服务端前就被对端发了 RST_STREAM。同一错误 15:46 在一次纯文字发送上也出现过，故不是附件专属，是 EdgeOne/阿里云盾（sl-antibot）对**复用的 HTTP/2 长连接**偶发重置（curl 每次新建连接不复现，真实入口连测 10 次全部 201）。
+
+- **连接级失败自动兜底**：新增强制 HTTP/1.1 的兜底 client。请求抛「非 HTTP 回执」的 IOException 时，先 `connectionPool.evictAll()` 丢掉被掐死的复用长连接，再用 HTTP/1.1 重试一次（HTTP/1.1 没有 RST_STREAM 帧，绕开此类重置）。覆盖 `sync`（建 run 等）与 `uploadImage`（附件上传）。
+- 自动重试间隔 2s → 3.5s，与兜底重试不再挤在一起。
+
+（改 net/HermesApi.kt / ChatViewModel.kt）
+
+---
+
 ## 2.135 — versionCode 146
 
 补齐附件上传链路的日志与失败反馈，让「传不上去」不再无声无息。
