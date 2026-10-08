@@ -308,8 +308,14 @@ data class SessionRunFlag(
     val subagents: Int = 0,
     /** 排队待发的条数。 */
     val queued: Int = 0,
+    /**
+     * 服务端说这个会话正在跑，而本地没有对应的运行时——轮次是别的端（微信 / CLI / 桌面）
+     * 发起的。2026-10-08 加：此前 App 只认自己内存里的 runtimes，别的端起的轮次在侧边栏
+     * 一条提示都没有，任务跑完了也不通知。
+     */
+    val remote: Boolean = false,
 ) {
-    val active: Boolean get() = busy || subagents > 0 || queued > 0
+    val active: Boolean get() = busy || subagents > 0 || queued > 0 || remote
 }
 
 /**
@@ -521,6 +527,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val _runFlags = MutableStateFlow<Map<String, SessionRunFlag>>(emptyMap())
     val runFlags = _runFlags.asStateFlow()
     private var runFlagsTicker: Job? = null
+
+    /**
+     * 服务端说「这些会话正在跑」：sessionId -> runId（GET /api/sessions 的 active_run）。
+     *
+     * 为什么必须有：本地 runtimes 只记录本进程发起的轮次。别的端（微信 / CLI / 桌面）起
+     * 的轮次，App 一无所知——侧边栏无提示、也不去接流、跑完不通知；App 被杀过再启动同样
+     * 如此（发送后立刻被杀那一瞬还没落盘）。这份映射是唯一能覆盖这两种情况的信息源。
+     */
+    private val _serverRuns = MutableStateFlow<Map<String, String>>(emptyMap())
+    val serverRuns = _serverRuns.asStateFlow()
+
+    /** 服务端每行 last_active（毫秒）。回前台挑「比本地新」的会话对齐时用。 */
+    private var serverLastActive: Map<String, Long> = emptyMap()
+
+    /** 上次回前台批量对齐其它会话的时间（节流 30 秒，别每次切前后台全拉一遍）。 */
+    private var lastAlignAt = 0L
 
     /** -1 未下载；0..100 下载中百分比。 */
     private val _downloadPct = MutableStateFlow(-1)
@@ -914,10 +936,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val arr = resp.optJSONArray("data") ?: return@launch
                 val list = _sessions.value.toMutableList()
                 var changed = false
+                // 顺手把服务端的「正在跑」与 last_active 收下来：前者决定侧边栏角标与
+                // 接流，后者决定回前台该对齐哪几条会话。
+                val runs = LinkedHashMap<String, String>()
+                val lastActive = HashMap<String, Long>()
                 for (i in 0 until arr.length()) {
                     val o = arr.optJSONObject(i) ?: continue
                     val id = o.optString("id", "")
                     if (id.isEmpty() || o.optBoolean("is_internal_child", false)) continue
+                    val ar = o.optString("active_run", "")
+                    if (ar.isNotEmpty() && ar != "null") runs[id] = ar
+                    val la = o.optDouble("last_active", 0.0)
+                    if (la > 0) lastActive[id] = (la * 1000).toLong()
                     val idx = list.indexOfFirst { it.id == id }
                     if (idx < 0) continue      // 本地没有这条：一律不补行
                     val title = o.optString("title", "").trim()
@@ -925,12 +955,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         list[idx] = list[idx].copy(title = title); changed = true
                     }
                 }
+                serverLastActive = lastActive
+                if (_serverRuns.value != runs) _serverRuns.value = runs
                 AppLog.log("sync", "同步标题：服务端=" + arr.length() + " 条，本地=" + list.size +
-                    " 条，覆盖=" + changed)
+                    " 条，覆盖=" + changed + " 服务端在跑=" + runs.size)
                 if (changed) {
                     _sessions.value = list
                     store.saveIndex(list)
                 }
+                // 服务端说当前会话在跑而本地没有 → 别的端发起的（或本地标记丢了），接上去。
+                reconcileServerRuns()
+                refreshRunFlags()
             } catch (e: Exception) {
                 AppLog.err("sync", "同步会话标题失败", e)
                 // 离线 / 接口异常：保留本地列表，不影响使用
@@ -987,6 +1022,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         _currentId.value = id
         prefs.sessionId = id
         ensureLoaded(id)
+        // 切到哪就与服务端对齐哪。以前这里只从本地磁盘读正文，一条服务端请求都不发，
+        // 于是别的端（微信 / CLI / 桌面）在会话 X 里跑过的新轮次，切过去看到的是本地旧
+        // 内容，永远对不上（除非重启 App）。已在跑的会话 refreshFromServerFor 内部会
+        // 自己跳过（busy），不会把半截内容合进来。
+        refreshFromServerFor(id)
         AppLog.log("perf", "切会话 " + id.take(8) + " 主线程耗时=" + (System.currentTimeMillis() - t0) + "ms")
     }
 
@@ -1391,6 +1431,90 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * 服务端说某些会话正在跑，而本地没有对应的活跃标记 —— 接上去。
+     *
+     * 覆盖两种此前完全看不见的情况：
+     *   1) 轮次是别的端（微信 / CLI / 桌面）发起的，本进程从来没发过这条 run；
+     *   2) 本进程发起后立刻被杀/断网，activeRunsMap 还没落盘就被系统收走了。
+     *
+     * 只处理「本地没在跑」的会话：本地已经在跑的由它自己的流负责，重复接流会把
+     * 同一条 run 挂两条流、事件与语音都收两遍（实测过的 2.81 重复播报）。
+     */
+    private fun reconcileServerRuns() {
+        val a = api ?: return
+        val runs = _serverRuns.value
+        if (runs.isEmpty()) return
+        // 只处理本地已有的会话行：与「历史对话不要再拉取」一致，绝不为服务端独有的会话
+        // 建本地行（那会把几十条别的端的会话灌进手机列表）。
+        val known = _sessions.value.filter { !it.archived }.map { it.id }.toSet()
+        for ((sid, rid) in runs) {
+            if (rid.isEmpty() || sid !in known) continue
+            val r = rt(sid)
+            // 本地已在跑同一轮 / 正在接流：不动。
+            if (r.busy.value || !resumingSids.add(sid)) continue
+            AppLog.log("resume", "服务端报告活跃轮次，接管 sid=" + sid.take(8) + " run=" + rid.take(12))
+            RuntimeHub.scope.launch(Dispatchers.IO) {
+                try {
+                    val st = a.probeRun(rid)
+                    if (st !is HermesApi.RunStatus.Known || st.status !in RUNNING_STATES) {
+                        // 探到已收尾或探不出来：不接管。收尾的交给下一次对齐拉正文，
+                        // 探不出来的下一轮 syncFromServer 再说（不在这里瞎标活跃）。
+                        AppLog.log("resume", "接管放弃 sid=" + sid.take(8) + " 状态=" +
+                            if (st is HermesApi.RunStatus.Known) st.status else "Unknown/Missing")
+                        resumingSids.remove(sid)
+                        return@launch
+                    }
+                    withContext(Dispatchers.Main.immediate) { attachRemoteRun(sid, rid, st.payload) }
+                } catch (e: Exception) {
+                    AppLog.err("resume", "接管探测失败 sid=" + sid.take(8), e)
+                } finally {
+                    resumingSids.remove(sid)
+                }
+            }
+        }
+    }
+
+    /**
+     * 把一条「不是本进程发起」的活跃 run 挂进该会话的运行时，并接上事件流。
+     *
+     * 与 resumeActiveRun 的冷启动分支同构，区别只在来源：那条靠本地落盘的 run_id，
+     * 这条靠服务端会话列表的 active_run。气泡策略一致 —— 本地若已有这一轮的空气泡
+     * （lastSeq 有值、末尾就是助手行）就复用它标成进行中，否则新起一个，避免同一轮
+     * 正文被追到旧回复上、或显示两遍。
+     */
+    private fun attachRemoteRun(sid: String, rid: String, payload: org.json.JSONObject?) {
+        val r = rt(sid)
+        if (r.busy.value) return
+        ensureLoaded(sid)
+        r.runId = rid
+        r.finished = false
+        r.resumed = true
+        r.lastSeq = prefs.lastSeq(sid)
+        prefs.putActiveRun(sid, rid)
+        if (payload != null) restorePendingCard(r, payload)
+        val lastAssistant = r.messages.value.indexOfLast { it.role == "assistant" }
+        val hasLocalTurnBubble = lastAssistant >= 0 &&
+            lastAssistant == r.messages.value.lastIndex && r.lastSeq >= 0
+        if (hasLocalTurnBubble) {
+            val m = r.messages.value.toMutableList()
+            m[lastAssistant] = m[lastAssistant].copy(
+                pending = true,
+                startedAt = if (m[lastAssistant].startedAt > 0) m[lastAssistant].startedAt
+                else if (r.startedAt > 0) r.startedAt else System.currentTimeMillis()
+            )
+            r.messages.value = m
+        } else {
+            r.messages.value = r.messages.value +
+                Msg("assistant", "", pending = true, ts = System.currentTimeMillis(), startedAt = turnStart(r))
+        }
+        r.busy.value = true
+        r.lastEventAt = System.currentTimeMillis()
+        updateRunService()
+        AppLog.log("resume", "已接管运行中会话 sid=" + sid.take(8) + " 状态=" + (payload?.optString("status") ?: ""))
+        streamRun(api ?: return, sid)
+    }
+
+    /**
      * 回到前台时的即时体检：对每个仍在跑、且超过 25 秒没收到任何事件（含心跳帧）的会话，
      * 判定为「流已被链路假死卡住」，主动断开并走一次重连续接。
      *
@@ -1431,6 +1555,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 顺带刷一次在线状态，别让角标停在离线
         viewModelScope.launch(Dispatchers.IO) { refreshStatus() }
         // 回前台顺带同步一次服务端标题（节流 30 秒，避免频繁切前后台狂打接口）
+        // 同时把服务端的「正在跑」收下来（syncFromServer 内部会 reconcileServerRuns），
+        // 这样别的端刚起的轮次也能被接管。
         syncFromServer(30_000L)
         // 回前台把当前会话与服务端对齐一次（正文，不只是标题）。
         syncOnForeground()
@@ -1464,6 +1590,37 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 其它正在跑的会话也各落各的标记，各自收尾时补拉。
         for ((sid, other) in runtimes) {
             if (sid != cur && other.busy.value) other.needSync = true
+        }
+        alignStaleSessions(cur)
+    }
+
+    /**
+     * 回前台把「服务端比本地新」的其它会话也对齐一遍（最近 3 条、节流 30 秒）。
+     *
+     * 为什么以前只对齐当前那一个不够：别的端在会话 X 里跑了新轮次，而 App 自己不知道 X 忙
+     * （busy 只来自本进程发起的 run），于是既不对齐、也没有收尾补拉 —— 没被点到的会话内容
+     * 就一直漂着，直到用户切过去才追平（切会话修好后又多了一条追平路径，但得先切）。
+     * 这里用服务端返回的 last_active 与本地 updatedAt 比对，只挑真的落后了的会话拉。
+     */
+    private fun alignStaleSessions(cur: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastAlignAt < 30_000L) return
+        lastAlignAt = now
+        val la = serverLastActive
+        if (la.isEmpty()) return
+        val stale = _sessions.value
+            .filter { !it.archived && it.id != cur }
+            .filter { m ->
+                val sv = la[m.id] ?: return@filter false
+                sv > m.updatedAt + 2_000L   // 容 2 秒时钟/落盘误差，避免无谓重拉
+            }
+            .sortedByDescending { la[it.id] ?: 0L }
+            .take(3)
+        for (m in stale) {
+            val r = rt(m.id)
+            if (r.busy.value) { r.needSync = true; continue }
+            AppLog.log("sync", "回前台对齐落后会话 sid=" + m.id.take(8))
+            refreshFromServerFor(m.id)
         }
     }
 
@@ -3941,8 +4098,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun startRunFlagsTicker() {
         if (runFlagsTicker?.isActive == true) return
         runFlagsTicker = RuntimeHub.scope.launch {
+            var tick = 0
             while (isActive) {
                 refreshRunFlags()
+                // 每 ~30 秒顺带刷新一次服务端会话列表：把「别的端刚起的轮次」收进来（active_run），
+                // 交给 syncFromServer 内部的 reconcileServerRuns 接管。不带这个，用户开着 App
+                // 时别的端起的任务要等切前后台/切会话才被发现。
+                tick++
+                if (tick % 15 == 0) syncFromServer(30_000L)
                 delay(2_000L)
             }
         }
@@ -3952,13 +4115,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun refreshRunFlags() {
         val out = LinkedHashMap<String, SessionRunFlag>()
         for ((sid, r) in runtimes) {
+            val remote = _serverRuns.value.containsKey(sid) && !r.busy.value
             val flag = SessionRunFlag(
                 busy = r.busy.value,
                 // 正在跑的子任务数：子代理可能比父轮次活得久，这是「会话里还有活」的证据。
                 subagents = r.messages.value.sumOf { m -> m.subagents.count { it.status == "running" } },
                 queued = r.queue.size,
+                remote = remote,
             )
             if (flag.active) out[sid] = flag
+        }
+        // 服务端在跑、本地还没建 runtime 的会话（别的端起的轮次）也要亮角标。
+        for (m in _sessions.value) {
+            if (_serverRuns.value.containsKey(m.id) && out[m.id] == null) {
+                out[m.id] = SessionRunFlag(remote = true)
+            }
         }
         if (out != _runFlags.value) _runFlags.value = out
         val busyIds = out.filterValues { it.busy }.keys
