@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.widget.Toast
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -409,6 +410,87 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private var globalJob: Job? = null
 
+    // ---------- 归档历史（超 300 条被裁掉的老消息，只读视图） ----------
+
+    /** 归档浏览面板是否展开（当前会话）。 */
+    private val _archiveActive = MutableStateFlow(false)
+    val archiveActive = _archiveActive.asStateFlow()
+
+    /** 当前会话归档条数：0 表示没有归档，聊天页不显示入口。 */
+    private val _archiveCount = MutableStateFlow(0)
+    val archiveCount = _archiveCount.asStateFlow()
+
+    /** 归档消息（只读，不并回主文件）。 */
+    private val _archiveMsgs = MutableStateFlow<List<Msg>>(emptyList())
+    val archiveMsgs = _archiveMsgs.asStateFlow()
+
+    private val _archiveQuery = MutableStateFlow("")
+    val archiveQuery = _archiveQuery.asStateFlow()
+
+    fun openArchive() {
+        val id = _currentId.value
+        if (id.isEmpty()) return
+        _archiveActive.value = true
+        _archiveQuery.value = ""
+        RuntimeHub.scope.launch(Dispatchers.IO) {
+            val msgs = runCatching { store.loadArchiveMessages(id) }.getOrDefault(emptyList())
+            withContext(Dispatchers.Main.immediate) {
+                _archiveMsgs.value = msgs
+                AppLog.log("store", "打开归档 id=" + id.take(8) + " 条数=" + msgs.size)
+            }
+        }
+    }
+
+    fun closeArchive() { _archiveActive.value = false }
+
+    fun setArchiveQuery(q: String) { _archiveQuery.value = q }
+
+    /** 归档消息导出为 Markdown 并走系统分享（与导出会话同一套出口）。 */
+    fun exportArchive(ctx: Context) {
+        val id = _currentId.value
+        if (id.isEmpty()) return
+        RuntimeHub.scope.launch(Dispatchers.IO) {
+            try {
+                val title = _sessions.value.firstOrNull { it.id == id }?.title ?: "对话"
+                val msgs = _archiveMsgs.value.ifEmpty { store.loadArchiveMessages(id) }
+                if (msgs.isEmpty()) {
+                    withContext(Dispatchers.Main) { Toast.makeText(ctx, "没有归档内容", Toast.LENGTH_SHORT).show() }
+                    return@launch
+                }
+                val sb = StringBuilder()
+                sb.append("# ").append(title).append(" · 归档历史\n\n")
+                sb.append("- 会话 ID：").append(id).append("\n")
+                sb.append("- 导出时间：").append(TimeFmt.mdhm(System.currentTimeMillis())).append("\n")
+                sb.append("- 归档条数：").append(msgs.size).append("\n\n---\n\n")
+                for (m in msgs) {
+                    sb.append("**").append(if (m.role == "user") "我" else "助手").append("**")
+                    if (m.ts > 0) sb.append(" · ").append(TimeFmt.mdhm(m.ts))
+                    sb.append("\n\n").append(m.text.trim()).append("\n\n---\n\n")
+                }
+                val dir = File(ctx.filesDir, "exports").apply { mkdirs() }
+                val safe = title.replace(Regex("[^0-9A-Za-z\u4e00-\u9fa5]+"), "_").take(40).ifBlank { "对话" }
+                val f = File(dir, safe + "_归档_" + System.currentTimeMillis() + ".md")
+                f.writeText(sb.toString())
+                AppLog.log("export", "已导出归档 " + f.name + " " + sb.length + " 字")
+                withContext(Dispatchers.Main) {
+                    val uri = FileProvider.getUriForFile(ctx, "com.hermesapp.fileprovider", f)
+                    val it = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/markdown"
+                        putExtra(Intent.EXTRA_STREAM, uri)
+                        putExtra(Intent.EXTRA_SUBJECT, title + " 归档")
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    ctx.startActivity(Intent.createChooser(it, "导出归档").apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    })
+                }
+            } catch (e: Exception) {
+                AppLog.err("export", "导出归档失败", e)
+            }
+        }
+    }
+
     fun toggleGlobalSearch() {
         if (_globalActive.value) clearGlobalSearch() else {
             _globalActive.value = true
@@ -573,6 +655,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val t0 = System.currentTimeMillis()
         RuntimeHub.scope.launch(Dispatchers.IO) {
             val msgs = runCatching { store.loadMessages(id) }.getOrDefault(emptyList())
+            val archN = runCatching { store.archiveCount(id) }.getOrDefault(0)
             val cost = System.currentTimeMillis() - t0
             withContext(Dispatchers.Main.immediate) {
                 if (r.dead) { r.loading = false; return@withContext }
@@ -580,6 +663,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                                    else mergeByUserAnchor(r.messages.value, msgs)
                 r.loaded = true
                 r.loading = false
+                if (id == _currentId.value) _archiveCount.value = archN
                 // 落盘里还有「运行中」的子任务（长任务跑一半重开 App）：把进度轮询接回去，
                 // 否则界面上那行会一直停在重开前的步数。只对当前会话接线（预热其它会话时
                 // 不该替用户去轮询）。
