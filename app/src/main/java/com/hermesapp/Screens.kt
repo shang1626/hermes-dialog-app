@@ -1998,7 +1998,7 @@ fun SettingsScreen(
                 ) { Text("清除", color = c.dim, fontSize = 12.sp) }
             }
             Spacer(Modifier.height(6.dp))
-            Text("「上报诊断」把日志和会话状态直接传给我，出问题不用你再发日志/截图（启动、回前台也会自动传）。", color = c.dim, fontSize = 11.sp)
+            Text("「上报诊断」把日志和会话状态直接传给我——只在你点它时才传，不会自动上传、不占流量。", color = c.dim, fontSize = 11.sp)
 
             // 上次闪退记录：崩溃是进程被直接杀掉，只有落到这里才查得动。
             var crashText by remember { mutableStateOf(CrashLog.read(ctx)) }
