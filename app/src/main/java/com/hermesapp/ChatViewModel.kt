@@ -854,6 +854,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun saveRuntime(r: SessionRuntime) {
+        // 已删除的会话：一个字都不许再写盘，否则删掉的消息文件会复活。
+        // deleteSession 会 cancel 掉去抖任务，但若 400ms 已过、协程已进到这里，cancel 就无效了。
+        if (r.dead) return
         store.saveMessages(r.id, r.messages.value, maxHistory)
         // 续接序号与消息一起落盘，保证两者永远一致：重开 App 时按它做
         // Last-Event-ID，只补断线之后的事件（消息也正好停在那一刻）——
