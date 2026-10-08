@@ -3242,21 +3242,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 // 附件 id：重发必须复用首次那份（服务端算指纹含请求体，换了 id 会被判冲突）。
-                if (reuseArtifacts.isNotEmpty()) {
-                    ids.addAll(reuseArtifacts)
-                } else {
-                    for ((i, f) in files.withIndex()) {
-                        _imageNote.value = "上传附件 ${i + 1}/${files.size}…"
-                        val bytes = f.readBytes()
-                        AppLog.log("attach", "上传 ${i + 1}/${files.size} name=" + f.name + " mime=" + mimeOf(f) + " " + bytes.size + "B")
-                        ids.add(a.uploadImage(bytes, f.name, mimeOf(f)))
-                    }
-                    uploadsDone = true
+                // Hermes 本地补丁：不再单独 POST /v1/artifacts/upload（实测该接口被边缘按请求
+                // 形状拦掉、TCP RST，而 /v1/runs 同样带 body 却正常）。改把文件 gzip+base64
+                // 塞进 /v1/runs 的 inline_files 一起发。重发时同样内容 gzip 输出确定（Java
+                // GZIPOutputStream 时间戳恒为 0），故 body 一致、幂等指纹不变。
+                val inlineFiles = mutableListOf<com.hermesapp.net.InlineFile>()
+                for ((i, f) in files.withIndex()) {
+                    _imageNote.value = "准备附件 ${i + 1}/${files.size}…"
+                    val bytes = f.readBytes()
+                    AppLog.log("attach", "内联附件 ${i + 1}/${files.size} name=" + f.name + " mime=" + mimeOf(f) + " " + bytes.size + "B")
+                    inlineFiles.add(com.hermesapp.net.InlineFile(f.name, mimeOf(f), bytes))
                 }
+                uploadsDone = true
                 _imageNote.value = ""
-                val run = a.startRun(text, sid, ids, idemKey)
+                val run = a.startRun(text, sid, emptyList(), idemKey, inlineFiles)
                 r.runId = run.optString("run_id", run.optString("id", ""))
-                AppLog.log("send", "已建 run=" + r.runId.take(12) + " 重放=" + run.optBoolean("replayed", false) + " 附件=" + ids.size)
+                AppLog.log("send", "已建 run=" + r.runId.take(12) + " 重放=" + run.optBoolean("replayed", false) + " 内联附件=" + inlineFiles.size)
                 // 计时起点不在这里重设：上传附件+建 run 的往返也算本轮耗时，
                 // 重设会把这一段抹掉，最终值比界面实时值小一截。
                 prefs.putActiveRun(sid, r.runId)

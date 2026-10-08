@@ -22,6 +22,9 @@ import okhttp3.Protocol
 
 data class SseEvent(val id: Int?, val event: String?, val data: JSONObject)
 
+/** Hermes 本地补丁：随 /v1/runs 一起内联上传的附件（绕开被边缘拦截的 /v1/artifacts/upload）。 */
+data class InlineFile(val name: String, val mime: String, val bytes: ByteArray)
+
 /**
  * 事件流订阅拿到 404：服务端已经没有这条 run 的 SSE 缓冲了。
  *
@@ -212,6 +215,7 @@ class HermesApi(
         sessionId: String?,
         images: List<String> = emptyList(),
         idempotencyKey: String = "",
+        inlineFiles: List<InlineFile> = emptyList(),
     ): JSONObject {
         val body = JSONObject().put("input", input)
         if (!sessionId.isNullOrEmpty()) body.put("session_id", sessionId)
@@ -220,10 +224,31 @@ class HermesApi(
             for (id in images) arr.put(id)
             body.put("images", arr)
         }
+        // Hermes 本地补丁：附件不再单独 POST /v1/artifacts/upload（实测该接口被边缘按请求
+        // 形状拦掉、TCP RST），改成把文件 gzip+base64 塞进 /v1/runs 的 body 一起发。
+        // 服务端 _resolve_inline_files 会解开落盘。
+        if (inlineFiles.isNotEmpty()) {
+            val arr = org.json.JSONArray()
+            for (f in inlineFiles) {
+                val o = JSONObject()
+                o.put("name", f.name)
+                o.put("mime", f.mime)
+                o.put("data", gzipBase64Bytes(f.bytes))
+                arr.put(o)
+            }
+            body.put("inline_files", arr)
+        }
         val rb = base("/v1/runs").post(body.toString().toRequestBody(jsonType))
         if (idempotencyKey.isNotEmpty()) rb.header("Idempotency-Key", idempotencyKey)
         return sync(rb.build())
     }
+
+    /** gzip 压缩 + base64（NO_WRAP），供 inline_files 使用。 */
+    private fun gzipBase64Bytes(bytes: ByteArray): String = runCatching {
+        val bos = java.io.ByteArrayOutputStream()
+        java.util.zip.GZIPOutputStream(bos).use { it.write(bytes) }
+        android.util.Base64.encodeToString(bos.toByteArray(), android.util.Base64.NO_WRAP)
+    }.getOrDefault("")
 
     /** 上传一张图片到 artifact 通道，返回 artifact_id（一次性、绑定本 profile 密钥作用域）。 */
     fun uploadImage(bytes: ByteArray, filename: String, mime: String): String {
