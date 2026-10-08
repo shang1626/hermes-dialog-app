@@ -401,22 +401,7 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
             Text(note, color = c.warn, fontSize = 12.sp,
                 modifier = Modifier.fillMaxWidth().background(c.panel).padding(8.dp))
         }
-        // 归档入口：本会话有超 300 条被裁掉的老消息时，给一行「查看归档」。
-        // 归档是只读视图，点开看历史 / 搜索 / 导出，不并回主文件（不破坏 300 条裁剪逻辑）。
-        val archN by vm.archiveCount.collectAsStateWithLifecycle()
-        if (archN > 0) {
-            Row(
-                Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 10.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("更早 " + archN + " 条已归档", color = c.dim, fontSize = 12.sp)
-                Spacer(Modifier.weight(1f))
-                Text(
-                    "查看", color = c.accent, fontSize = 12.sp,
-                    modifier = Modifier.clickable { vm.openArchive() }.padding(horizontal = 4.dp, vertical = 2.dp)
-                )
-            }
-        }
+        // 归档入口已移到侧边栏（DrawerPanel）——本会话的超 300 条老消息入口不再占对话窗口顶部。
         // 会话内搜索栏：输入即搜（去抖），显示「第几/共几」，上下跳、× 收起
         if (searchOn) {
             val total = hits.size

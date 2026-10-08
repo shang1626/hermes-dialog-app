@@ -596,6 +596,28 @@ fun DrawerPanel(
             HorizontalDivider(color = c.card)
             Spacer(Modifier.height(8.dp))
 
+            // 本会话的「更早 N 条已归档 · 查看」入口。原来挂在对话窗口顶部，挡视线；
+            // 挪到侧边栏会话区上方——归档是**当前会话**的属性，放这里语义最近。
+            // 注意与下面那个「已归档」按钮区分：那个切的是**会话级**归档列表，不是本会话的旧消息。
+            val archN by vm.archiveCount.collectAsStateWithLifecycle()
+            if (archN > 0) {
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("更早 " + archN + " 条已归档", color = c.dim, fontSize = 12.sp)
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        "查看", color = c.accent, fontSize = 12.sp,
+                        // ArchiveDialog 挂在对话页(ChatScreen)里，只有 tab==0 才渲染；
+                        // 抽屉里点它必须同时切到对话页，否则弹不出来。
+                        modifier = Modifier.clickable { onTab(0); vm.openArchive(); onClose() }
+                            .padding(horizontal = 4.dp, vertical = 2.dp)
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+            }
+
             // 会话列表标题行
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
