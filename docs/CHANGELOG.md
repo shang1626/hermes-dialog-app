@@ -1,3 +1,18 @@
+## 2.137 — versionCode 148
+
+2.136 的兜底没生效，这次真正修掉「发文件被边缘重置」。
+
+2.136 的失误：兜底 catch 只包住 `.execute()`，而实测 `stream was reset: INTERNAL_ERROR` 发生在**读响应体**阶段（已进 `.use{}` 内部），catch 根本够不到，日志里一次都没出现兜底行。
+
+- **重试包住「执行 + 读 body」**：新 `callText()` 把二者当一个整体，连接级失败自动清连接池重试一次。
+- **全 client 强制 HTTP/1.1**：实测主 client 的 HTTP/2 复用长连接被边缘反复 RST_STREAM，而 HTTP/1.1 新建连接连测 10/10 成功。主 client / probe / SSE 流三个 client 全部 `.protocols(listOf(Protocol.HTTP_1_1))`。
+
+（改 net/HermesApi.kt）
+
+同版另一改动（另一会话）：顶栏「在线/离线」去掉文字只留圆点，右侧新增服务器 CPU 使用率（每 5 秒随心跳刷新，低绿/中黄/高红三档上色）。（改 App.kt）
+
+---
+
 ## 2.136 — versionCode 147
 
 修「发文件时连接被边缘重置、上传永远失败」。
