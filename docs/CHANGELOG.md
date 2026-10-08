@@ -1,3 +1,19 @@
+## 2.141 — versionCode 152
+
+按同事评估报告核实后，修 5 处（报告有 3 条判错/过时，已剔除，只做实测属实的）。
+
+- **滚动抢滚动条**（报告 P0-7，属实）：`Screens.kt` 贴底逻辑只有「增量才动画」的优化，没有「用户是否在翻历史」的守卫——流式期间正文每个 token 变化都触发贴底，用户往上翻历史会被反复拽回底部。加 `listState.canScrollForward` 判断：还能往前滚 = 用户在翻历史，就不跟随。
+- **主 client / h1Client 加 callTimeout(180s)**（报告 P1-4，属实）：两个 client 都是 `readTimeout(0)`（无限读）且无总超时，链路半死时建 run/上传/拉会话会永久挂起。加总超时兜底，超时抛错走重试；不动 readTimeout（大响应仍可慢读）。
+- **onProfileChanged 主线程 IO 移到 IO 协程**（报告 P0-6，属实）：读索引/迁移旧格式/扫会话文件判空壳都是同步磁盘 IO，原来跑在主线程会卡冷启动。
+- **关闭 allowBackup**（报告 P2，属实）：会话记录明文进云备份。
+- **通知加 setVisibility(PRIVATE)**（报告 P2，属实）：锁屏通知不再直接显示正文。
+
+报告判错/高估未采纳：SSE 解析器两条（服务端单行 `data: {json}`，多行拼接与 trim 在本架构不触发）、P0-3 语音队列「永久堵死」（数据源 3 秒超时自愈）、P0-4 confirmReceipt（代码已有 finished 复位）。
+
+（改 Screens.kt / HermesApi.kt / ChatViewModel.kt / Notifier.kt / AndroidManifest.xml）
+
+---
+
 ## 2.140 — versionCode 151
 
 修同事评估报告点出的 3 个用户可见缺陷（P0-1 / P0-2 / P0-5）。

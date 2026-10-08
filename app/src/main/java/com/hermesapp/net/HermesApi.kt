@@ -73,6 +73,7 @@ class HermesApi(
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(180, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
 
@@ -134,6 +135,7 @@ class HermesApi(
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(180, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
 

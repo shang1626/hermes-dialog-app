@@ -1274,8 +1274,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 语音重播：点旧消息的播放按钮时按 runId 取长期留档的 mp3
         VoiceReplayPlayer.fetcher = { rid -> a0?.downloadVoice(rid) }
         VoiceReplayPlayer.rate = p.voiceRate
-        bootstrapSessions(p.sessionId)
-        cleanupShellSessionsOnce()
+        viewModelScope.launch(Dispatchers.IO) {
+            bootstrapSessions(p.sessionId)
+            cleanupShellSessionsOnce()
+        }
         syncFromServer()
         // 把设置里存的语速灌进播放器（播放器是单例，重启 App 后要重新初始化）
         VoicePlayer.rate = p.voiceRate
