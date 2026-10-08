@@ -62,7 +62,7 @@ object Notifier {
         mgr.createNotificationChannel(ch)
     }
 
-    fun notifyMessage(ctx: Context, title: String, text: String, sessionId: String = "") {
+    fun notifyMessage(ctx: Context, title: String, text: String, sessionId: String = "", openTab: Int = -1) {
         ensureChannel(ctx)
         val tap = PendingIntent.getActivity(
             ctx, 0,
@@ -72,6 +72,13 @@ object Notifier {
                 // 通知只是把 App 拉到前台，停在原来的会话（用户报「点了不进对应会话」）。
                 // 与 notifyAction 对齐，带上会话 id；MainActivity.openFromNotification 已有跳转逻辑。
                 if (sessionId.isNotEmpty()) putExtra(EXTRA_OPEN_SESSION, sessionId)
+                // 定时任务产出的通知要跳到「定时任务」页（tab 3），不是某个会话。
+                // 原来这类通知不带任何标识，点击只把 App 拉前台、停在原页（用户报
+                // 「定时任务完成的通知点了不跳定时任务界面」）。
+                // ⚠️ 只挂 extra，不做落盘兜底。PendingIntent 的 Intent 由系统持有，
+                // 进程被杀后重建也会原样投递，extra 足够可靠；若在「造通知」时写盘，
+                // 用户没点这条通知、直接打开 App 也会被顶到定时任务页（误跳）。
+                if (openTab >= 0) putExtra(EXTRA_OPEN_TAB, openTab)
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -132,6 +139,7 @@ object Notifier {
 
     const val ACTION_NOTIF_ID = 2002
     const val EXTRA_OPEN_SESSION = "hermes_open_session"
+    const val EXTRA_OPEN_TAB = "hermes_open_tab"
 
     const val KEY_TEXT_REPLY = "hermes_reply_text"
     const val ACTION_REPLY = "com.hermesapp.REPLY"

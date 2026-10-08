@@ -347,6 +347,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun consumeScrollToMsg() { _scrollToMsg.value = null }
 
     /**
+     * 「切到某一页」的请求（-1 = 无）。
+     *
+     * 定时任务产出的通知点击后要落在「定时任务」页(tab 3)。走 ViewModel 信号而不是
+     * 把 tab 存在 Composable 局部 state 里：MainActivity 在 onResume/onNewIntent 从
+     * Intent extra 读到目标页后，经这里通知界面切页。
+     */
+    private val _openTabReq = MutableStateFlow(-1)
+    val openTabReq = _openTabReq.asStateFlow()
+    fun requestOpenTab(tab: Int) { if (tab >= 0) _openTabReq.value = tab }
+    fun consumeOpenTab() { _openTabReq.value = -1 }
+
+    /**
      * 「滚到最新一条」的显式请求。用户自己发消息时必须无条件贴底——哪怕他此前
      * 往上翻过历史（列表还能继续往下滚）。
      *
@@ -1742,6 +1754,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             (if (newestUnread.failed) "定时任务失败：" else "定时任务完成：") +
                                 (newestUnread.jobName.ifEmpty { newestUnread.jobId }),
                             newestUnread.body.replace(Regex("\\s+"), " ").trim().take(80),
+                            // 点这条通知要跳到「定时任务」页(tab 3)，不是某个会话——
+                            // 原来不带任何跳转标识，点击只把 App 拉到前台、停在原页（用户报障）。
+                            openTab = 3,
                         )
                     }
                 }
