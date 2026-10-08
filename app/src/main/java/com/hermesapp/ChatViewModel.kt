@@ -1803,42 +1803,79 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             if (lt.isEmpty()) return st
             if (st.isEmpty()) return lt
             val seg = lt.toMutableList()
-            // 本地这一块里已有的助手正文（归一后），用来判重。
-            val localAsst = seg.filter { it.role == "assistant" && it.text.isNotBlank() }
-                .map { norm(it.text) }.toMutableList()
-            // ① 本地那条「正文为空的进行中气泡」：服务端有正文就补上。
-            val li = seg.indexOfLast { it.role == "assistant" }
-            if (li >= 0 && seg[li].text.isEmpty()) {
+            // ① 本地最后那条「正文为空的进行中气泡」：服务端有正文就补上
+            //（保住它的 trace/计时/图片槽位，别另起一个新气泡）。
+            val lastAsst = seg.indexOfLast { it.role == "assistant" }
+            if (lastAsst >= 0 && seg[lastAsst].text.isEmpty()) {
                 val sText = st.lastOrNull { it.role == "assistant" && it.text.isNotBlank() }?.text
                 if (!sText.isNullOrEmpty()) {
-                    seg[li] = seg[li].copy(text = sText, pending = false)
-                    localAsst.add(norm(sText))
+                    seg[lastAsst] = seg[lastAsst].copy(text = sText, pending = false)
                 }
             }
-            // ② 服务端有、本地没有的助手正文，补进这一块。
-            //
-            // 2026-10-08：以前这里只做①，本地助手气泡正文非空就原样返回 —— 于是一轮里
-            // 服务端落多条助手消息（中途解说 + 最终答复）时，本地若在最终答复落库前断流/
-            // 被杀，只收到中途解说，那条最终答复**永远补不回来**：合并后条数一条不涨，
-            // 界面那轮只剩过程。用户实测「服务端跑完了，App 里没有同步过来」就是它。
-            var added = 0
-            for (s in st) {
-                if (s.role != "assistant" || s.text.isBlank()) continue
-                val ns = norm(s.text)
-                // 判重放宽到「包含」：服务端压缩/改写会让同一段正文在两侧不完全等长，
-                // 只比相等会把改写过的旧行当成新行，重复贴一条。
-                val dup = localAsst.any { it == ns || it.contains(ns) || ns.contains(it) }
-                if (!dup) {
-                    seg.add(s.copy(pending = false))
-                    localAsst.add(ns)
-                    added++
+            // ② 本地这一块里「有正文的助手行」，按序与服务端助手行对齐（顺序贪心 +
+            // 正文包含判定）。判重放宽到「包含」：服务端压缩/改写会让同一段正文两侧
+            // 不完全等长，只比相等会把改写过的旧行当成新行，重复贴一条。
+            val localAsstIdx = seg.indices.filter { seg[it].role == "assistant" && seg[it].text.isNotBlank() }
+            val matched = IntArray(localAsstIdx.size) { -1 }
+            var sj = 0
+            for (i in localAsstIdx.indices) {
+                val n = norm(seg[localAsstIdx[i]].text)
+                while (sj < st.size) {
+                    val s = st[sj]
+                    if (s.role == "assistant" && s.text.isNotBlank()) {
+                        val ns = norm(s.text)
+                        if (ns == n || ns.contains(n) || n.contains(ns)) { matched[i] = sj; sj++; break }
+                    }
+                    sj++
                 }
+            }
+            // ③ 按服务端顺序重建这一块：走到本地某行时，先把它之前「服务端有、本地没有」的
+            // 助手行按序补进来，再放本地这行（保住内联图片、trace、runId 这些服务端没有的东西）。
+            //
+            // 2026-10-08：以前这里是「本地有正文就原样返回，否则把服务端多出来的助手行 append
+            // 到块尾」。一轮里服务端落多条助手消息（中途解说 + 最终答复）时，若本地只收到
+            // 最终答复，那些中途解说会被 append 到最终答复**后面** —— 最终答复跑到整块最顶上，
+            // 过程文字全排在它下面，顺序整个颠倒（用户截图实测）。改成按服务端顺序前插。
+            val out = mutableListOf<Msg>()
+            val srvUsed = BooleanArray(st.size)
+            var sPtr = 0
+            var ai = 0
+            var added = 0
+            for (i in seg.indices) {
+                val m = seg[i]
+                if (ai < localAsstIdx.size && i == localAsstIdx[ai]) {
+                    val target = matched[ai]
+                    if (target >= 0) {
+                        while (sPtr < target) {
+                            val s = st[sPtr]
+                            if (s.role == "assistant" && s.text.isNotBlank() && !srvUsed[sPtr]) {
+                                out.add(s.copy(pending = false)); srvUsed[sPtr] = true; added++
+                            }
+                            sPtr++
+                        }
+                        out.add(m)
+                        srvUsed[target] = true
+                        sPtr = target + 1
+                    } else {
+                        out.add(m)
+                    }
+                    ai++
+                } else {
+                    out.add(m)
+                }
+            }
+            while (sPtr < st.size) {
+                val s = st[sPtr]
+                if (s.role == "assistant" && s.text.isNotBlank() && !srvUsed[sPtr]) {
+                    out.add(s.copy(pending = false)); added++
+                }
+                sPtr++
             }
             if (added > 0) {
                 AppLog.log("sync", "合并补齐助手正文 本地块=" + lt.size + " 服务端块=" + st.size +
                     " 补入=" + added)
             }
-            return seg
+            return out
         }
 
         val out = mutableListOf<Msg>()
