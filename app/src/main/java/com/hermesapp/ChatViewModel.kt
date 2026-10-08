@@ -1644,8 +1644,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val log = AppLog.read(getApplication())
                 val ver = AppLog.env(getApplication())
                 val snap = runCatching { diagSnapshot() }.getOrNull()
-                val res = a.uploadAppLog(log, snap, ver, ver, reason)
-                AppLog.log("diag", "上报诊断 reason=" + reason + " log=" + log.length + "字 -> " +
+                // 闪退/服务故障单独带上：闪退时 run.log 可能没落盘，堆栈只在这两份里。
+                val crash = runCatching { CrashLog.read(getApplication()) }.getOrDefault("")
+                val fault = runCatching { CrashLog.readFault(getApplication()) }.getOrDefault("")
+                val res = a.uploadAppLog(log, snap, ver, ver, reason, crash, fault)
+                AppLog.log("diag", "上报诊断 reason=" + reason + " log=" + log.length + "字 crash=" +
+                    crash.length + "字 fault=" + fault.length + "字 -> " +
                     res.optBoolean("ok", false) + " name=" + res.optString("name", ""))
             } catch (e: Exception) {
                 AppLog.err("diag", "上报诊断失败 reason=" + reason, e)

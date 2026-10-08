@@ -430,7 +430,10 @@ class HermesApi(
      * 为什么反过来推：App 在手机上、没有对外入口，agent 连不进来，出问题只能用户手动发日志/截图。
      * 走既有网关通道 + API key，不新开端口、不暴露手机。正文原样上报（用户 2026-10-08 定）。
      */
-    fun uploadAppLog(log: String, snapshot: JSONObject?, version: String, device: String, reason: String): JSONObject {
+    fun uploadAppLog(
+        log: String, snapshot: JSONObject?, version: String, device: String, reason: String,
+        crash: String = "", fault: String = "",
+    ): JSONObject {
         val compressed = gzipBase64(log)
         val body = JSONObject()
             .put("log", compressed)
@@ -439,6 +442,9 @@ class HermesApi(
             .put("device", device)
             .put("reason", reason)
         if (snapshot != null) body.put("snapshot", snapshot)
+        // 闪退/服务故障单独带：闪退时 run.log 可能没落盘，堆栈只在这两份里。
+        if (crash.isNotEmpty()) body.put("crash", crash)
+        if (fault.isNotEmpty()) body.put("fault", fault)
         return sync(base("/api/applog").post(body.toString().toRequestBody(jsonType)).build())
     }
 
