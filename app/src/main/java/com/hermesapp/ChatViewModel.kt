@@ -559,9 +559,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun turnStart(r: SessionRuntime): Long = if (r.startedAt > 0) r.startedAt else stamp()
 
     private fun setMsgs(r: SessionRuntime, list: List<Msg>) {
-        r.messages.value = list
+        r.messages.value = capHistory(list)
         scheduleSave(r)
     }
+
+    /**
+     * 内存列表也按 maxHistory 截断（保留最新 maxHistory 条）。
+     *
+     * 为什么必须做：`saveMessages` 只截**落盘副本**，内存列表一直不截。于是把服务端记录
+     * 并进来后（mergeByUserAnchor 会把服务端有、本地没有的行补进来）内存条数会一路超过
+     * maxHistory 且**不回退**，每次去抖落盘都重算一遍裁剪、打一行「超上限裁剪」日志
+     * （用户 2026-10-09 上报里 46 分钟刷了 87 次，本地到 334 条而文件只有 300 条：看到
+     * 的和存下的不一致，长会话内存还会持续增长）。单点截断在这里，所有批量/合并写入
+     * （setMsgs）与流式追加都过它，内存与落盘窗口一致。
+     */
+    private fun capHistory(list: List<Msg>): List<Msg> =
+        if (list.size > maxHistory) list.takeLast(maxHistory) else list
 
     /** 索引落盘的异步去抖任务：切会话/改标题连点也只写一次。 */
     private var indexSaveJob: Job? = null
@@ -609,8 +622,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val cost = System.currentTimeMillis() - t0
             withContext(Dispatchers.Main.immediate) {
                 if (r.dead) { r.loading = false; return@withContext }
-                r.messages.value = if (r.messages.value.isEmpty()) msgs
-                                   else mergeByUserAnchor(r.messages.value, msgs)
+                r.messages.value = capHistory(if (r.messages.value.isEmpty()) msgs
+                                   else mergeByUserAnchor(r.messages.value, msgs))
                 r.loaded = true
                 r.loading = false
                 // 落盘里还有「运行中」的子任务（长任务跑一半重开 App）：把进度轮询接回去，
@@ -1111,8 +1124,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                                 )
                                 r.messages.value = m
                             } else {
-                                r.messages.value = r.messages.value +
-                                    Msg("assistant", "", pending = true, ts = System.currentTimeMillis(), startedAt = turnStart(r))
+                                r.messages.value = capHistory(r.messages.value +
+                                    Msg("assistant", "", pending = true, ts = System.currentTimeMillis(), startedAt = turnStart(r)))
                             }
                             r.busy.value = true
                             updateRunService()
@@ -1150,8 +1163,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             m[lastAssistant] = m[lastAssistant].copy(pending = true)
                             r.messages.value = m
                         } else {
-                            r.messages.value = r.messages.value +
-                                Msg("assistant", "", pending = true, ts = System.currentTimeMillis(), startedAt = turnStart(r))
+                            r.messages.value = capHistory(r.messages.value +
+                                Msg("assistant", "", pending = true, ts = System.currentTimeMillis(), startedAt = turnStart(r)))
                         }
                         r.busy.value = true
                         r.lastEventAt = System.currentTimeMillis()
@@ -1259,8 +1272,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             )
             r.messages.value = m
         } else {
-            r.messages.value = r.messages.value +
-                Msg("assistant", "", pending = true, ts = System.currentTimeMillis(), startedAt = turnStart(r))
+            r.messages.value = capHistory(r.messages.value +
+                Msg("assistant", "", pending = true, ts = System.currentTimeMillis(), startedAt = turnStart(r)))
         }
         r.busy.value = true
         r.lastEventAt = System.currentTimeMillis()
