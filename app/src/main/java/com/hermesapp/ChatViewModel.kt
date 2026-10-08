@@ -1279,8 +1279,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         startRunFlagsTicker()
         drainPendingReply()
         checkUpdateSilently()
-        // 启动就上报一次（节流 30 分钟）：出问题不用用户手动发日志。
-        maybeUploadDiag("startup")
     }
 
     /**
@@ -1584,16 +1582,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         syncFromServer(30_000L)
         // 回前台把当前会话与服务端对齐一次（正文，不只是标题）。
         syncOnForeground()
-        // 回前台顺手看看服务端是否请求过「请上报诊断」，并按需自动上报（节流）。
-        pollDiagRequest()
-        maybeUploadDiag("foreground")
     }
 
-    // ---- 诊断上报（App → 服务端，不用用户再发日志/截图）------------------------------------
-
-    @Volatile private var lastDiagUploadAt = 0L
-    @Volatile private var lastDiagPendingPollAt = 0L
-    @Volatile private var lastDiagRequestAt = 0L
+    // ---- 诊断上报（App → 服务端；**仅手动**，2026-10-08 用户要求移除所有自动上传）----------
 
     /**
      * 造一份「紧凑状态快照」：每个本地会话的 id/标题/条数 + 末尾几条消息的角色+开头几十字+时间。
@@ -1633,12 +1624,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         return snap
     }
 
-    /** 上报一次运行日志 + 状态快照。节流：默认 30 分钟内不重复自动上报。 */
-    fun maybeUploadDiag(reason: String) {
+    /**
+     * 上报一次运行日志 + 状态快照。
+     *
+     * **只由用户手点「上报诊断」触发**（2026-10-08 用户要求：移除启动/回前台/轮末的自动上传，
+     * 以及服务端「请上报」标记的自动轮询——避免不经意间越攒越多）。不走节流：点了就传。
+     */
+    fun uploadDiagNow() {
         val a = api ?: return
-        val now = System.currentTimeMillis()
-        if (reason != "manual" && now - lastDiagUploadAt < 30 * 60_000L) return
-        lastDiagUploadAt = now
+        val reason = "manual"
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val log = AppLog.read(getApplication())
@@ -1653,29 +1647,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     res.optBoolean("ok", false) + " name=" + res.optString("name", ""))
             } catch (e: Exception) {
                 AppLog.err("diag", "上报诊断失败 reason=" + reason, e)
-            }
-        }
-    }
-
-    /** 手动「立即上报诊断」（设置页按钮）：不走节流。 */
-    fun uploadDiagNow() = maybeUploadDiag("manual")
-
-    /** 轮询服务端是否请求过「请上报」：是则自动上报一次（节流 60 秒，防重复触发）。 */
-    private fun pollDiagRequest() {
-        val a = api ?: return
-        val now = System.currentTimeMillis()
-        if (now - lastDiagPendingPollAt < 60_000L) return
-        lastDiagPendingPollAt = now
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val r = a.applogPending()
-                if (r.optBoolean("requested", false) && now - lastDiagRequestAt > 60_000L) {
-                    lastDiagRequestAt = now
-                    AppLog.log("diag", "服务端请求上报，自动上报一次")
-                    maybeUploadDiag("requested")
-                }
-            } catch (e: Exception) {
-                AppLog.err("diag", "轮询上报请求失败", e)
             }
         }
     }
@@ -4269,8 +4240,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         drainQueue(sid)   // 本轮结束：把排队的下一条发出去
         // 本轮跑完：服务端此刻多半已生成了正式标题，同步一次（节流 5 秒）。
         syncFromServer(5_000L)
-        // 本轮跑完也顺手看一眼诊断上报（节流 30 分钟）：出问题时不用用户手动发日志。
-        maybeUploadDiag("turn")
     }
 
     /**
