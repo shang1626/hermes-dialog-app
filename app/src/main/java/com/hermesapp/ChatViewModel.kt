@@ -3316,7 +3316,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             setMsgs(r, cur)
                         }
                     }
-                    r.retryNote.value = "已选择「" + choice + "」，已送达服务端"
+                    // 同上：澄清回执的确认也只闪一下。
+                    flashNote(r, "已选择「" + choice + "」，已送达服务端")
                 } else {
                     r.retryNote.value = "回执没送到：本轮可能已收尾，可重试"
                 }
@@ -3386,6 +3387,25 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (changed) setMsgs(r, list)
     }
 
+    /**
+     * 短暂提示：写进 retryNote，几秒后自动清掉（只在没人改写它时才清）。
+     *
+     * 为什么需要：审批/澄清回执成功后的「已选择…已送达服务端」原来一直挂在 retryNote 上，
+     * 而 retryNote 只在轮末 doneOk 里清空——长任务一跑几分钟，那行确认就一直钉在消息列表
+     * 顶部，看着像还有事没处理（用户 2026-10-08 实测报障：审批后任务跑了许久，顶部提示还在）。
+     * 确认类提示是「一闪而过」的信息，不该占着顶部警告条；连接类提示（重试/重连）仍常驻，
+     * 直到状态真的恢复。
+     */
+    private fun flashNote(r: SessionRuntime, text: String, ms: Long = 4000L) {
+        r.retryNote.value = text
+        val sid = r.id
+        viewModelScope.launch(Dispatchers.Main) {
+            delay(ms)
+            val cur = runtimes[sid] ?: return@launch
+            if (cur.retryNote.value == text) cur.retryNote.value = ""
+        }
+    }
+
     /** 用户点了审批按钮：回执给服务端，并把卡片置为已选。 */
     fun respondApproval(msgId: Long, choice: String) {
         val a = api ?: return
@@ -3414,7 +3434,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             setMsgs(r, cur)
                         }
                     }
-                    r.retryNote.value = "已选择「" + choice + "」，已送达服务端"
+                    // 确认类提示只闪一下：常驻会一直钉在顶部，像还有事没处理。
+                    flashNote(r, "已选择「" + choice + "」，已送达服务端")
                 } else {
                     r.retryNote.value = "回执没送到：本轮可能已收尾，可重试"
                 }
