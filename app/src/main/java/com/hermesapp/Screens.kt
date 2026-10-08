@@ -104,6 +104,7 @@ fun ChatScreen(
     val quote by vm.quoteTarget.collectAsStateWithLifecycle()
 
     Column(Modifier.fillMaxSize()) {
+        ArchiveDialog(vm)
         // 「正在播放别的会话的语音」提示条：多任务排队时轮到的可能是另一个会话，
         // 光靠听分辨不出是谁的——这里显式标出来，并给「进入」「跳过」两个出口。
         val curSid by vm.currentId.collectAsStateWithLifecycle()
@@ -369,6 +370,22 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
             Text(note, color = c.warn, fontSize = 12.sp,
                 modifier = Modifier.fillMaxWidth().background(c.panel).padding(8.dp))
         }
+        // 归档入口：本会话有超 300 条被裁掉的老消息时，给一行「查看归档」。
+        // 归档是只读视图，点开看历史 / 搜索 / 导出，不并回主文件（不破坏 300 条裁剪逻辑）。
+        val archN by vm.archiveCount.collectAsStateWithLifecycle()
+        if (archN > 0) {
+            Row(
+                Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 10.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("更早 " + archN + " 条已归档", color = c.dim, fontSize = 12.sp)
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "查看", color = c.accent, fontSize = 12.sp,
+                    modifier = Modifier.clickable { vm.openArchive() }.padding(horizontal = 4.dp, vertical = 2.dp)
+                )
+            }
+        }
         // 会话内搜索栏：输入即搜（去抖），显示「第几/共几」，上下跳、× 收起
         if (searchOn) {
             val total = hits.size
@@ -433,6 +450,64 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
                 )
             }
             item { Spacer(Modifier.height(1.dp)) }
+        }
+    }
+}
+
+/** 归档历史浏览：只读视图，带搜索与导出，不并回主文件。 */
+@Composable
+fun ArchiveDialog(vm: ChatViewModel) {
+    val open by vm.archiveActive.collectAsStateWithLifecycle()
+    if (!open) return
+    val c = LocalAppColors.current
+    val ctx = LocalContext.current
+    val msgs by vm.archiveMsgs.collectAsStateWithLifecycle()
+    val q by vm.archiveQuery.collectAsStateWithLifecycle()
+    val shown = remember(msgs, q) {
+        val n = q.trim().lowercase()
+        if (n.isEmpty()) msgs else msgs.filter { it.text.lowercase().contains(n) }
+    }
+    Dialog(onDismissRequest = { vm.closeArchive() }) {
+        Column(
+            Modifier.fillMaxWidth().fillMaxHeight(0.85f)
+                .clip(RoundedCornerShape(12.dp)).background(c.bg).padding(12.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("归档历史（只读）", color = c.text, fontSize = 15.sp)
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "导出", color = c.accent, fontSize = 13.sp,
+                    modifier = Modifier.clickable { vm.exportArchive(ctx) }.padding(6.dp)
+                )
+                Text(
+                    "关闭", color = c.dim, fontSize = 13.sp,
+                    modifier = Modifier.clickable { vm.closeArchive() }.padding(6.dp)
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            OutlinedTextField(
+                value = q,
+                onValueChange = { vm.setArchiveQuery(it) },
+                singleLine = true,
+                placeholder = { Text("在归档里搜索", fontSize = 13.sp) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(6.dp))
+            Text("共 " + shown.size + " / " + msgs.size + " 条", color = c.dim, fontSize = 11.sp)
+            Spacer(Modifier.height(4.dp))
+            LazyColumn(Modifier.weight(1f)) {
+                items(shown.size) { i ->
+                    val m = shown[i]
+                    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                        Text(
+                            (if (m.role == "user") "我" else "助手") +
+                                (if (m.ts > 0) " · " + TimeFmt.mdhm(m.ts) else ""),
+                            color = c.dim, fontSize = 11.sp
+                        )
+                        if (m.text.isNotBlank()) Text(m.text, color = c.text, fontSize = 13.sp)
+                    }
+                }
+            }
         }
     }
 }
