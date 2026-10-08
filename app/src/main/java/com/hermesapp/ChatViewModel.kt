@@ -1195,6 +1195,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         } else old.title
         list[i] = old.copy(title = title, updatedAt = stamp())
         _sessions.value = list
+        // 时间戳必须落盘：原来只改内存，重启后 updatedAt 停在旧值，回前台对齐会一直判
+        // 「服务端更新」，同一批会话每 30 秒被重拉一次。去抖 300ms，连发也只写一次。
+        saveIndexAsync()
     }
 
     private fun bootstrapSessions(profileSessionId: String?) {
@@ -1664,6 +1667,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val a = api ?: return
         if (id.isEmpty()) return
         val r = rt(id)
+        // 已删除的会话：拉回来的内容一个字都不能写，否则会把删掉的消息文件写复活。
+        if (r.dead) return
         // 忙 = 推迟，不是丢弃。
         //
         // 2026-10-08：这里原来是静默 return，冷启动时被踩得很惨——onProfileChanged 先调
@@ -1695,6 +1700,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // 守卫：该会话此刻已在跑任务则不覆盖（切换会话不影响——只写它自己的缓冲）。
                 // 但要落 needSync：请求往返期间 run 可能刚开始/被恢复（冷启动就是这么撞上的），
                 // 直接丢就等于把服务端这一份记录白拉了。
+                if (r.dead) {
+                    // 请求往返期间会话被删了：整份丢掉，绝不落盘（否则删掉的文件复活）。
+                    AppLog.log("sync", "会话已删除，丢弃拉回结果 sid=" + id.take(8))
+                    return@launch
+                }
                 if (r.busy.value) {
                     r.needSync = true
                     AppLog.log("sync", "会话在跑，落待同步标记（返回时）sid=" + id.take(8))
@@ -1713,9 +1723,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // 改用两边都完整保留、且有序的「用户消息」做锚点，见 mergeByUserAnchor。
                 val local = r.messages.value
                 val merged = mergeByUserAnchor(local, list)
-                r.messages.value = merged
+                // 统一走 setMsgs（唯一写入口 + 去抖落盘）：原来这里直接赋值 + 另开一次写盘，
+                // 与 saveRuntime 并发写同一个消息文件，谁后落盘谁赢，会丢正文。
+                setMsgs(r, merged)
                 r.loaded = true
-                store.saveMessages(id, merged, maxHistory)
+                // 本地基线推进到服务端那一份：不回写的话回前台对齐永远判「服务端更新」，
+                // 同一批会话每 30 秒被重拉一次。
+                val sv = serverLastActive[id]
+                if (sv != null && sv > 0) {
+                    val sl = _sessions.value.toMutableList()
+                    val si = sl.indexOfFirst { it.id == id }
+                    if (si >= 0 && sv > sl[si].updatedAt) {
+                        sl[si] = sl[si].copy(updatedAt = sv)
+                        _sessions.value = sl
+                        saveIndexAsync()
+                    }
+                }
                 AppLog.log("sync", "合并服务端记录 sid=" + id.take(8) +
                     " 本地=" + local.size + " 服务端=" + list.size + " 合并后=" + merged.size)
             } catch (e: Exception) {
@@ -1777,10 +1800,40 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             if (lt.isEmpty()) return st
             if (st.isEmpty()) return lt
             val seg = lt.toMutableList()
+            // 本地这一块里已有的助手正文（归一后），用来判重。
+            val localAsst = seg.filter { it.role == "assistant" && it.text.isNotBlank() }
+                .map { norm(it.text) }.toMutableList()
+            // ① 本地那条「正文为空的进行中气泡」：服务端有正文就补上。
             val li = seg.indexOfLast { it.role == "assistant" }
-            val sText = st.lastOrNull { it.role == "assistant" && it.text.isNotBlank() }?.text
-            if (li >= 0 && seg[li].text.isEmpty() && !sText.isNullOrEmpty()) {
-                seg[li] = seg[li].copy(text = sText, pending = false)
+            if (li >= 0 && seg[li].text.isEmpty()) {
+                val sText = st.lastOrNull { it.role == "assistant" && it.text.isNotBlank() }?.text
+                if (!sText.isNullOrEmpty()) {
+                    seg[li] = seg[li].copy(text = sText, pending = false)
+                    localAsst.add(norm(sText))
+                }
+            }
+            // ② 服务端有、本地没有的助手正文，补进这一块。
+            //
+            // 2026-10-08：以前这里只做①，本地助手气泡正文非空就原样返回 —— 于是一轮里
+            // 服务端落多条助手消息（中途解说 + 最终答复）时，本地若在最终答复落库前断流/
+            // 被杀，只收到中途解说，那条最终答复**永远补不回来**：合并后条数一条不涨，
+            // 界面那轮只剩过程。用户实测「服务端跑完了，App 里没有同步过来」就是它。
+            var added = 0
+            for (s in st) {
+                if (s.role != "assistant" || s.text.isBlank()) continue
+                val ns = norm(s.text)
+                // 判重放宽到「包含」：服务端压缩/改写会让同一段正文在两侧不完全等长，
+                // 只比相等会把改写过的旧行当成新行，重复贴一条。
+                val dup = localAsst.any { it == ns || it.contains(ns) || ns.contains(it) }
+                if (!dup) {
+                    seg.add(s.copy(pending = false))
+                    localAsst.add(ns)
+                    added++
+                }
+            }
+            if (added > 0) {
+                AppLog.log("sync", "合并补齐助手正文 本地块=" + lt.size + " 服务端块=" + st.size +
+                    " 补入=" + added)
             }
             return seg
         }

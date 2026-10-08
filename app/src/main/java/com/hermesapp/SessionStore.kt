@@ -41,6 +41,44 @@ class SessionStore(ctx: Context, private val profile: String) {
     private val dir: File = ctx.filesDir
 
     private fun indexFile() = File(dir, "sessions_$profile.json")
+
+    /** 同一文件的写盘串行锁：两个协程并发写同一份 JSON 会交错截断，留下半截文件。 */
+    private val writeLock = Any()
+
+    /**
+     * 原子写：先写 .tmp，成功后再改名覆盖，并把旧内容留一份 .bak。
+     *
+     * 为什么必须这样做：原来直接 writeText 一次性覆盖，进程在写盘途中被杀 / 磁盘满，
+     * 留下的是半截 JSON；loadIndex 把解析异常吞掉返回空列表，界面表现就是「历史对话整片没了」。
+     * 同目录内改名是原子的：读到的要么是旧完整版、要么是新完整版，不会是半截。
+     */
+    private fun writeAtomic(f: File, text: String) {
+        synchronized(writeLock) {
+            val tmp = File(f.parentFile, f.name + ".tmp")
+            tmp.writeText(text)
+            if (f.exists()) {
+                runCatching { f.copyTo(File(f.parentFile, f.name + ".bak"), overwrite = true) }
+            }
+            if (!tmp.renameTo(f)) {
+                // 改名失败（极少数文件系统）：退回直接写，内容仍是对的，并清掉临时文件。
+                f.writeText(text)
+                tmp.delete()
+            }
+        }
+    }
+
+    /** 读文本，主文件读不出（缺失/损坏）时回退上一次的 .bak。 */
+    private fun readTextOrBackup(f: File): String {
+        return try {
+            f.readText()
+        } catch (e: Exception) {
+            val bak = File(f.parentFile, f.name + ".bak")
+            if (bak.exists()) {
+                AppLog.err("store", "读 " + f.name + " 失败，回退备份 字节=" + f.length(), e)
+                bak.readText()
+            } else throw e
+        }
+    }
     private fun msgFile(id: String) = File(dir, "chat_${profile}_$id.json")
     private fun legacyFile() = File(dir, "chat_$profile.json")
 
@@ -69,7 +107,16 @@ class SessionStore(ctx: Context, private val profile: String) {
         val f = indexFile()
         if (!f.exists()) return out
         try {
-            val arr = JSONArray(f.readText())
+            val arr = try {
+                JSONArray(readTextOrBackup(f))
+            } catch (e: Exception) {
+                // 主文件是半截 JSON（写盘被中断）：回退上一次的备份。
+                val bak = File(dir, f.name + ".bak")
+                if (bak.exists()) {
+                    AppLog.err("store", "索引解析失败，回退备份 字节=" + f.length(), e)
+                    JSONArray(bak.readText())
+                } else throw e
+            }
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
                 val id = o.optString("id", "")
@@ -110,7 +157,7 @@ class SessionStore(ctx: Context, private val profile: String) {
                         .put("order", s.order)
                 )
             }
-            indexFile().writeText(arr.toString())
+            writeAtomic(indexFile(), arr.toString())
             AppLog.log("store", "存索引 profile=" + profile + " 条数=" + list.size +
                 " 已归档=" + archivedCount)
         } catch (e: Exception) {
@@ -123,7 +170,12 @@ class SessionStore(ctx: Context, private val profile: String) {
         runCatching {
             val f = msgFile(id)
             if (!f.exists()) return@runCatching
-            val arr = JSONArray(f.readText())
+            val arr = try {
+                JSONArray(readTextOrBackup(f))
+            } catch (e: Exception) {
+                val bak = File(dir, f.name + ".bak")
+                if (bak.exists()) JSONArray(bak.readText()) else throw e
+            }
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
                 val text = o.optString("text", "")
@@ -323,7 +375,7 @@ class SessionStore(ctx: Context, private val profile: String) {
                 }
                 arr.put(o)
             }
-            msgFile(id).writeText(arr.toString())
+            writeAtomic(msgFile(id), arr.toString())
             if (clean.size > max) {
                 AppLog.log("store", "会话消息超上限裁剪 id=" + id.take(8) +
                     " 原=" + clean.size + " 保留=" + tail.size)
@@ -349,7 +401,15 @@ class SessionStore(ctx: Context, private val profile: String) {
     }
 
     fun deleteMessages(id: String) {
-        val ok = runCatching { msgFile(id).delete() }.getOrDefault(false)
+        val f = msgFile(id)
+        val ok = runCatching { f.delete() }.getOrDefault(false)
+        // 原子写留下的 .bak / .tmp 一并清掉：主文件删了，残留副本没有意义，
+        // 且下次读该会话时若主文件缺失会先命中 exists() 早退，不会误读 .bak，
+        // 但留着白占空间、也容易让人误以为会话还在。
+        synchronized(writeLock) {
+            runCatching { File(f.parentFile, f.name + ".bak").delete() }
+            runCatching { File(f.parentFile, f.name + ".tmp").delete() }
+        }
         AppLog.log("store", "删消息文件 id=" + id.take(8) + " 删除=" + ok)
     }
 
