@@ -156,10 +156,22 @@ object MediaFetch {
     /** 取不到（未登录）时为 null。 */
     @Volatile var handler: ((String) -> ByteArray?)? = null
 
-    fun download(token: String): ByteArray? = try {
-        handler?.invoke(token)
-    } catch (_: Exception) {
-        null
+    /** 最近一次取字节的失败原因（给界面提示用）：空 = 上次成功或还没取过。 */
+    @Volatile var lastError: String = ""
+
+    fun download(token: String): ByteArray? {
+        return try {
+            val r = handler?.invoke(token)
+            lastError = if (r == null) "文件取不到（未登录或服务端无留档）" else ""
+            r
+        } catch (e: Exception) {
+            val m = e.message ?: ""
+            lastError = if (m.startsWith("TOO_LARGE:"))
+                "文件太大，超过 100MB 上限，无法在手机上打开"
+            else "下载失败：" + m.take(80)
+            AppLog.err("attach", "媒体下载失败", e)
+            null
+        }
     }
 }
 
