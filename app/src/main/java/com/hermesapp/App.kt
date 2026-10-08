@@ -211,8 +211,19 @@ class MainActivity : ComponentActivity() {
      */
     private fun openFromNotification() {
         if (!Prefs(this).loggedIn) return
-        val fromIntent = intent?.getStringExtra(Notifier.EXTRA_OPEN_SESSION).orEmpty()
         val prefs = Prefs(this)
+        // ① 目标页：定时任务通知要落在「定时任务」页。只认 Intent extra——PendingIntent
+        // 的 Intent 由系统保存，冷启动也照样投递；不做落盘兜底，否则「造通知时写盘」
+        // 会让没点通知的用户一开 App 就被顶到定时任务页。
+        if (intent?.hasExtra(Notifier.EXTRA_OPEN_TAB) == true) {
+            val tab = intent.getIntExtra(Notifier.EXTRA_OPEN_TAB, -1)
+            if (tab >= 0) {
+                runCatching { intent.removeExtra(Notifier.EXTRA_OPEN_TAB) }
+                vm.requestOpenTab(tab)
+            }
+        }
+        // ② 目标会话：审批/澄清/新消息通知。
+        val fromIntent = intent?.getStringExtra(Notifier.EXTRA_OPEN_SESSION).orEmpty()
         val sid = fromIntent.ifEmpty { prefs.pendingOpenSession }
         if (sid.isEmpty()) return
         prefs.pendingOpenSession = ""
@@ -417,6 +428,15 @@ fun MainScaffold(
         // 进主界面就确保前台服务与常驻通知挂着：开关开着但还没发过消息时，
         // 原来要等第一次发消息或回前台才起，期间切后台状态栏是空的。
         vm.ensureRunService()
+    }
+
+    // 通知请求切页（如点「定时任务完成」通知 → 定时任务页）。收到即切并消费掉信号，
+    // 避免每次重组重复切页、把用户手动切的页又顶回去。
+    val openTabReq by vm.openTabReq.collectAsStateWithLifecycle()
+    LaunchedEffect(openTabReq) {
+        if (openTabReq < 0) return@LaunchedEffect
+        tab = openTabReq
+        vm.consumeOpenTab()
     }
 
     // 返回键/侧滑返回：抽屉开着先收抽屉（不再直接退出软件）；否则先回对话页；已在对话页则交给系统退出
