@@ -34,7 +34,7 @@ cd ~/hermes-app
 ## 发布流程
 
 1. 改 `app/build.gradle.kts` 里的 `versionCode` / `versionName`（必须递增，客户端靠它判断更新）
-2. `./gradlew assembleDebug` 出包
+2. 编 release 包（本工程无 gradlew）：`export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ANDROID_SDK_ROOT=~/android-tools/sdk && ~/android-tools/gradle-8.9/bin/gradle assembleRelease`，产物 `app/build/outputs/apk/release/app-release.apk`
 3. 把 APK 复制到 `dist/update/`，命名 `<名>-<版本>-<md5前8>.apk`
 4. 更新 `dist/update/version.json`：
 
@@ -53,8 +53,11 @@ cd ~/hermes-app
 
 ## 客户端密钥
 
-`app/src/main/java/com/hermesapp/Keys.kt` 里是自用固定值：App 登录密码、两个 profile 的 API key、服务器地址、更新地址。
-**不要把真实密钥写进文档或提交信息**，需要时直接看该文件。
+`app/src/main/java/com/hermesapp/Keys.kt` 只是读取器，真值在构建期由仓库根的 `local.properties`
+（已 gitignore）经 `BuildConfig` 注入：`HERMES_APP_PASSWORD`、`HERMES_DEFAULT_KEY`、`HERMES_FRIEND_KEY`、
+`HERMES_DEFAULT_URL`、`HERMES_UPDATE_URL`、`HERMES_LEGACY_HOSTS`。开源仓库里这些字段为空，
+部署者自行在 `local.properties` 填自己的域名与密钥。
+**不要把真实密钥写进文档或提交信息**。
 
 ## 相关服务（本机）
 
