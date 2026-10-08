@@ -287,25 +287,91 @@ class SessionStore(ctx: Context, private val profile: String) {
     private fun archiveFile(id: String) = File(dir, "chat_${profile}_$id.archive.json")
 
     /**
+     * 归档条目签名（去重用）。同一份超限历史在后续每次保存时都会被再次提交为
+     * 「被裁掉的前缀」，老版没有去重，同一批老消息会一遍遍追加进归档，文件无限膨胀。
+     * 用 role + ts + 正文前 200 字做签名：正文相同而时间不同的两条不会被误并。
+     */
+    private fun archiveSig(o: JSONObject): String =
+        o.optString("role") + "\u0000" + o.optLong("ts") + "\u0000" + o.optString("text").take(200)
+
+    /** 读归档（JSON Array）。读不出回退 .bak；都读不出按空处理，别让归档拖垮保存。 */
+    private fun loadArchive(id: String): JSONArray {
+        val f = archiveFile(id)
+        if (!f.exists()) return JSONArray()
+        return runCatching { JSONArray(readTextOrBackup(f)) }.getOrDefault(JSONArray())
+    }
+
+    /**
      * 把超上限被裁掉的历史消息追加进归档文件（JSON Array）。
-     * 追加式写入：读出旧数组 → 拼新条目 → 原子写回。归档只在裁剪时发生，频率很低。
+     *
+     * 追加式写入：读出旧数组 → 按签名去重后拼新条目 → 原子写回。
+     * 去重是必须的：主文件每次保存都重算「被裁掉的前缀」，没有去重时同一批老消息
+     * 会被反复追加（实测 301 条连存两次，归档从 1 变 2，重复的是同一条），归档无限膨胀。
+     * 归档保留完整结构（正文/轨迹/附件/引用），不再只留 role/text/ts。
      */
     private fun appendArchive(id: String, dropped: List<Msg>) {
         runCatching {
             val f = archiveFile(id)
-            val old = if (f.exists()) {
-                runCatching { JSONArray(f.readText()) }.getOrDefault(JSONArray())
-            } else JSONArray()
+            val old = loadArchive(id)
+            val seen = HashSet<String>()
+            for (i in 0 until old.length()) old.optJSONObject(i)?.let { seen.add(archiveSig(it)) }
+            var added = 0
             for (m in dropped) {
-                old.put(JSONObject().put("role", m.role).put("text", m.text).put("ts", m.ts))
+                val o = JSONObject().put("role", m.role).put("text", m.text).put("ts", m.ts)
+                if (m.trace.isNotEmpty()) o.put("trace", m.trace)
+                if (m.runId.isNotEmpty()) o.put("runId", m.runId)
+                if (m.quote.isNotEmpty()) o.put("quote", m.quote)
+                if (m.steer) o.put("steer", true)
+                if (m.images.isNotEmpty()) {
+                    val ia = JSONArray(); for (u in m.images) ia.put(u); o.put("images", ia)
+                }
+                if (m.files.isNotEmpty()) {
+                    val fa = JSONArray(); for (n in m.files) fa.put(n); o.put("files", fa)
+                }
+                if (!seen.add(archiveSig(o))) continue
+                old.put(o); added++
             }
+            if (added == 0) return@runCatching
             writeAtomic(f, old.toString())
-            AppLog.log("store", "归档历史 id=" + id.take(8) + " 新增=" + dropped.size + " 总=" + old.length())
+            AppLog.log("store", "归档历史 id=" + id.take(8) + " 新增=" + added + " 总=" + old.length())
         }
     }
 
-    fun saveMessages(id: String, list: List<Msg>, max: Int = 300) {
-        runCatching {
+    /** 读回某会话的归档消息（供「翻更早历史」用）。纯本地读，不改数据。 */
+    fun loadArchiveMessages(id: String): List<Msg> {
+        val arr = loadArchive(id)
+        val out = mutableListOf<Msg>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val imgs = mutableListOf<String>()
+            o.optJSONArray("images")?.let { ia ->
+                for (k in 0 until ia.length()) ia.optString(k)?.takeIf { it.isNotEmpty() }?.let { imgs.add(it) }
+            }
+            val files = mutableListOf<String>()
+            o.optJSONArray("files")?.let { fa ->
+                for (k in 0 until fa.length()) fa.optString(k)?.takeIf { it.isNotEmpty() }?.let { files.add(it) }
+            }
+            out.add(Msg(
+                role = o.optString("role", "assistant"),
+                text = o.optString("text", ""),
+                pending = false,
+                ts = o.optLong("ts", 0L),
+                images = imgs,
+                files = files,
+                trace = o.optString("trace", ""),
+                quote = o.optString("quote", ""),
+                steer = o.optBoolean("steer", false),
+                runId = o.optString("runId", ""),
+            ))
+        }
+        return out
+    }
+
+    /** 归档条数（状态页/诊断显示用）。 */
+    fun archiveCount(id: String): Int = loadArchive(id).length()
+
+    fun saveMessages(id: String, list: List<Msg>, max: Int = 300): Boolean {
+        return runCatching {
             // pending 且正文空、轨迹空、又没有待办卡片的才是空壳可丢；
             // 带审批/澄清卡片的必须留下，否则重开 App 卡片就没了。
             val clean = list.filter {
@@ -404,11 +470,15 @@ class SessionStore(ctx: Context, private val profile: String) {
                 AppLog.log("store", "会话消息超上限裁剪 id=" + id.take(8) +
                     " 原=" + clean.size + " 保留=" + tail.size)
             }
-        }.onFailure {
+            true
+        }.getOrElse {
             // 以前整段被 runCatching 静默吞掉：写盘失败一行日志都没有，
             // 表现是「消息看着发了、重开就没了」，却查不到任何线索。
+            // 现在返回 Boolean：调用方据此决定「续接序号能不能推进」——
+            // 写盘失败仍推进序号的话，重启会按它做 Last-Event-ID，把这段永远跳过。
             AppLog.err("store", "落盘会话消息失败 id=" + id.take(8) +
                 " 条数=" + list.size + " 目标=" + msgFile(id).absolutePath, it)
+            false
         }
     }
 
