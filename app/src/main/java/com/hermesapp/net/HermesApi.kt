@@ -732,28 +732,18 @@ class HermesApi(
                     if (!resp.isSuccessful) { onError(IOException("HTTP " + resp.code)); return }
                     val src = resp.body?.source()
                     if (src == null) { onError(IOException("empty body")); return }
-                    var id: Int? = null
-                    var event: String? = null
-                    val data = StringBuilder()
+                    // 行解析抽到纯逻辑 SseParser（便于单测）；这里只负责读行、刷活跃、投事件。
+                    val parser = com.hermesapp.SseParser()
                     try {
                         while (!src.exhausted()) {
                             val line = src.readUtf8Line() ?: break
                             // 每读到一行（含 `: keepalive` 注释帧）就算一次「流还活着」。
-                            // 必须放在 when 之外：心跳行不以 id:/event:/data: 开头、也不是空行，
+                            // 必须放在解析之外：心跳行不以 id:/event:/data: 开头、也不是空行，
                             // 落不到任何分支；若只在分支里回调，心跳永远刷不到活跃时间，
                             // 长工具执行期间（只有心跳、没有真实事件）会被看门狗误判成假死。
                             onActivity()
-                            when {
-                                line.startsWith("id:") -> id = line.substring(3).trim().toIntOrNull()
-                                line.startsWith("event:") -> event = line.substring(6).trim()
-                                line.startsWith("data:") -> data.append(line.substring(5).trim())
-                                line.isEmpty() -> {
-                                    if (data.isNotEmpty()) {
-                                        runCatching { onEvent(SseEvent(id, event, JSONObject(data.toString()))) }
-                                    }
-                                    id = null; event = null; data.setLength(0)
-                                }
-                            }
+                            val raw = parser.onLine(line) ?: continue
+                            runCatching { onEvent(SseEvent(raw.id, raw.event, JSONObject(raw.data))) }
                         }
                     } catch (_: Exception) {
                     }

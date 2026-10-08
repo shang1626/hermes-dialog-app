@@ -339,7 +339,7 @@ data class CronReport(
 )
 
 /** SSE 断流后的最大自动重连次数（退避等待，见 ChatViewModel.backoffDelayMs）。 */
-private const val MAX_RECONNECT_ATTEMPTS = 8
+private const val MAX_RECONNECT_ATTEMPTS = ReconnectPolicy.MAX_RECONNECT_ATTEMPTS
 
 /**
  * 回前台自动同步的节流窗口：来回快速切前后台时，别每次回前台都打一遍接口。
@@ -351,9 +351,7 @@ private const val FOREGROUND_SYNC_THROTTLE_MS = 3_000L
  * 「服务端还在跑」的状态集合：探测到这些状态就续接事件流，不判结束。
  * 注意必须与 api_server 的 run 状态机一致（含 stopping——已请求停止但还没收尾）。
  */
-private val RUNNING_STATES = setOf(
-    "started", "running", "waiting_for_approval", "waiting_for_clarify", "queued", "stopping",
-)
+private val RUNNING_STATES = ReconnectPolicy.RUNNING_STATES
 
 /** 重开 App 恢复活跃任务时，探测状态的尝试次数（开机网络未就绪时多试几次）。 */
 private const val RESUME_PROBE_TRIES = 3
@@ -4065,11 +4063,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 退避等待：第 n 次重试 2^(n-1) 秒（首次 1 秒），封顶 30 秒。 */
-    private fun backoffDelayMs(attempt: Int): Long {
-        val base = 1000L shl (attempt - 1).coerceIn(0, 5)   // 1,2,4,8,16,32…
-        return base.coerceAtMost(30_000L)
-    }
+    /** 退避等待（委托 ReconnectPolicy，便于单测）。 */
+    private fun backoffDelayMs(attempt: Int): Long = ReconnectPolicy.backoffDelayMs(attempt)
 
     /**
      * 断流翻历史兜底。
