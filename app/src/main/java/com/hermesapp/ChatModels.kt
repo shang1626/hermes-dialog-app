@@ -212,7 +212,7 @@ data class StatusMetric(
 data class StatusHero(
     val ok: Boolean,
     val statusText: String,
-    val model: String,
+    val version: String,
     val uptimeText: String,
     val pid: Int,
     val activeRuns: Int,
