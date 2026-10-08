@@ -1,3 +1,15 @@
+## 2.140 — versionCode 151
+
+修同事评估报告点出的 3 个用户可见缺陷（P0-1 / P0-2 / P0-5）。
+
+- **P0-1 失败后会话永久卡「执行中」**：`run.failed` 分支原来只调 `finishPending`（只定稿气泡、不碰 `busy`）+ `maybeContinue`，而后者第一行就是「finished 就返回」，于是失败后没有任何一处清 `busy`——会话永远显示执行中、前台服务不退、排队消息不发，只能手动点「停止」逃生。改为走 `doneOk(sid)`（清 busy + 推进队列 + 收尾补拉），与 `run.cancelled` 分支一致。
+- **P0-2 附件卡片显示乱码 `\uD83D\uDCCE`**：`Markdown.kt` 里这是普通字符串而非正则，双反斜杠 `"\\u..."` 渲染出 12 个字面字符。改成单反斜杠，恢复正常显示 📎。
+- **P0-5 上传途中点「停止」无效**：`startRunWith` 的发送协程没有句柄，`stopSession` 只能 cancel `r.call`，而此刻流还没起、`r.call` 是 null。加 `SessionRuntime.sendJob` 字段，起发送协程时绑上；`stopSession` 一并 `sendJob?.cancel()`；上传完成、建 run 前检查 `finished`，已停止就不再起流；发送协程里的取消单独 catch（`CancellationException`）不当失败处理。
+
+（改 ChatViewModel.kt / Markdown.kt / RuntimeHub.kt）
+
+---
+
 ## 2.139 — versionCode 150
 
 根治「发文件永远失败」：把附件从被边缘拦截的上传接口，改走已证明能通的 /v1/runs。
