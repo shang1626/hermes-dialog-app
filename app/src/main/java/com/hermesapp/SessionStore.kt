@@ -55,7 +55,12 @@ class SessionStore(ctx: Context, private val profile: String) {
     private fun writeAtomic(f: File, text: String) {
         synchronized(writeLock) {
             val tmp = File(f.parentFile, f.name + ".tmp")
-            tmp.writeText(text)
+            // fsync 后再 rename：否则掉电可能留下「已改名但零长度」的文件
+            // （rename 原子，但 tmp 内容可能还在页缓存里）。
+            java.io.FileOutputStream(tmp).use { os ->
+                os.write(text.toByteArray(Charsets.UTF_8))
+                os.fd.sync()
+            }
             if (f.exists()) {
                 runCatching { f.copyTo(File(f.parentFile, f.name + ".bak"), overwrite = true) }
             }

@@ -225,9 +225,17 @@ fun parseMdBlocks(src: String): List<MdBlock> {
     }
 
     var i = 0
+    var inFence = false
     while (i < lines.size) {
         val t = lines[i].trim()
-        if (t.startsWith("|") && i + 1 < lines.size && isSeparator(lines[i + 1].trim())) {
+        // 围栏状态：``` 内的管道表不能当真表格渲染。
+        if (t.startsWith("```")) {
+            inFence = !inFence
+            buf.append(lines[i]).append("\n")
+            i++
+            continue
+        }
+        if (!inFence && t.startsWith("|") && i + 1 < lines.size && isSeparator(lines[i + 1].trim())) {
             val rows = mutableListOf(splitRow(t))
             i += 2
             while (i < lines.size && lines[i].trim().startsWith("|")) {

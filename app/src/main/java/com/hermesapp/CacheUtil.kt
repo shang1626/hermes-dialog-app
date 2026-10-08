@@ -33,5 +33,7 @@ object CacheUtil {
         runCatching { outbox(ctx).listFiles()?.forEach { it.deleteRecursively() } }
         runCatching { apkDir(ctx).listFiles()?.forEach { it.deleteRecursively() } }
         runCatching { imgCache(ctx).listFiles()?.forEach { it.deleteRecursively() } }
+        // 附件落盘目录：打开/分享/保存每次都写一份，原来只增不减。
+        runCatching { File(ctx.filesDir, "attachments").listFiles()?.forEach { it.deleteRecursively() } }
     }
 }
