@@ -58,6 +58,11 @@ internal class SessionRuntime(val id: String) {
      */
     val probing = java.util.concurrent.atomic.AtomicBoolean(false)
     @Volatile var finished: Boolean = false
+    /**
+     * 用户在「run 还没建好」的那段窗口里点了停止：startRun 是同步 HTTP，协程取消拦不住它，
+     * 请求返回后必须据这个标记补发一次 stopRun，否则服务端任务会照跑下去（界面却已显示停止）。
+     */
+    @Volatile var stopRequested: Boolean = false
     /** 这条 run 是重开 App 后从落盘标记恢复的（没有本地发送上下文，拿不到位置锚点）。 */
     @Volatile var resumed: Boolean = false
     @Volatile var startedAt: Long = 0L
