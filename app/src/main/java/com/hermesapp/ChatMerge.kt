@@ -140,10 +140,23 @@ internal fun mergeByUserAnchor(local: List<Msg>, srv: List<Msg>): List<Msg> {
         val out = mutableListOf<Msg>()
         val outNorm = mutableListOf<String>()
         var added = 0
+        var filled = 0
         for (si in st.indices) {
             val li = srv2loc[si]
             val row = when {
-                li != null -> seg[li]
+                li != null -> {
+                    // 命中服务端行：默认吐本地行（保住内联图片/trace/runId/计时）。
+                    // 但本地那条正文若是残缺/被截断的（长度短于服务端、且被服务端包含），
+                    // 会让断线重连后一直显示截断内容——此时只把正文与 pending 换成服务端完整版，
+                    // 其余元数据原样保留。
+                    val loc = seg[li]
+                    val nLocal = norm(loc.text)
+                    val nSrv = norm(st[si].text)
+                    if (nLocal.length < nSrv.length && nSrv.contains(nLocal)) {
+                        filled++
+                        loc.copy(text = st[si].text, pending = false)
+                    } else loc
+                }
                 st[si].role == "assistant" && st[si].text.isNotBlank() -> { added++; st[si].copy(pending = false) }
                 else -> st[si]
             }
@@ -161,9 +174,9 @@ internal fun mergeByUserAnchor(local: List<Msg>, srv: List<Msg>): List<Msg> {
         for (k in seg.indices) {
             if (seg[k].role != "assistant" || seg[k].text.isBlank()) out.add(seg[k])
         }
-        if (added > 0) {
+        if (added > 0 || filled > 0) {
             AppLog.log("sync", "合并补齐助手正文 本地块=" + lt.size + " 服务端块=" + st.size +
-                " 补入=" + added)
+                " 补入=" + added + " 补全=" + filled)
         }
         return out
     }

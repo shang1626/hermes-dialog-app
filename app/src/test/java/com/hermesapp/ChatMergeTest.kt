@@ -35,6 +35,38 @@ class ChatMergeTest {
     }
 
     @Test
+    fun merge_fills_truncated_local_answer_with_server_full_text() {
+        // 断线重连：本地只收到半截正文，服务端是完整版——必须被补齐
+        val local = listOf(u("问题"), a("短答案"))
+        val srv = listOf(u("问题"), a("短答案，新增关键说明"))
+        val merged = mergeByUserAnchor(local, srv)
+        val ans = merged.last { it.role == "assistant" }
+        assertEquals("短答案，新增关键说明", ans.text)
+    }
+
+    @Test
+    fun merge_keeps_local_metadata_when_filling_text() {
+        // 补齐正文时不能丢掉本地独有的元数据（trace / runId）
+        val local = listOf(u("q"), a("半截").copy(trace = "工具轨迹", runId = "run-1"))
+        val srv = listOf(u("q"), a("半截，完整版"))
+        val merged = mergeByUserAnchor(local, srv)
+        val ans = merged.last { it.role == "assistant" }
+        assertEquals("半截，完整版", ans.text)
+        assertEquals("工具轨迹", ans.trace)
+        assertEquals("run-1", ans.runId)
+    }
+
+    @Test
+    fun merge_keeps_longer_local_answer() {
+        // 本地更长（服务端压缩改写）时不能反向截短
+        val local = listOf(u("q"), a("很长的本地正文内容"))
+        val srv = listOf(u("q"), a("很短"))
+        val merged = mergeByUserAnchor(local, srv)
+        val ans = merged.last { it.role == "assistant" }
+        assertEquals("很长的本地正文内容", ans.text)
+    }
+
+    @Test
     fun merge_skips_server_user_row_not_present_locally() {
         // 服务端被压缩删掉的老用户消息：本地没有也不该凭空补进来
         val local = listOf(u("第二问"), a("第二答"))
