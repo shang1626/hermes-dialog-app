@@ -1,3 +1,20 @@
+## 2.144 — versionCode 155
+
+按同事评估报告核实后，把「属实且用户可感知」的 5 条缺陷修完（结构性大工程另开专题）。
+
+- **历史归档重复膨胀（P2-4）**：超 300 条时被裁掉的老消息每次保存都重复追加进 `.archive.json`，归档无限膨胀。改为按 role+ts+正文签名去重，归档只提交新增消息；归档改为保留完整字段（轨迹/附件/引用/runId），并新增 `loadArchiveMessages`/`archiveCount` 读回入口。
+- **残缺回复遮完整回复（P2-5）**：断线重连后，本地被截断的回复会一直盖住服务端完整版。合并时命中服务端行且本地正文更短被包含时，只把正文换成服务端完整版，本地 trace/runId/计时原样保留。新增 3 条回归测试。
+- **序号领先落盘（P2-6）**：SSE 恢复序号可能领先于已落盘的消息，进程被杀会跳过未保存内容。改为「先取 seq 再取 msgs」的快照顺序，且 `saveMessages` 返回 Boolean——只有写盘成功才推进 lastSeq。
+- **停止竞态（P1-2）**：run 还没建好时点停止，服务端任务仍会继续跑。`SessionRuntime` 加 `stopRequested` 标记，startRun 返回后若已请求停止就补发 stopRun 并收尾。
+- **语音竞态（P2-8）**：点重播后立即停止、或 A→B 快速切换，晚到的下载线程仍会起播。`VoiceReplayPlayer`/`VoicePlayer` 各加播放代际号，stop/切换时代际 +1，旧线程不再起播。
+- **文档矛盾（P2-10）**：`docs/README.md` 第 37 行 `./gradlew` 改成真实 release 命令；修正「配置在 Keys.kt」的过时描述（实际走 BuildConfig/local.properties）。
+
+未修（保留）：P1-1 身份隔离、P1-3 一包两套密钥、P2-7 退出后旧通知——属「多人分发才触发」，继续自用不值得现在动；P2-9 大附件 OOM 低概率。
+
+（改 ChatMerge.kt / ChatViewModel.kt / RuntimeHub.kt / SessionStore.kt / VoicePlayer.kt / VoiceReplayPlayer.kt / docs/README.md / app/build.gradle.kts；新增 ChatMergeTest 3 例）
+
+---
+
 ## 2.143 — versionCode 154
 
 按同事评估报告核实后，把剩余 7 条小项全部修完（结构性大工程另开专题）。
