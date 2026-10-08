@@ -3808,6 +3808,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun streamRun(a: HermesApi, sid: String) {
+        // 状态收敛：streamGen 的读-改-写与所有事件回调必须在同一线程串行。
+        // 否则 IO 线程（maybeContinue 退避链）与 OkHttp 回调线程会并发改它，
+        // 这是历史上「重复播报 / 进度错乱」的共同根因。非主线程调用一律投回主线程。
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+            RuntimeHub.scope.launch { streamRun(a, sid) }
+            return
+        }
         val r = rt(sid)
         val rid = r.runId
         if (rid.isEmpty()) return
@@ -3826,8 +3833,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.call = a.streamEvents(
             runId = rid,
             lastSeq = r.lastSeq,
-            onEvent = { ev ->
-                if (gen != r.streamGen) return@streamEvents   // 已被新流取代，作废
+            onEvent = { ev -> RuntimeHub.scope.launch {
+                if (gen != r.streamGen) return@launch   // 已被新流取代，作废
                 if (ev.id != null) r.lastSeq = ev.id
                 r.lastEventAt = System.currentTimeMillis()
                 val name = ev.event ?: ev.data.optString("event", "")
@@ -3931,16 +3938,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         doneOk(sid)
                     }
                 }
-            },
-            onClosed = {
-                if (gen != r.streamGen) return@streamEvents   // 已被新流取代，作废
+            } },
+            onClosed = { RuntimeHub.scope.launch {
+                if (gen != r.streamGen) return@launch   // 已被新流取代，作废
                 r.coalescer?.flushNow()
                 AppLog.log("stream", "流关闭 run=" + rid.take(12) + " busy=" + r.busy.value + " finished=" + r.finished + " lastSeq=" + r.lastSeq +
                     " 本轮共收事件=" + r.evCount + " 其中工具=" + r.toolCount)
                 if (r.busy.value && !r.finished) maybeContinue(sid)
-            },
-            onError = { e ->
-                if (gen != r.streamGen) return@streamEvents   // 已被新流取代，作废
+            } },
+            onError = { e -> RuntimeHub.scope.launch {
+                if (gen != r.streamGen) return@launch   // 已被新流取代，作废
                 AppLog.err("stream", "流出错 run=" + rid.take(12) + " busy=" + r.busy.value + " finished=" + r.finished +
                     " 本轮共收事件=" + r.evCount + " 其中工具=" + r.toolCount, e)
                 // 不再往正文塞「[连接断开]」——断流期间的提示统一走 retryNote（气泡上方一行），
@@ -3960,10 +3967,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         maybeContinue(sid)
                     }
                 }
-            },
+            } },
             // 心跳等任何一行都刷新活跃时间：长工具执行期间只有心跳、没有真实事件，
             // 不刷就会让「回到前台」的 25 秒看门狗把健康流误判成假死（用户报的「一直在重连」）。
-            onActivity = { if (gen == r.streamGen) r.lastEventAt = System.currentTimeMillis() }
+            onActivity = { RuntimeHub.scope.launch { if (gen == r.streamGen) r.lastEventAt = System.currentTimeMillis() } }
         )
     }
 
