@@ -79,11 +79,9 @@ object AppLog {
         if (c == null) return
         while (pending.size > MAX_PENDING) pending.poll()   // 极端情况丢最旧的，绝不无界增长
         pending.add(line)
-        if (tag.startsWith("ERROR")) {
-            drainToFile(c)          // 错误行立即落盘
-        } else {
-            ensureWriter(c)
-        }
+        // 错误行也走写线程：原来 ERROR 行当场调 drainToFile，与 400ms
+        // 写线程并发 appendText/trim 同一文件，会丢行或撕裂行。
+        ensureWriter(c)
     }
 
     /** 唯一写线程：每 400ms 批量落盘一次，避免每条日志一次 open/write/close。 */
@@ -112,16 +110,20 @@ object AppLog {
 
     /** 把队列里的行一次性追加落盘。只有写线程（或 ERROR 行当场）会进来。 */
     private fun drainToFile(c: Context) {
-        if (pending.isEmpty()) return
-        val batch = StringBuilder()
-        while (true) {
-            val l = pending.poll() ?: break
-            batch.append(l).append('\n')
-        }
-        runCatching {
-            val f = File(c.filesDir, FILE)
-            f.appendText(batch.toString())
-            if (f.length() > MAX_FILE_BYTES) trim(f)
+        // 整个方法进同一把锁：写线程每 400ms 调、回后台/读日志时主线程
+        // flush() 也调，不锁会两边 appendText/trim 同一文件互相覆盖/撕裂行。
+        synchronized(lock) {
+            if (pending.isEmpty()) return
+            val batch = StringBuilder()
+            while (true) {
+                val l = pending.poll() ?: break
+                batch.append(l).append('\n')
+            }
+            runCatching {
+                val f = File(c.filesDir, FILE)
+                f.appendText(batch.toString())
+                if (f.length() > MAX_FILE_BYTES) trim(f)
+            }
         }
     }
 

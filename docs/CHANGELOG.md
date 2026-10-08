@@ -1,3 +1,20 @@
+## 2.142 — versionCode 153
+
+按同事评估报告核实后，继续修 6 处（都是实测属实的）。
+
+- **P1-7 恢复探测单飞位泄漏**：`resumeActiveRun` 的协程没有 `try/finally`，只在末尾 `resumingSids.remove`。`probeRun`/`ensureLoaded` 一旦抛异常，该 sid 永久留在集合里，该会话再也无法恢复探测。改为 `try/finally`。
+- **AppLog 并发丢行**：`ERROR` 行当场调 `drainToFile`，与 400ms 写线程并发 `appendText`/`trim` 同一文件；且 `flush()` 也在主线程调它。改为 ERROR 行只入队（统一走写线程），`drainToFile` 整段进锁。
+- **decodeDataUrl 无上限**：在 Compose 合成期主线程解码内联 base64，超大体会 OOM。加 48MB 上限。
+- **原子写缺 fsync**：`writeAtomic` 写 tmp 后未 fsync 就 rename，掉电可能留下「已改名但零长度」文件。改为写后用 `fd.sync()`。
+- **附件目录只增不减**：`filesDir/attachments/` 每次打开/分享/保存都写一份，`CacheUtil.clear` 没清它。加进清理。
+- **Markdown 围栏状态**：`parseMdBlocks` 无 fence 跟踪，代码块里的 `|` 表被当表格渲染。加 `inFence` 状态。
+
+未采纳（实测判错/高估）：P0-4 confirmReceipt（已有 finished 复位）、P0-3 语音队列（3 秒自愈）、SSE 解析器多行拼接（服务端单行 JSON）。结构性大工程（P1-1 跨线程状态、P1-2 上帝类、零测试）另开专题。
+
+（改 ChatViewModel.kt / AppLog.kt / Attachment.kt / SessionStore.kt / CacheUtil.kt / Markdown.kt）
+
+---
+
 ## 2.141 — versionCode 152
 
 按同事评估报告核实后，修 5 处（报告有 3 条判错/过时，已剔除，只做实测属实的）。

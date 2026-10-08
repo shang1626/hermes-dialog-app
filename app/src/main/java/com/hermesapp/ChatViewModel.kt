@@ -1343,6 +1343,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             // 同一会话的探测不许叠（两个前台事件可能并发进来）。
             if (!resumingSids.add(sid)) continue
             RuntimeHub.scope.launch(Dispatchers.IO) {
+              try {
                 // 开机时网络往往还没就绪，探测失败不能当成「任务已结束」——
                 // 那样会把活跃标记删掉，这条任务就永远回不来了。重试几次，
                 // 实在探不出来就保留标记，等下次进前台/切身份再试。
@@ -1445,7 +1446,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         if (sid == _currentId.value) refreshFromServer()
                     }
                 }
+              } finally {
+                // 无论成功/失败/抛异常都释放单飞位：原来只在末尾 remove，
+                // probeRun/ensureLoaded 一旦抛异常，该会话永久无法再恢复探测。
                 resumingSids.remove(sid)
+              }
             }
         }
     }

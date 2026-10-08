@@ -32,6 +32,8 @@ fun decodeDataUrl(dataUrl: String): DecodedData? {
     val isB64 = m.groupValues[2].isNotEmpty()
     val payload = m.groupValues[3]
     return try {
+        // 上限防 OOM：这个函数在 Compose 合成期主线程调用，超大内联体会直接崩。
+        if (isB64 && payload.length > 48_000_000) return null
         val bytes = if (isB64) Base64.decode(payload, Base64.DEFAULT) else payload.toByteArray()
         if (bytes.isEmpty()) null else DecodedData(mime, bytes)
     } catch (_: Exception) {
