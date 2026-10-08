@@ -66,6 +66,7 @@ class HermesApi(
 ) {
     private val client = OkHttpClient.Builder()
         .dns(IPv4FirstDns)
+        .protocols(listOf(Protocol.HTTP_1_1))
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
@@ -84,6 +85,7 @@ class HermesApi(
         // 真正的病根是「连着就走 IPv6 黑洞」+ 这里关着重试，见 IPv4FirstDns 的注释。
         // 重试必须打开：主 client 一直开着它才没报错（只是慢），探针关掉就等于把
         // 一次 IPv6 撞墙直接判成「离线 / 断线」。
+        .protocols(listOf(Protocol.HTTP_1_1))
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
@@ -104,6 +106,7 @@ class HermesApi(
      */
     private val streamClient = OkHttpClient.Builder()
         .dns(IPv4FirstDns)
+        .protocols(listOf(Protocol.HTTP_1_1))
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
@@ -147,35 +150,49 @@ class HermesApi(
      * 前者由各调用点自己判（sync / uploadImage 内部处理），不会走到这里。
      * 请求体都是 byte/string 构造的 RequestBody，可重放，重试安全；startRun 还带幂等键。
      */
-    private fun execWithFallback(req: Request): Response {
-        return try {
-            client.newCall(req).execute()
-        } catch (e: IOException) {
-            AppLog.log("http", "连接级失败，清池 + HTTP/1.1 兜底重试 " + req.method + " " +
-                req.url.encodedPath + " 原因=" + (e.message ?: "?"))
-            runCatching { client.connectionPool.evictAll() }
-            h1Client.newCall(req).execute()
+    /**
+     * 执行请求并读出响应体文本，遇到**连接级失败**（含读 body 时被对端重置）自动重试一次。
+     *
+     * 2026-10-08 实测（2.136 日志）：`stream was reset: INTERNAL_ERROR` 发生在**读响应体**
+     * 阶段，此时已进入 `.use { resp -> resp.body.string() }` 内部，包在 `.execute()` 外层的
+     * catch 根本看不到 —— 上一版兜底一次都没触发。故这里把「execute + read body」当一个整体重试。
+     *
+     * 两次都用强制 HTTP/1.1 的 [h1Client]：实测主 client（HTTP/2 复用长连接）被边缘
+     * 反复 RST_STREAM，而 HTTP/1.1 新建连接 10/10 成功。
+     */
+    private fun callText(req: Request): Pair<Int, String> {
+        var lastErr: IOException? = null
+        for (attempt in 0..1) {
+            try {
+                h1Client.newCall(req).execute().use { resp ->
+                    return resp.code to resp.body?.string().orEmpty()
+                }
+            } catch (e: IOException) {
+                lastErr = e
+                AppLog.log("http", "连接级失败(第" + (attempt + 1) + "次) " + req.method + " " +
+                    req.url.encodedPath + " 原因=" + (e.message ?: "?"))
+                runCatching { h1Client.connectionPool.evictAll() }
+            }
         }
+        throw lastErr ?: IOException("request failed")
     }
 
     private fun sync(req: Request): JSONObject {
         val t0 = System.currentTimeMillis()
-        execWithFallback(req).use { resp ->
-            val text = resp.body?.string().orEmpty()
-            val ms = System.currentTimeMillis() - t0
-            if (!resp.isSuccessful) {
-                AppLog.err("http", req.method + " " + req.url.encodedPath + " -> " + resp.code +
-                    " " + ms + "ms " + text.take(120))
-                throw IOException("HTTP " + resp.code + ": " + text.take(300))
-            }
-            AppLog.log("http", req.method + " " + req.url.encodedPath + " -> " + resp.code +
-                " " + ms + "ms len=" + text.length)
-            try {
-                return JSONObject(text)
-            } catch (e: Exception) {
-                AppLog.err("http", req.method + " " + req.url.encodedPath + " 响应非 JSON len=" + text.length, e)
-                throw e
-            }
+        val (code, text) = callText(req)
+        val ms = System.currentTimeMillis() - t0
+        if (code !in 200..299) {
+            AppLog.err("http", req.method + " " + req.url.encodedPath + " -> " + code +
+                " " + ms + "ms " + text.take(120))
+            throw IOException("HTTP " + code + ": " + text.take(300))
+        }
+        AppLog.log("http", req.method + " " + req.url.encodedPath + " -> " + code +
+            " " + ms + "ms len=" + text.length)
+        try {
+            return JSONObject(text)
+        } catch (e: Exception) {
+            AppLog.err("http", req.method + " " + req.url.encodedPath + " 响应非 JSON len=" + text.length, e)
+            throw e
         }
     }
 
@@ -216,18 +233,16 @@ class HermesApi(
             .post(bytes.toRequestBody(mt))
             .build()
         val t0 = System.currentTimeMillis()
-        execWithFallback(req).use { resp ->
-            val text = resp.body?.string().orEmpty()
-            val ms = System.currentTimeMillis() - t0
-            if (!resp.isSuccessful) {
-                AppLog.err("http", "POST /v1/artifacts/upload " + filename + " -> " + resp.code +
-                    " " + ms + "ms " + text.take(120))
-                throw IOException("HTTP " + resp.code + ": " + text.take(200))
-            }
-            AppLog.log("http", "POST /v1/artifacts/upload " + filename + " -> " + resp.code +
-                " " + ms + "ms " + bytes.size + "B")
-            return JSONObject(text).optString("artifact_id", "")
+        val (code, text) = callText(req)
+        val ms = System.currentTimeMillis() - t0
+        if (code !in 200..299) {
+            AppLog.err("http", "POST /v1/artifacts/upload " + filename + " -> " + code +
+                " " + ms + "ms " + text.take(120))
+            throw IOException("HTTP " + code + ": " + text.take(200))
         }
+        AppLog.log("http", "POST /v1/artifacts/upload " + filename + " -> " + code +
+            " " + ms + "ms " + bytes.size + "B")
+        return JSONObject(text).optString("artifact_id", "")
     }
 
     /**
