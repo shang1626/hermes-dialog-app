@@ -24,6 +24,13 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # 只装 platform-tools：默认值里的 `tools` 包在新版 SDK 已删除，
+          # 装了会让 sdkmanager 以 exit 1 失败（实测踩过）。
+          packages: 'platform-tools'
+
+      - name: Install Android platform 34 + build-tools 34.0.0
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
       - name: Set up Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
