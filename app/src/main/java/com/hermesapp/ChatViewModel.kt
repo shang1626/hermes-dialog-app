@@ -1812,64 +1812,57 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     seg[lastAsst] = seg[lastAsst].copy(text = sText, pending = false)
                 }
             }
-            // ② 本地这一块里「有正文的助手行」，按序与服务端助手行对齐（顺序贪心 +
-            // 正文包含判定）。判重放宽到「包含」：服务端压缩/改写会让同一段正文两侧
-            // 不完全等长，只比相等会把改写过的旧行当成新行，重复贴一条。
-            val localAsstIdx = seg.indices.filter { seg[it].role == "assistant" && seg[it].text.isNotBlank() }
-            val matched = IntArray(localAsstIdx.size) { -1 }
-            var sj = 0
-            for (i in localAsstIdx.indices) {
-                val n = norm(seg[localAsstIdx[i]].text)
-                while (sj < st.size) {
-                    val s = st[sj]
-                    if (s.role == "assistant" && s.text.isNotBlank()) {
-                        val ns = norm(s.text)
-                        if (ns == n || ns.contains(n) || n.contains(ns)) { matched[i] = sj; sj++; break }
-                    }
-                    sj++
-                }
-            }
-            // ③ 按服务端顺序重建这一块：走到本地某行时，先把它之前「服务端有、本地没有」的
-            // 助手行按序补进来，再放本地这行（保住内联图片、trace、runId 这些服务端没有的东西）。
+            // ② 本地「有正文的助手行」与服务端助手行做匹配（顺序贪心 + 正文包含判定）。
+            // 判重放宽到「包含」：服务端压缩/改写会让同一段正文两侧不完全等长，只比相等会把
+            // 改写过的旧行当成新行，重复贴一条。
             //
-            // 2026-10-08：以前这里是「本地有正文就原样返回，否则把服务端多出来的助手行 append
-            // 到块尾」。一轮里服务端落多条助手消息（中途解说 + 最终答复）时，若本地只收到
-            // 最终答复，那些中途解说会被 append 到最终答复**后面** —— 最终答复跑到整块最顶上，
-            // 过程文字全排在它下面，顺序整个颠倒（用户截图实测）。改成按服务端顺序前插。
-            val out = mutableListOf<Msg>()
-            val srvUsed = BooleanArray(st.size)
-            var sPtr = 0
-            var ai = 0
-            var added = 0
-            for (i in seg.indices) {
-                val m = seg[i]
-                if (ai < localAsstIdx.size && i == localAsstIdx[ai]) {
-                    val target = matched[ai]
-                    if (target >= 0) {
-                        while (sPtr < target) {
-                            val s = st[sPtr]
-                            if (s.role == "assistant" && s.text.isNotBlank() && !srvUsed[sPtr]) {
-                                out.add(s.copy(pending = false)); srvUsed[sPtr] = true; added++
-                            }
-                            sPtr++
-                        }
-                        out.add(m)
-                        srvUsed[target] = true
-                        sPtr = target + 1
-                    } else {
-                        out.add(m)
-                    }
-                    ai++
-                } else {
-                    out.add(m)
+            // ⚠️ 2026-10-08 修：**不能用共享游标单遍扫描**。本地行乱序时（最终答复曾被历史
+            // 版本 append 到块首），本地第一条就匹配到服务端最末行、游标跳到末尾，其后所有
+            // 本地行永远匹配不上 → 一边把服务端 0..N-1 当「本地没有」插进来、一边把它们当
+            // 「本地独有」追加 → 每次同步重复堆叠（实测 300→349→387…，且顺序仍颠倒）。改为
+            // 「在未匹配的本地行里找第一个命中」，乱序也能对齐。
+            val locIdx = seg.indices.filter { seg[it].role == "assistant" && seg[it].text.isNotBlank() }
+            val usedLoc = mutableSetOf<Int>()
+            val srv2loc = HashMap<Int, Int>()
+            for (si in st.indices) {
+                if (st[si].role != "assistant" || st[si].text.isBlank()) continue
+                val ns = norm(st[si].text)
+                for (li in locIdx) {
+                    if (li in usedLoc) continue
+                    val n = norm(seg[li].text)
+                    if (ns == n || ns.contains(n) || n.contains(ns)) { srv2loc[si] = li; usedLoc.add(li); break }
                 }
             }
-            while (sPtr < st.size) {
-                val s = st[sPtr]
-                if (s.role == "assistant" && s.text.isNotBlank() && !srvUsed[sPtr]) {
-                    out.add(s.copy(pending = false)); added++
+            // ③ 按服务端顺序重建这一块：命中就吐对应的本地行（保住内联图片、trace、runId
+            // 这些服务端没有的东西），没命中就吐服务端行。顺序完全跟随服务端（id 插入序），
+            // 本地乱序/缺失/多余的行都被纠正到正确位置。
+            //
+            // 2026-10-08：上一版是「按本地顺序遍历、边走边把服务端缺行前插」——本地行乱序时
+            // 只能插不能重排，最终答复被历史版本堆到块首后，新代码看「行都在了」一条不补，
+            // 顺序原样不动（用户报「重启+切会话没触发重排序」就是这个）。
+            val out = mutableListOf<Msg>()
+            val outNorm = mutableListOf<String>()
+            var added = 0
+            for (si in st.indices) {
+                val li = srv2loc[si]
+                val row = when {
+                    li != null -> seg[li]
+                    st[si].role == "assistant" && st[si].text.isNotBlank() -> { added++; st[si].copy(pending = false) }
+                    else -> st[si]
                 }
-                sPtr++
+                out.add(row); outNorm.add(norm(row.text))
+            }
+            // 本地未匹配上的助手行：正文已在 out 里出现过（包含判定）就跳过——这样对「已被
+            // 旧版堆叠污染」的块能自愈（实测 35/53 条 → 18 条），并保证重复合并幂等。
+            for (li in locIdx) {
+                if (li in usedLoc) continue
+                val n = norm(seg[li].text)
+                if (outNorm.any { it.isNotEmpty() && (it.contains(n) || n.contains(it)) }) continue
+                out.add(seg[li]); outNorm.add(n)
+            }
+            // 进行中的空气泡占位（服务端暂无对应正文时）与非助手行：保留到末尾，别丢。
+            for (k in seg.indices) {
+                if (seg[k].role != "assistant" || seg[k].text.isBlank()) out.add(seg[k])
             }
             if (added > 0) {
                 AppLog.log("sync", "合并补齐助手正文 本地块=" + lt.size + " 服务端块=" + st.size +
