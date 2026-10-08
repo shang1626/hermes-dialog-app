@@ -346,6 +346,20 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun requestScrollToMsg(msgId: Long) { if (msgId > 0) _scrollToMsg.value = msgId }
     fun consumeScrollToMsg() { _scrollToMsg.value = null }
 
+    /**
+     * 「滚到最新一条」的显式请求。用户自己发消息时必须无条件贴底——哪怕他此前
+     * 往上翻过历史（列表还能继续往下滚）。
+     *
+     * 为什么单独开一条通道：消息列表那个自动贴底的 LaunchedEffect 带
+     * `!canScrollForward` 守卫，本意是「流式输出期间别把翻历史的用户拽回底部」，
+     * 但它把「用户主动发送」也一起拦了——往上翻过之后再发消息，列表不跳（用户
+     * 2026-10-08 报障）。自发消息是明确的「我要看最新」意图，不能受该守卫影响。
+     * 用单调自增的 tick 而非布尔：连发两条也能各触发一次。
+     */
+    private val _scrollBottomTick = MutableStateFlow(0)
+    val scrollBottomTick = _scrollBottomTick.asStateFlow()
+    fun requestScrollBottom() { _scrollBottomTick.value = _scrollBottomTick.value + 1 }
+
     /** 打开/收起搜索栏。收起时清掉全部搜索态。 */
     fun toggleSearch() {
         if (_searchActive.value) clearSearch() else {
@@ -2032,6 +2046,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         )
         r.lastUserMsgId = userMsg.id
         setMsgs(r, r.messages.value + userMsg)
+        // 用户自己发了消息：无条件滚到最新一条（哪怕是排队发出、也先让他看见自己的气泡）。
+        requestScrollBottom()
         touchSession(if (wasEmpty) text.ifBlank { attachmentLabel(imgs) } else null)
         _pendingImages.value = emptyList()
         _quoteTarget.value = null
