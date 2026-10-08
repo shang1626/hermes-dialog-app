@@ -18,6 +18,7 @@ import java.net.Inet4Address
 import java.net.InetAddress
 import java.util.concurrent.TimeUnit
 import okhttp3.Dns
+import okhttp3.Protocol
 
 data class SseEvent(val id: Int?, val event: String?, val data: JSONObject)
 
@@ -109,6 +110,27 @@ class HermesApi(
         .retryOnConnectionFailure(true)
         .build()
 
+    /**
+     * HTTP/1.1 兜底 client：只在主 client 连接级失败时用一次。
+     *
+     * 2026-10-08 实测（App 运行日志 + 服务端日志对照）：上传 42KB 的 md 时 OkHttp 报
+     * `stream was reset: INTERNAL_ERROR`，约 300ms 就失败、重试一次同样失败，而**服务端
+     * 网关日志里完全没有这条请求**——说明请求在到达服务端之前就被对端发了 RST_STREAM。
+     * 同一个错误 15:46 在一次纯文字发送上也出现过（那次重试赶巧成功），所以它不是附件专属，
+     * 是 EdgeOne/阿里云盾（sl-antibot）对**复用的 HTTP/2 长连接**偶发重置。
+     *
+     * curl 每次新建连接故不复现（真实入口连测 10 次全部 201）；HTTP/1.1 没有 RST_STREAM 这套帧，
+     * 换协议重发即可绕开。故本 client 强制 HTTP/1.1、其余参数与主 client 一致。
+     */
+    private val h1Client = OkHttpClient.Builder()
+        .dns(IPv4FirstDns)
+        .protocols(listOf(Protocol.HTTP_1_1))
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .build()
+
     private val jsonType = "application/json; charset=utf-8".toMediaType()
 
     private fun full(path: String) = baseUrl.trimEnd('/') + prefix + path
@@ -117,9 +139,28 @@ class HermesApi(
         .url(full(path))
         .header("Authorization", "Bearer " + apiKey)
 
+    /**
+     * 执行一次请求；遇到「连接被对端重置」这类**非 HTTP 回执**的 IOException 时，
+     * 先清空连接池（丢掉那条被边缘掐死的复用长连接），再用 HTTP/1.1 兜底重试一次。
+     *
+     * 为什么放在这一层：HTTP 4xx/5xx 是服务端明确回答，与「连接级故障」是两回事，
+     * 前者由各调用点自己判（sync / uploadImage 内部处理），不会走到这里。
+     * 请求体都是 byte/string 构造的 RequestBody，可重放，重试安全；startRun 还带幂等键。
+     */
+    private fun execWithFallback(req: Request): Response {
+        return try {
+            client.newCall(req).execute()
+        } catch (e: IOException) {
+            AppLog.log("http", "连接级失败，清池 + HTTP/1.1 兜底重试 " + req.method + " " +
+                req.url.encodedPath + " 原因=" + (e.message ?: "?"))
+            runCatching { client.connectionPool.evictAll() }
+            h1Client.newCall(req).execute()
+        }
+    }
+
     private fun sync(req: Request): JSONObject {
         val t0 = System.currentTimeMillis()
-        client.newCall(req).execute().use { resp ->
+        execWithFallback(req).use { resp ->
             val text = resp.body?.string().orEmpty()
             val ms = System.currentTimeMillis() - t0
             if (!resp.isSuccessful) {
@@ -175,7 +216,7 @@ class HermesApi(
             .post(bytes.toRequestBody(mt))
             .build()
         val t0 = System.currentTimeMillis()
-        client.newCall(req).execute().use { resp ->
+        execWithFallback(req).use { resp ->
             val text = resp.body?.string().orEmpty()
             val ms = System.currentTimeMillis() - t0
             if (!resp.isSuccessful) {

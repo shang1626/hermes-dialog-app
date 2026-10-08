@@ -489,6 +489,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val _online = MutableStateFlow(false)
     val online = _online.asStateFlow()
 
+    /**
+     * 顶栏显示的服务器 CPU 使用率（百分比；-1 = 还没取到，界面不显示）。
+     * 与在线心跳同拍（每 5 秒）拉一次 /health/sysinfo，失败保留上一次的值——
+     * 偶发一次超时不该让数字跳成空白。颜色由界面按阈值上色（低绿/中黄/高红）。
+     */
+    private val _cpuPercent = MutableStateFlow(-1.0)
+    val cpuPercent = _cpuPercent.asStateFlow()
+
     private val _statusSections = MutableStateFlow<List<StatusSection>>(emptyList())
     val statusSections = _statusSections.asStateFlow()
 
@@ -2010,6 +2018,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         AppLog.log("net", "探测失败第 " + fails + " 次（最近成功=" + recentlyOk + "），暂不标离线")
                     }
                 }
+                // 顶栏 CPU 百分比：与心跳同拍（每 5 秒）拉一次，失败保留上次值（不闪空）。
+                runCatching {
+                    val h = api?.sysinfo()
+                    if (h != null) {
+                        val p = h.optDouble("cpu_percent", -1.0)
+                        if (p >= 0) _cpuPercent.value = p
+                    }
+                }
                 // 每 30 秒静默查一次更新：发新版后角标自动亮起，不必等下次启动。
                 tick++
                 if (tick % 6 == 0) checkUpdateSilently()
@@ -3262,7 +3278,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 if (!httpReject && idemKey.isNotEmpty() && autoRetryLeft > 0) {
                     dropEmptyPending(r)
                     r.retryNote.value = "发送未确认，正在自动重试…"
-                    delay(2000)
+                    delay(3500)
                     // 附件已传完就复用那份 id（保证指纹一致、能命中重放）；
                     // 上传阶段就断了则重新上传（此时服务端没记下任何键，不会冲突）。
                     startRunWith(
