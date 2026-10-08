@@ -20,6 +20,9 @@ import java.util.concurrent.TimeUnit
 import okhttp3.Dns
 import okhttp3.Protocol
 
+/** 单个附件下载上限：超过直接拒绝（服务端下行上限 50MB，这里留一倍余量）。 */
+private const val MAX_MEDIA_BYTES = 100L * 1024 * 1024
+
 data class SseEvent(val id: Int?, val event: String?, val data: JSONObject)
 
 /** Hermes 本地补丁：随 /v1/runs 一起内联上传的附件（绕开被边缘拦截的 /v1/artifacts/upload）。 */
@@ -318,7 +321,28 @@ class HermesApi(
                 AppLog.err("http", "GET /v1/media/... -> " + resp.code + " " + ms + "ms " + text.take(120))
                 throw IOException("HTTP " + resp.code + ": " + text.take(200))
             }
-            val bytes = resp.body?.bytes() ?: ByteArray(0)
+            val body = resp.body ?: return ByteArray(0)
+            // 大附件不再整包读进内存：先看声明长度，超上限直接拒绝；长度未知就边读边累计，
+            // 一旦超过上限立刻中止。老版 body.bytes() 会把整个文件读进堆，超大附件直接 OOM 闪退。
+            val declared = body.contentLength()
+            if (declared > MAX_MEDIA_BYTES) {
+                AppLog.log("http", "媒体超上限 声明=" + declared + "B 上限=" + MAX_MEDIA_BYTES + "B")
+                throw IOException("TOO_LARGE:" + declared)
+            }
+            val buf = ByteArray(64 * 1024)
+            val out = java.io.ByteArrayOutputStream(if (declared > 0) declared.toInt() else 64 * 1024)
+            body.byteStream().use { input ->
+                while (true) {
+                    val n = input.read(buf)
+                    if (n <= 0) break
+                    if (out.size() + n > MAX_MEDIA_BYTES) {
+                        AppLog.log("http", "媒体读取超上限，中止 已读=" + (out.size() + n) + "B")
+                        throw IOException("TOO_LARGE:" + (out.size() + n))
+                    }
+                    out.write(buf, 0, n)
+                }
+            }
+            val bytes = out.toByteArray()
             AppLog.log("http", "GET /v1/media/... -> " + resp.code + " " + ms + "ms " + bytes.size + "B")
             return bytes
         }

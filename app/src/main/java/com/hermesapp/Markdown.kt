@@ -435,7 +435,12 @@ private fun MdAttachmentCard(name: String, dataUrl: String, token: String) {
                     val bytes = withContext(Dispatchers.IO) { MediaFetch.download(token) }
                     busy = false
                     if (bytes != null && bytes.isNotEmpty()) action(DecodedData(guessMime(name), bytes))
-                    else AppLog.log("attach", "网关托管附件下载失败 name=" + name)
+                    else {
+                        // 分享/保存与「打开」提示策略对齐：静默失败用户分不清是没成功还是没点到。
+                        val why = MediaFetch.lastError.ifEmpty { "文件下载不到" }
+                        AppLog.log("attach", "附件下载失败（分享/保存）" + why + " name=" + name)
+                        Toast.makeText(ctx, "下载失败：" + why, Toast.LENGTH_LONG).show()
+                    }
                 }
             }
         }
@@ -458,8 +463,9 @@ private fun MdAttachmentCard(name: String, dataUrl: String, token: String) {
                             if (bytes != null && bytes.isNotEmpty()) {
                                 openAttachment(ctx, name, DecodedData(guessMime(name), bytes))
                             } else {
-                                AppLog.log("attach", "打开失败：网关托管附件下载不到 name=" + name)
-                                Toast.makeText(ctx, "打开失败：文件下载不到", Toast.LENGTH_SHORT).show()
+                                val why = MediaFetch.lastError.ifEmpty { "文件下载不到" }
+                                AppLog.log("attach", "打开失败：" + why + " name=" + name)
+                                Toast.makeText(ctx, "打开失败：" + why, Toast.LENGTH_LONG).show()
                             }
                         }
                     }
