@@ -625,6 +625,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val _imageNote = MutableStateFlow("")
     val imageNote = _imageNote.asStateFlow()
 
+    /** 诊断上报结果文案（空表示本次未操作过）。 */
+    private val _diagNote = MutableStateFlow("")
+    val diagNote = _diagNote.asStateFlow()
+
     // ---------- 会话内搜索（只搜当前会话的本地消息） ----------
 
     /** 搜索栏是否展开。 */
@@ -1631,8 +1635,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * 以及服务端「请上报」标记的自动轮询——避免不经意间越攒越多）。不走节流：点了就传。
      */
     fun uploadDiagNow() {
-        val a = api ?: return
+        val a = api
+        if (a == null) {
+            _diagNote.value = "上报失败：还没配置服务器地址"
+            return
+        }
         val reason = "manual"
+        _diagNote.value = "上报中…"
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val log = AppLog.read(getApplication())
@@ -1642,10 +1651,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val crash = runCatching { CrashLog.read(getApplication()) }.getOrDefault("")
                 val fault = runCatching { CrashLog.readFault(getApplication()) }.getOrDefault("")
                 val res = a.uploadAppLog(log, snap, ver, ver, reason, crash, fault)
+                val ok = res.optBoolean("ok", false)
+                val name = res.optString("name", "")
+                val now = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+                    .format(java.util.Date())
+                _diagNote.value = if (ok) "已上报 ✓ " + now + "（日志 " + log.length + " 字）"
+                    else "上报失败：服务端没确认"
                 AppLog.log("diag", "上报诊断 reason=" + reason + " log=" + log.length + "字 crash=" +
-                    crash.length + "字 fault=" + fault.length + "字 -> " +
-                    res.optBoolean("ok", false) + " name=" + res.optString("name", ""))
+                    crash.length + "字 fault=" + fault.length + "字 -> " + ok + " name=" + name)
             } catch (e: Exception) {
+                _diagNote.value = "上报失败：" + (e.message ?: "?")
                 AppLog.err("diag", "上报诊断失败 reason=" + reason, e)
             }
         }
@@ -3052,7 +3067,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             if (!dst.exists()) p.file.copyTo(dst, overwrite = true)
             if (p.file.absolutePath != dst.absolutePath) p.file.delete()
             dst to android.net.Uri.fromFile(dst).toString()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            AppLog.err("attach", "落盘失败，退回原文件 name=" + p.file.name, e)
             p.file to p.uri
         }
     }
@@ -3065,6 +3081,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val (name, size) = queryNameSize(app, uri)
                 if (size > 20L * 1024 * 1024) {
                     _imageNote.value = "图片超过 20MB：" + name
+                    AppLog.log("attach", "选图失败：超过 20MB name=" + name + " size=" + size + "B")
                     return@launch
                 }
                 val dir = File(app.filesDir, "outbox").apply { mkdirs() }
@@ -3076,14 +3093,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     dst.outputStream().use { out -> input.copyTo(out) }
                 } ?: run {
                     _imageNote.value = "读取图片失败"
+                    AppLog.log("attach", "选图失败：读不到内容 uri=" + uri)
                     return@launch
                 }
                 if (_pendingImages.value.size >= 10) {
                     _imageNote.value = "最多 10 个附件"
+                    AppLog.log("attach", "选图失败：已达上限 10 个 name=" + name)
                     dst.delete()
                     return@launch
                 }
                 _imageNote.value = ""
+                AppLog.log("attach", "已选图 name=" + name + " size=" + size + "B -> " + dst.name)
                 _pendingImages.value = _pendingImages.value + PendingImage(Msg.nextMsgId(), uri.toString(), dst, isImage = true)
             } catch (e: Exception) {
                 AppLog.err("attach", "读取图片失败 uri=" + uri, e)
@@ -3100,6 +3120,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val (name, size) = queryNameSize(app, uri)
                 if (size > 50L * 1024 * 1024) {
                     _imageNote.value = "文件超过 50MB：" + name
+                    AppLog.log("attach", "选文件失败：超过 50MB name=" + name + " size=" + size + "B")
                     return@launch
                 }
                 val dir = File(app.filesDir, "outbox").apply { mkdirs() }
@@ -3111,15 +3132,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     dst.outputStream().use { out -> input.copyTo(out) }
                 } ?: run {
                     _imageNote.value = "读取文件失败"
+                    AppLog.log("attach", "选文件失败：读不到内容 uri=" + uri)
                     return@launch
                 }
                 if (_pendingImages.value.size >= 10) {
                     _imageNote.value = "最多 10 个附件"
+                    AppLog.log("attach", "选文件失败：已达上限 10 个 name=" + name)
                     dst.delete()
                     return@launch
                 }
                 val isImg = ext in setOf("png", "jpg", "jpeg", "gif", "webp", "bmp")
                 _imageNote.value = ""
+                AppLog.log("attach", "已选文件 name=" + name + " size=" + size + "B ext=" + ext + " -> " + dst.name)
                 _pendingImages.value = _pendingImages.value + PendingImage(Msg.nextMsgId(), uri.toString(), dst, isImage = isImg)
             } catch (e: Exception) {
                 AppLog.err("attach", "读取文件失败 uri=" + uri, e)
@@ -3130,8 +3154,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun removeImage(id: Long) {
         val list = _pendingImages.value
-        list.firstOrNull { it.id == id }?.file?.delete()
+        val gone = list.firstOrNull { it.id == id }
+        gone?.file?.delete()
         _pendingImages.value = list.filter { it.id != id }
+        AppLog.log("attach", "移除附件 name=" + (gone?.file?.name ?: "?") + " 剩余=" + _pendingImages.value.size)
     }
 
     private fun queryNameSize(ctx: Context, uri: Uri): Pair<String, Long> {
@@ -3192,6 +3218,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.autoContinue = 0
         r.resumed = false
         updateRunService()
+        if (files.isNotEmpty()) {
+            AppLog.log("attach", "本轮附件 " + files.size + " 个: " + files.joinToString(", ") { it.name + "(" + it.length() + "B)" })
+        }
         val ids = mutableListOf<String>()
         var uploadsDone = reuseArtifacts.isNotEmpty()
         viewModelScope.launch(Dispatchers.IO) {
@@ -3202,7 +3231,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     for ((i, f) in files.withIndex()) {
                         _imageNote.value = "上传附件 ${i + 1}/${files.size}…"
-                        ids.add(a.uploadImage(f.readBytes(), f.name, mimeOf(f)))
+                        val bytes = f.readBytes()
+                        AppLog.log("attach", "上传 ${i + 1}/${files.size} name=" + f.name + " mime=" + mimeOf(f) + " " + bytes.size + "B")
+                        ids.add(a.uploadImage(bytes, f.name, mimeOf(f)))
                     }
                     uploadsDone = true
                 }
