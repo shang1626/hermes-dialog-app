@@ -92,8 +92,10 @@ class SessionStore(ctx: Context, private val profile: String) {
     fun diagSummary(): String {
         val idx = indexFile()
         val files = dir.listFiles()?.filter { it.isFile } ?: emptyList()
-        val idxFiles = files.filter { it.name.startsWith("sessions_") }
-        val chatFiles = files.filter { it.name.startsWith("chat_") }
+        // 排除原子写留下的 .bak/.tmp：它们不是会话本身，算进去会让「消息文件 N 个 / X 字节」
+        // 虚高近一倍，而这条诊断正是为排查「历史对话没了」准备的，数字不能失真。
+        val idxFiles = files.filter { it.name.startsWith("sessions_") && !it.name.endsWith(".bak") && !it.name.endsWith(".tmp") }
+        val chatFiles = files.filter { it.name.startsWith("chat_") && !it.name.endsWith(".bak") && !it.name.endsWith(".tmp") }
         val names = if (idxFiles.size <= 4) idxFiles.joinToString(",") { it.name }
                     else "共" + idxFiles.size + "个"
         return "索引[" + (if (idx.exists()) idx.name + "=" + idx.length() + "B" else idx.name + "=无") + "]" +
@@ -403,12 +405,15 @@ class SessionStore(ctx: Context, private val profile: String) {
     fun deleteMessages(id: String) {
         val f = msgFile(id)
         val ok = runCatching { f.delete() }.getOrDefault(false)
-        // 原子写留下的 .bak / .tmp 一并清掉：主文件删了，残留副本没有意义，
-        // 且下次读该会话时若主文件缺失会先命中 exists() 早退，不会误读 .bak，
-        // 但留着白占空间、也容易让人误以为会话还在。
-        synchronized(writeLock) {
-            runCatching { File(f.parentFile, f.name + ".bak").delete() }
-            runCatching { File(f.parentFile, f.name + ".tmp").delete() }
+        // 只有主文件真的删掉了才清备份。删失败（文件被占用 / 权限）时把 .bak 留着，
+        // 下次还能靠它把内容捞回来——先删备份等于把唯一退路也断了。
+        if (ok) {
+            synchronized(writeLock) {
+                runCatching { File(f.parentFile, f.name + ".bak").delete() }
+                runCatching { File(f.parentFile, f.name + ".tmp").delete() }
+            }
+        } else {
+            AppLog.err("store", "删消息文件失败，保留备份 id=" + id.take(8), null)
         }
         AppLog.log("store", "删消息文件 id=" + id.take(8) + " 删除=" + ok)
     }
