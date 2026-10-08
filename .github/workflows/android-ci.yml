@@ -1,0 +1,52 @@
+name: android-ci
+
+# 阶段1 门禁：防「编不过的代码进主干」。
+# 本仓源码不含任何密钥：build.gradle.kts 的 buildConfigField 全部走 cfg()，
+# local.properties 缺失时回落空串，所以 CI 无密钥也能编过。
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      # 单测：阶段2 起才会有实际内容，现在无测试也应绿。
+      - name: Unit tests
+        run: gradle test --no-daemon --stacktrace
+
+      # release 编译（含 R8 + lintVitalRelease）：硬门禁。
+      - name: Assemble release
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      # 全量 lint 先做软门禁：只报不阻断，观察一轮再收紧。
+      - name: Lint (soft gate)
+        continue-on-error: true
+        run: gradle lint --no-daemon
+
+      - name: Upload APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release
+          path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: ignore
