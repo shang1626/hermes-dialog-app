@@ -1279,6 +1279,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         startRunFlagsTicker()
         drainPendingReply()
         checkUpdateSilently()
+        // 启动就上报一次（节流 30 分钟）：出问题不用用户手动发日志。
+        maybeUploadDiag("startup")
     }
 
     /**
@@ -1582,6 +1584,96 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         syncFromServer(30_000L)
         // 回前台把当前会话与服务端对齐一次（正文，不只是标题）。
         syncOnForeground()
+        // 回前台顺手看看服务端是否请求过「请上报诊断」，并按需自动上报（节流）。
+        pollDiagRequest()
+        maybeUploadDiag("foreground")
+    }
+
+    // ---- 诊断上报（App → 服务端，不用用户再发日志/截图）------------------------------------
+
+    @Volatile private var lastDiagUploadAt = 0L
+    @Volatile private var lastDiagPendingPollAt = 0L
+    @Volatile private var lastDiagRequestAt = 0L
+
+    /**
+     * 造一份「紧凑状态快照」：每个本地会话的 id/标题/条数 + 末尾几条消息的角色+开头几十字+时间。
+     * 只要状态摘要，不要正文全文——目的是让 agent 能把「App 看到的顺序/条数」和「服务端真实数据」
+     * 直接对上，一眼看出差在哪。
+     */
+    private fun diagSnapshot(): JSONObject {
+        val snap = JSONObject()
+        val now = System.currentTimeMillis()
+        snap.put("now", now)
+        snap.put("profile", prefs.profile)
+        snap.put("currentSessionId", _currentId.value ?: "")
+        val arr = org.json.JSONArray()
+        for (s in _sessions.value) {
+            val r = runtimes[s.id] ?: continue
+            val o = JSONObject()
+            o.put("id", s.id)
+            o.put("title", s.title)
+            o.put("updatedAt", s.updatedAt)
+            val msgs = r.messages.value
+            o.put("localCount", msgs.size)
+            o.put("busy", r.busy.value)
+            o.put("runId", r.runId)
+            val tail = org.json.JSONArray()
+            for (m in msgs.takeLast(6)) {
+                val mo = JSONObject()
+                mo.put("role", m.role)
+                mo.put("ts", m.ts)
+                mo.put("len", m.text.length)
+                mo.put("head", m.text.take(60))
+                tail.put(mo)
+            }
+            o.put("tail", tail)
+            arr.put(o)
+        }
+        snap.put("sessions", arr)
+        return snap
+    }
+
+    /** 上报一次运行日志 + 状态快照。节流：默认 30 分钟内不重复自动上报。 */
+    fun maybeUploadDiag(reason: String) {
+        val a = api ?: return
+        val now = System.currentTimeMillis()
+        if (reason != "manual" && now - lastDiagUploadAt < 30 * 60_000L) return
+        lastDiagUploadAt = now
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val log = AppLog.read(getApplication())
+                val ver = AppLog.env(getApplication())
+                val snap = runCatching { diagSnapshot() }.getOrNull()
+                val res = a.uploadAppLog(log, snap, ver, ver, reason)
+                AppLog.log("diag", "上报诊断 reason=" + reason + " log=" + log.length + "字 -> " +
+                    res.optBoolean("ok", false) + " name=" + res.optString("name", ""))
+            } catch (e: Exception) {
+                AppLog.err("diag", "上报诊断失败 reason=" + reason, e)
+            }
+        }
+    }
+
+    /** 手动「立即上报诊断」（设置页按钮）：不走节流。 */
+    fun uploadDiagNow() = maybeUploadDiag("manual")
+
+    /** 轮询服务端是否请求过「请上报」：是则自动上报一次（节流 60 秒，防重复触发）。 */
+    private fun pollDiagRequest() {
+        val a = api ?: return
+        val now = System.currentTimeMillis()
+        if (now - lastDiagPendingPollAt < 60_000L) return
+        lastDiagPendingPollAt = now
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val r = a.applogPending()
+                if (r.optBoolean("requested", false) && now - lastDiagRequestAt > 60_000L) {
+                    lastDiagRequestAt = now
+                    AppLog.log("diag", "服务端请求上报，自动上报一次")
+                    maybeUploadDiag("requested")
+                }
+            } catch (e: Exception) {
+                AppLog.err("diag", "轮询上报请求失败", e)
+            }
+        }
     }
 
     /**
@@ -4173,6 +4265,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         drainQueue(sid)   // 本轮结束：把排队的下一条发出去
         // 本轮跑完：服务端此刻多半已生成了正式标题，同步一次（节流 5 秒）。
         syncFromServer(5_000L)
+        // 本轮跑完也顺手看一眼诊断上报（节流 30 分钟）：出问题时不用用户手动发日志。
+        maybeUploadDiag("turn")
     }
 
     /**
