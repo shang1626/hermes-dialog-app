@@ -85,4 +85,8 @@ dependencies {
     // 流式语音播放（方案丙）：边收 audio.delta 块边播，不用等整段合成完。
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-datasource:1.4.1")
+
+    // Unit tests (stage 2). Pure JVM, no device/emulator needed.
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
 }

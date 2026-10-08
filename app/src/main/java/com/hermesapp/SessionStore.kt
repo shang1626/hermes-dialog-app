@@ -45,47 +45,14 @@ class SessionStore(ctx: Context, private val profile: String) {
 
     private fun indexFile() = File(dir, "sessions_$profile.json")
 
-    /** 同一文件的写盘串行锁：两个协程并发写同一份 JSON 会交错截断，留下半截文件。 */
-    private val writeLock = Any()
+    /** 原子写/回退：逻辑抽到 AtomicStore（纯 java.io，便于单测），此处仅委托。 */
+    private fun writeAtomic(f: File, text: String) = AtomicStore.writeAtomic(f, text)
 
-    /**
-     * 原子写：先写 .tmp，成功后再改名覆盖，并把旧内容留一份 .bak。
-     *
-     * 为什么必须这样做：原来直接 writeText 一次性覆盖，进程在写盘途中被杀 / 磁盘满，
-     * 留下的是半截 JSON；loadIndex 把解析异常吞掉返回空列表，界面表现就是「历史对话整片没了」。
-     * 同目录内改名是原子的：读到的要么是旧完整版、要么是新完整版，不会是半截。
-     */
-    private fun writeAtomic(f: File, text: String) {
-        synchronized(writeLock) {
-            val tmp = File(f.parentFile, f.name + ".tmp")
-            // fsync 后再 rename：否则掉电可能留下「已改名但零长度」的文件
-            // （rename 原子，但 tmp 内容可能还在页缓存里）。
-            java.io.FileOutputStream(tmp).use { os ->
-                os.write(text.toByteArray(Charsets.UTF_8))
-                os.fd.sync()
-            }
-            if (f.exists()) {
-                runCatching { f.copyTo(File(f.parentFile, f.name + ".bak"), overwrite = true) }
-            }
-            if (!tmp.renameTo(f)) {
-                // 改名失败（极少数文件系统）：退回直接写，内容仍是对的，并清掉临时文件。
-                f.writeText(text)
-                tmp.delete()
-            }
-        }
-    }
-
-    /** 读文本，主文件读不出（缺失/损坏）时回退上一次的 .bak。 */
-    private fun readTextOrBackup(f: File): String {
-        return try {
-            f.readText()
-        } catch (e: Exception) {
-            val bak = File(f.parentFile, f.name + ".bak")
-            if (bak.exists()) {
-                AppLog.err("store", "读 " + f.name + " 失败，回退备份 字节=" + f.length(), e)
-                bak.readText()
-            } else throw e
-        }
+    private fun readTextOrBackup(f: File): String = try {
+        AtomicStore.readTextOrBackup(f)
+    } catch (e: Exception) {
+        AppLog.err("store", "读 " + f.name + " 失败，回退备份 字节=" + f.length(), e)
+        throw e
     }
     private fun msgFile(id: String) = File(dir, "chat_${profile}_$id.json")
     private fun legacyFile() = File(dir, "chat_$profile.json")
@@ -463,7 +430,7 @@ class SessionStore(ctx: Context, private val profile: String) {
         // 只有主文件真的删掉了才清备份。删失败（文件被占用 / 权限）时把 .bak 留着，
         // 下次还能靠它把内容捞回来——先删备份等于把唯一退路也断了。
         if (ok) {
-            synchronized(writeLock) {
+            synchronized(AtomicStore.lock) {
                 runCatching { File(f.parentFile, f.name + ".bak").delete() }
                 runCatching { File(f.parentFile, f.name + ".tmp").delete() }
             }
