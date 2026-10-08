@@ -8,13 +8,23 @@ import org.json.JSONObject
  */
 /** 顶部概览：网关活着没、跑什么模型、跑了多久、在干几件事。 */
 internal fun buildHero(h: JSONObject): StatusHero {
-    val up = h.optLong("uptime_seconds", -1)
-    val uptime = if (up < 0) "" else
-        (up / 86400).toString() + " 天 " + ((up % 86400) / 3600).toString() + " 时 " + ((up % 3600) / 60).toString() + " 分"
+    // 「已运行」用网关**自身进程**的时长（proc_uptime_seconds），不是主机开机时长
+    // （uptime_seconds）——后者说的是机器开了多久，跟 hermes 跑了多久是两回事。
+    // 老网关没这个字段时回落到 uptime_seconds，至少有个数。
+    var up = h.optLong("proc_uptime_seconds", -1)
+    if (up < 0) up = h.optLong("uptime_seconds", -1)
+    val uptime = if (up < 0) "" else buildString {
+        val d = up / 86400
+        val hh = (up % 86400) / 3600
+        val mm = (up % 3600) / 60
+        if (d > 0) append(d).append(" 天 ")
+        append(hh).append(" 时 ").append(mm).append(" 分")
+    }
     return StatusHero(
         ok = h.optString("status") == "ok",
         statusText = if (h.optString("status") == "ok") "运行正常" else h.optString("status", "?"),
-        model = h.optString("model", "").ifEmpty { "未知" },
+        // 显示 hermes 版本号（原来显示的是模型名，本机解析出来是 "hermes-agent"，没信息量）。
+        version = h.optString("version", "").ifEmpty { "未知" },
         uptimeText = uptime,
         pid = h.optInt("pid", 0),
         activeRuns = h.optInt("active_runs", 0),
@@ -124,23 +134,14 @@ internal fun buildStatus(h: JSONObject): List<StatusSection> {
         run.add(it("负载 1/5/15", String.format("%.2f / %.2f / %.2f",
             la.optDouble(0, 0.0), la.optDouble(1, 0.0), la.optDouble(2, 0.0))))
     }
-    val up = h.optLong("uptime_seconds", -1)
+    // 「已运行」= 网关自身进程时长（proc_uptime_seconds），回落主机开机时长。
+    var up = h.optLong("proc_uptime_seconds", -1)
+    if (up < 0) up = h.optLong("uptime_seconds", -1)
     if (up >= 0) run.add(it("已运行", (up / 86400).toString() + " 天 " + ((up % 86400) / 3600).toString() + " 小时 " + ((up % 3600) / 60).toString() + " 分"))
     sec("运行", run)
 
-    val apiSec = mutableListOf<StatusItem>()
-    apiSec.add(it("当前模型", h.optString("model", "").ifEmpty { "未知" }))
-    val mt = h.optJSONObject("metrics_today")
-    if (mt != null) {
-        apiSec.add(it("今日请求", mt.optInt("requests", 0).toString()))
-        apiSec.add(it("今日消息", mt.optInt("messages", 0).toString()))
-    }
-    apiSec.add(it("活跃任务", h.optInt("active_runs", 0).toString()))
-    apiSec.add(it("子任务", h.optInt("active_delegations", 0).toString()))
-    apiSec.add(it("队列深度", h.optInt("process_queue_depth", 0).toString()))
-    val hb = h.optString("last_heartbeat", "")
-    if (hb.isNotEmpty()) apiSec.add(it("最后心跳", TimeFmt.isoToBj(hb) + "（北京）"))
-    sec("API 与任务", apiSec)
+    // 「API 与任务」卡片已移除（用户 2026-10-09）：里面几项要么在顶部概览卡已有（活跃任务/
+    // 子任务），要么没人看（今日请求/队列深度/最后心跳）。顶部概览卡保留「活跃任务 / 子任务」。
 
     return out
 }

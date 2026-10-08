@@ -519,22 +519,21 @@ fun TopBar(vm: ChatViewModel, prefs: Prefs, tab: Int, onMenu: () -> Unit) {
             SubagentChip(vm, subOpen) { subOpen = !subOpen }
         }
         Spacer(Modifier.weight(1f))
+        // 右侧三项等距：搜索 · 在线圆点 · CPU%。原来各带自己的 padding（6 / 10 / 12dp），
+        // 间隔不均匀、看着不齐；统一按 14dp 一个间隔排（用户 2026-10-09 要求重排）。
         if (tab == 0) {
             Text(
                 "搜索", color = c.accent, fontSize = 13.sp,
-                modifier = Modifier.clickable { vm.toggleSearch() }.padding(horizontal = 8.dp, vertical = 2.dp)
+                modifier = Modifier.clickable { vm.toggleSearch() }.padding(horizontal = 4.dp, vertical = 2.dp)
             )
-            Spacer(Modifier.width(6.dp))
         }
-        // 在线状态：只留一个圆点（绿=在线 / 红=离线），文字去掉省地方。
-        // 前面留一段间距，别和「搜索」挤在一起。
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(14.dp))
         Text("●", color = if (online) c.ok else c.bad, fontSize = 12.sp)
         // 圆点右边：服务器 CPU 使用率，只显百分比、不带文字标签；颜色随负载变
         //（低绿 / 中黄 / 高红）。值取到 -1（还没拉到）时不占位。
         val cpu by vm.cpuPercent.collectAsStateWithLifecycle()
         if (cpu >= 0) {
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(14.dp))
             val cpuColor = when {
                 cpu >= 80 -> c.bad
                 cpu >= 50 -> c.warn

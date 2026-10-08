@@ -1328,7 +1328,7 @@ fun StatusScreen(vm: ChatViewModel, prefs: Prefs) {
                 Spacer(Modifier.height(10.dp))
             }
 
-            // ③ 原有明细分组（CPU 型号、进程内存、API 与任务…）。
+            // ③ 原有明细分组（网关、CPU、内存、磁盘、运行…）。
             for (s in sections) {
                 StatusCard(s)
                 Spacer(Modifier.height(10.dp))
@@ -1384,7 +1384,7 @@ fun StatusHeroCard(h: StatusHero) {
                 Text("PID " + h.pid, color = c.dim, fontSize = 11.sp)
             }
             Spacer(Modifier.height(8.dp))
-            Text("模型：" + h.model, color = c.text, fontSize = 12.sp,
+            Text("版本：" + h.version, color = c.text, fontSize = 12.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (h.uptimeText.isNotEmpty()) {
                 Spacer(Modifier.height(3.dp))
@@ -2016,8 +2016,12 @@ fun SettingsScreen(
             Spacer(Modifier.height(4.dp))
             Text("连接/重连/发送/收流的每一步都记在这里；出问题时点「复制全文」发给我。", color = c.dim, fontSize = 11.sp)
             Spacer(Modifier.height(8.dp))
+            // 最新在最上面（用户 2026-10-09 反馈：原来最新在底部，想看新日志得往下滑半天）。
+            val logShown = remember(logText) {
+                if (logText.isEmpty()) "" else logText.split('\n').asReversed().joinToString("\n")
+            }
             Text(
-                if (logText.isEmpty()) "（暂无日志）" else logText,
+                if (logShown.isEmpty()) "（暂无日志）" else logShown,
                 color = c.text, fontSize = 10.sp,
                 fontFamily = FontFamily.Monospace,
                 modifier = Modifier.fillMaxWidth()
