@@ -1,0 +1,27 @@
+# 复制成 local.properties 后填写（local.properties 已被 .gitignore 排除，不会进仓库）。
+# 本工程真值不写进源码，全部由这个文件在构建期注入。
+
+# Android SDK 路径（必须，否则构建报 SDK location not found）
+# 常见取值：
+#   Linux  ~/Android/Sdk
+#   macOS  ~/Library/Android/sdk
+#   Windows C:\Users\<你>\AppData\Local\Android\Sdk
+sdk.dir=/path/to/your/Android/SDK
+
+# ===== 服务端配置（构建期通过 BuildConfig 注入源码） =====
+
+# App 登录密码：客户端自己的门禁，进 App 时输入。自己定一个。
+HERMES_APP_PASSWORD=your-app-password
+
+# 两个 profile 的 API 密钥（网关侧签发的 Bearer key）
+HERMES_DEFAULT_KEY=your-default-profile-key
+HERMES_FRIEND_KEY=your-second-profile-key
+
+# 对话 API 地址：指向你的 Hermes 网关
+HERMES_DEFAULT_URL=https://your-gateway-domain
+
+# 应用内更新的 version.json 地址
+HERMES_UPDATE_URL=https://your-update-domain/update/version.json
+
+# 历史域名迁移（可选）：旧域名=新域名，App 启动时把存量的旧地址自动改写
+HERMES_LEGACY_HOSTS=old-domain=new-domain

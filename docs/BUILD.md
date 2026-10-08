@@ -1,47 +1,54 @@
-# 构建环境（本机怎么把 APK 编出来）
+# 构建说明（怎么把 APK 编出来）
 
-工程**没有 gradle wrapper**（没有 `gradlew` / `gradle/wrapper/`），别照着网上教程写 `./gradlew`。
-本机用 `~/android-tools` 下预装的一套工具链，入口是仓库根的 `build.sh`。
+工程**没有 gradle wrapper**（没有 `gradlew` / `gradle/wrapper/`），别照着网上教程敲 `./gradlew`。
+入口是仓库根的 `build.sh`——它会自动探测 JDK / Android SDK / Gradle 的位置，探测结果打印在开头，缺哪样直接报错。
 
 ## 一键构建
 
 ```bash
-cd ~/hermes-app
-./build.sh            # 编译 debug 包
-./build.sh clean      # 先 clean 再编
+cd <仓库目录>
+./build.sh            # 编 debug 包
+./build.sh release    # 编 release 包（开 R8，体积小一半，给手机装用这个）
+./build.sh clean      # 先 clean 再编（可组合：./build.sh clean release）
 ```
 
-产物：`app/build/outputs/apk/debug/app-debug.apk`，日志写进 `build.log`（该文件在 `.gitignore` 里，不入库）。
-本机实测一次全量构建约 29 秒（守护进程冷启动更久，看日志里 `BUILD SUCCESSFUL` 与 `EXIT=0`）。
+产物：
+- debug → `app/build/outputs/apk/debug/app-debug.apk`
+- release → `app/build/outputs/apk/release/app-release.apk`
 
-## 工具链位置（build.sh 已固化，改环境变量前先看这里）
+日志写进 `build.log`（在 `.gitignore` 里，不入库）。构建结束看日志里同时出现 `BUILD SUCCESSFUL` 与 `EXIT=0` 才算过。全量构建约半分钟；release 带 R8 约 2～2.5 分钟。
 
-| 组件 | 路径 / 版本 |
-|---|---|
-| JDK | `/usr/lib/jvm/java-21-openjdk-amd64`（系统 `java` 是 openjdk 21） |
-| Gradle | `~/android-tools/gradle-8.9/bin/gradle`（**不在 PATH**，必须全路径） |
-| Android SDK | `~/android-tools/sdk` |
-| build-tools | `34.0.0` |
-| platforms | `android-34` |
-| platform-tools | 已装 |
-| cmdline-tools | `latest`（sdkmanager 用） |
+## 工具链探测规则
 
-`build.sh` 里导出的三个变量是必须的：`JAVA_HOME`、`ANDROID_SDK_ROOT`、`ANDROID_HOME`。
-直接敲 `gradle` 会 `command not found`；不带 `ANDROID_HOME` 会报找不到 SDK。
+每一项都能用环境变量强行覆盖：
 
-## 环境是怎么装的（setup_sdk.sh，要重建时用）
+| 组件 | 探测顺序 | 版本要求 |
+|---|---|---|
+| JDK | `$JAVA_HOME` → `~/.sdkman/candidates/java/current` → `/usr/lib/jvm/java-*-openjdk-*` → 从 `which javac` 反推 | 17 或更高 |
+| Android SDK | `$ANDROID_SDK_ROOT` → `local.properties` 的 `sdk.dir` → `~/Android/Sdk` / `~/Library/Android/sdk` 等常见目录 | platform 34 + build-tools 34.0.0 + platform-tools |
+| Gradle | `$GRADLE` → PATH 里的 `gradle` → `~/.sdkman/.../gradle/current` → 常见目录 → `./gradlew`（若有） | 8.9 |
 
-`~/android-tools/setup_sdk.sh` 记录了当年搭环境的全过程，可重放：
+探测不到就在命令前加变量，例如 `JAVA_HOME=/your/jdk ./build.sh release`。
 
-1. 解压 `cmdline-tools.zip` → `sdk/cmdline-tools/latest`
-2. `yes | sdkmanager --licenses` 接受许可
-3. `sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"`
-4. gradle 8.9 是另外解压 `gradle.zip` 得到
+## 从零装工具链
+
+```bash
+# 1) JDK 17+（Debian/Ubuntu）
+apt-get install -y openjdk-21-jdk
+
+# 2) Android SDK 命令行工具：下载 cmdline-tools.zip 解压到 <sdk>/cmdline-tools/latest
+export ANDROID_SDK_ROOT=/path/to/sdk
+yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses
+"$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
+  --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+# 3) Gradle 8.9：下载 gradle-8.9-bin.zip 解压，把 bin 加进 PATH（或 export GRADLE=...）
+```
 
 **坑**：
-- `sdkmanager` 首次要联网下 platform/build-tools，本机 IPv6 到部分 CDN 慢，必要时先确认走 IPv4。
+- `sdkmanager` 首次要联网下 platform/build-tools，必要时确认走 IPv4。
 - 许可没接受会卡在编译期的 license 校验，`yes |` 那一行不能省。
-- `local.properties` 里写死 `sdk.dir=~/android-tools/sdk`；这个文件在 `.gitignore` 里，**不入库**，换机器要自己补。
+- `local.properties` 里 `sdk.dir` 指向你的 SDK 路径；该文件在 `.gitignore` 里，**不入库**，换机器要自己补（可 `cp local.properties.example local.properties`）。
 
 ## 签名
 
@@ -55,17 +62,20 @@ cd ~/hermes-app
 ## 依赖与仓库
 
 `settings.gradle.kts` 里仓库顺序是**阿里云镜像优先**（gradle-plugin / google / public），再回落到 `google()` / `mavenCentral()`。
-国内直连 google maven 慢，镜像优先是刻意配的，别删。依赖已全量缓存在 `~/.gradle`（caches + android）。
+国内直连 google maven 慢，镜像优先是刻意配的，别删。首次构建会自动下载依赖并缓存到 `~/.gradle`。
 
-核心依赖版本：AGP 8.5.2、Kotlin 1.9.24、Compose BOM 2024.06.00、compose-compiler 1.5.14、OkHttp 4.12.0、Coil 2.6.0。
+核心依赖版本：AGP 8.5.2、Kotlin 1.9.24、Compose BOM 2024.06.00、compose-compiler 1.5.14、OkHttp 4.12.0、Coil 2.6.0、media3 1.4.1。
 
 ## 常见报错对照
 
 | 现象 | 原因 / 处置 |
 |---|---|
-| `gradle: command not found` | 没用全路径，跑 `./build.sh` |
-| `SDK location not found` | `ANDROID_HOME` 没导，或 `local.properties` 缺失 |
-| `Failed to install ... licenses not accepted` | 重跑 `setup_sdk.sh` 里的 `sdkmanager --licenses` |
+| `gradle: command not found` | 没用全路径，跑 `./build.sh`（自带探测） |
+| `SDK location not found` | `ANDROID_HOME` 没导，或 `local.properties` 缺 `sdk.dir` |
+| `Failed to install ... licenses not accepted` | 重跑 `yes | sdkmanager --licenses` |
+| `Unsupported class file major version` | JDK 版本过低，换 17 或 21 |
 | 手机装新包提示签名冲突 | 构建机换了 / debug.keystore 丢了，用同一份 keystore 重编 |
-| 编译卡在下载依赖 | 网络问题，确认阿里云镜像仓库在 `settings.gradle.kts` 里且没被改掉 |
-"}}
+| 编译卡在下载依赖 | 网络问题，确认阿里云镜像在 `settings.gradle.kts` 里且没被改掉 |
+| 构建「超时」但没报错 | 全量构建超了等待窗口，进程还在跑；先看产物 mtime 与 `build.log` 尾部，别盲目重跑 |
+
+更全的踩坑清单（含配置注入、产物发布）见仓库根 README 的「编译踩坑大全」。
