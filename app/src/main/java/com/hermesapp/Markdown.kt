@@ -648,7 +648,7 @@ private fun MdAttachmentCard(name: String, dataUrl: String, token: String) {
             .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text("\\uD83D\\uDCCE", fontSize = 16.sp)
+        Text("\uD83D\uDCCE", fontSize = 16.sp)
         Spacer(Modifier.width(8.dp))
         Column(Modifier.weight(1f, fill = false)) {
             Text(name, color = c.text, fontSize = 13.sp, maxLines = 2)

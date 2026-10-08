@@ -3239,8 +3239,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
         val ids = mutableListOf<String>()
         var uploadsDone = reuseArtifacts.isNotEmpty()
-        viewModelScope.launch(Dispatchers.IO) {
+        r.sendJob = viewModelScope.launch(Dispatchers.IO) {
             try {
+                if (r.finished) return@launch   // 起流前用户已点停止
                 // 附件 id：重发必须复用首次那份（服务端算指纹含请求体，换了 id 会被判冲突）。
                 // Hermes 本地补丁：不再单独 POST /v1/artifacts/upload（实测该接口被边缘按请求
                 // 形状拦掉、TCP RST，而 /v1/runs 同样带 body 却正常）。改把文件 gzip+base64
@@ -3254,6 +3255,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     inlineFiles.add(com.hermesapp.net.InlineFile(f.name, mimeOf(f), bytes))
                 }
                 uploadsDone = true
+                if (r.finished) { AppLog.log("send", "停止排除：上传完成但用户已停止，不起流"); return@launch }
                 _imageNote.value = ""
                 val run = a.startRun(text, sid, emptyList(), idemKey, inlineFiles)
                 r.runId = run.optString("run_id", run.optString("id", ""))
@@ -3267,6 +3269,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 advanceReceipt(sid, receiptMsgId, Receipt.ACCEPTED, runId = r.runId,
                     idemKey = idemKey, artifactIds = ids)
                 streamRun(a, sid)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                return@launch   // 用户停止主动取消，不算发送失败
             } catch (e: Exception) {
                 _imageNote.value = ""
                 val msg = e.message ?: "?"
@@ -3913,8 +3917,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         AppLog.log("stream", "run 失败 run=" + rid.take(12) + " 错误=" + ev.data.optString("error", "未知").take(120))
                         r.finished = true
                         appendDelta(r, "\n[失败] " + ev.data.optString("error", "未知错误"))
-                        finishPending(r)
-                        maybeContinue(sid)
+                        doneOk(sid)
                     }
                     "run.cancelled", "run.interrupted" -> {
                         r.coalescer?.flushNow()
@@ -4212,6 +4215,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.coalescer?.discard()
         if (a != null && rid.isNotEmpty()) viewModelScope.launch(Dispatchers.IO) { a.stopRun(rid) }
         r.call?.cancel()
+        r.sendJob?.cancel()
         appendDelta(r, "\n[已请求停止]")
         finishPending(r)
         r.busy.value = false

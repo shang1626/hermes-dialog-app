@@ -72,6 +72,8 @@ internal class SessionRuntime(val id: String) {
     /** 本次切到该会话的墙钟时刻：算「点一下到能看」的总耗时（perf 日志用）。 */
     var switchStartedAt: Long = 0L
     var saveJob: Job? = null
+    /** 本轮发送（上传附件 + 建 run）协程：停止时要能掐掉，别让上传完还接着起流。 */
+    var sendJob: Job? = null
     /** 最近一次收到事件的墙钟时间，用于「回到前台」判断流是否已假死。 */
     var lastEventAt: Long = 0L
     /** 本轮（当前这条流）收到的 SSE 事件条数：排查「步骤不显示」时看事件到底到没到。 */
