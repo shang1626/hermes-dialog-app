@@ -425,6 +425,33 @@ class HermesApi(
         return sync(base("/api/inbox/delete").post(body.toString().toRequestBody(jsonType)).build())
     }
 
+    /**
+     * 诊断上报：把运行日志（gzip+base64）与一份紧凑状态快照推给服务端。
+     * 为什么反过来推：App 在手机上、没有对外入口，agent 连不进来，出问题只能用户手动发日志/截图。
+     * 走既有网关通道 + API key，不新开端口、不暴露手机。正文原样上报（用户 2026-10-08 定）。
+     */
+    fun uploadAppLog(log: String, snapshot: JSONObject?, version: String, device: String, reason: String): JSONObject {
+        val compressed = gzipBase64(log)
+        val body = JSONObject()
+            .put("log", compressed)
+            .put("encoding", "gzip+base64")
+            .put("version", version)
+            .put("device", device)
+            .put("reason", reason)
+        if (snapshot != null) body.put("snapshot", snapshot)
+        return sync(base("/api/applog").post(body.toString().toRequestBody(jsonType)).build())
+    }
+
+    /** 轮询服务端是否请求过「请上报」：requested=true 时 App 自动传一份。 */
+    fun applogPending(): JSONObject = sync(base("/api/applog/pending").get().build())
+
+    /** gzip 压缩 + base64：日志纯文本压缩比高（1MB→约 100KB），省流量。失败退回空串。 */
+    private fun gzipBase64(text: String): String = runCatching {
+        val bos = java.io.ByteArrayOutputStream()
+        java.util.zip.GZIPOutputStream(bos).use { it.write(text.toByteArray(Charsets.UTF_8)) }
+        android.util.Base64.encodeToString(bos.toByteArray(), android.util.Base64.NO_WRAP)
+    }.getOrDefault("")
+
     fun sysinfo(): JSONObject = sync(base("/health/sysinfo").get().build())
 
     fun healthDetailed(): JSONObject = sync(base("/health/detailed").get().build())
