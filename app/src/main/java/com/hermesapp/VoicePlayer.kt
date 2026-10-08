@@ -33,6 +33,10 @@ object VoicePlayer {
     private val _nowPlaying = MutableStateFlow("")
     val nowPlaying: StateFlow<String> = _nowPlaying.asStateFlow()
 
+    /** 播放代际号：起播 / 停止都 +1，作废仍在后台取字节的旧线程（见 VoiceReplayPlayer 同名注释）。 */
+    @Volatile
+    private var gen: Int = 0
+
     /** 音频扩展名：这类附件渲染成播放按钮，不显示成文件卡片。 */
     private val AUDIO_EXT = Regex("\\.(mp3|m4a|aac|wav|ogg|opus)$", RegexOption.IGNORE_CASE)
 
@@ -81,6 +85,7 @@ object VoicePlayer {
         // 抢先起播下一条（pump 会检查本播放器的 nowPlaying，非空即让路）。
         _nowPlaying.value = target
         VoiceReplayPlayer.stop()
+        val myGen = ++gen
         Thread {
             var fail: Throwable? = null
             val bytes = runCatching {
@@ -95,7 +100,11 @@ object VoicePlayer {
                 AppLog.err("voice", "取语音字节失败 源=" +
                     (if (target.startsWith("hermes-media://")) "网关托管" else "内联") +
                     " 长度=" + target.length, fail)
-                _nowPlaying.value = ""
+                if (myGen == gen) _nowPlaying.value = ""
+                return@Thread
+            }
+            if (myGen != gen) {
+                AppLog.log("voice", "取字节完成但已被停止/切换取代，放弃播放")
                 return@Thread
             }
             play(ctx, target, bytes)
@@ -163,6 +172,7 @@ object VoicePlayer {
 
     /** 播下一条前先停掉上一条，避免两条叠着响；也用于「停止」按钮。 */
     fun stop() {
+        gen++          // 作废正在取字节的线程
         val p = player
         player = null
         _nowPlaying.value = ""

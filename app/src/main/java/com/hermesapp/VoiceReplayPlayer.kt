@@ -37,6 +37,14 @@ object VoiceReplayPlayer {
     private val _nowPlaying = MutableStateFlow("")
     val nowPlaying: StateFlow<String> = _nowPlaying.asStateFlow()
 
+    /**
+     * 播放代际号：每次起播 / 停止都 +1。下载在后台线程进行，用户可能中途点停止或
+     * 切到另一条——旧线程回来时若代际号已变，就不许再起播，否则「点了停止音频照样响」
+     * 「先点 A 再点 B，慢的 A 最后抢占 B」都会发生。
+     */
+    @Volatile
+    private var gen: Int = 0
+
     /** 界面播放按钮：同一个 run 正在播就停掉，否则播它。 */
     fun toggle(ctx: Context, runId: String) {
         if (runId.isEmpty()) return
@@ -56,6 +64,7 @@ object VoiceReplayPlayer {
         // 同上：先标「在播」再停对方，防队列抢跑。
         _nowPlaying.value = runId
         VoicePlayer.stop()
+        val myGen = ++gen
         Thread {
             try {
                 // 先看本机留档：流式播过的那条已经落盘，这里是纯本地读，即时。
@@ -70,6 +79,11 @@ object VoiceReplayPlayer {
                 // 取回来的才落盘，供下次离线重播。
                 if (local == null) {
                     runCatching { f.writeBytes(bytes) }
+                }
+                // 下载期间用户可能已停止 / 切到别的任务：代际变了就不许起播。
+                if (myGen != gen) {
+                    AppLog.log("voice", "重播放弃（已被停止/切换取代）run=" + runId.take(12))
+                    return@Thread
                 }
                 startPlayback(ctx, runId, bytes)
             } catch (e: Exception) {
@@ -139,6 +153,7 @@ object VoiceReplayPlayer {
 
     /** 播下一条前先停掉上一条；也用于「停止」按钮。 */
     fun stop() {
+        gen++          // 作废正在下载的线程：晚到的下载不许再起播
         val p = player
         player = null
         _nowPlaying.value = ""
