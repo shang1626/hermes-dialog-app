@@ -337,6 +337,15 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
         lastFirstId = firstId
     }
 
+    // 用户主动发消息 → 无条件滚到最新一条。单独一条通道，不受上面那个
+    // 「流式期间别把翻历史的用户拽回底部」守卫（!canScrollForward）影响：
+    // 自发消息是明确的「看最新」意图，哪怕此前往上翻过历史也必须贴底。
+    val bottomTick by vm.scrollBottomTick.collectAsStateWithLifecycle()
+    LaunchedEffect(bottomTick) {
+        if (bottomTick <= 0) return@LaunchedEffect
+        listState.animateScrollToItem(msgs.size)
+    }
+
     // 跳到命中：当前命中项一变就滚到那条消息（搜索时自动贴底让位）。
     LaunchedEffect(hitIdx, hits) {
         val id = hits.getOrNull(hitIdx) ?: return@LaunchedEffect
