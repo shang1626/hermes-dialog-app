@@ -546,11 +546,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 已删除的会话：一个字都不许再写盘，否则删掉的消息文件会复活。
         // deleteSession 会 cancel 掉去抖任务，但若 400ms 已过、协程已进到这里，cancel 就无效了。
         if (r.dead) return
-        store.saveMessages(r.id, r.messages.value, maxHistory)
-        // 续接序号与消息一起落盘，保证两者永远一致：重开 App 时按它做
-        // Last-Event-ID，只补断线之后的事件（消息也正好停在那一刻）——
-        // 既不会重放已存过的工具轨迹（表现是「过程重复显示」），也不会漏事件。
-        if (r.runId.isNotEmpty()) prefs.putLastSeq(r.id, r.lastSeq)
+        // 顺序关键：先取 lastSeq 再取 messages。主线程在这两行之间又收事件时，
+        // 最坏是「序号落后于消息」（重启会重放已存事件，安全，不会丢），
+        // 绝不会「序号领先于消息」（重启按它 Last-Event-ID 就会跳过没保存的内容）。反过来取必丢。
+        val seq = r.lastSeq
+        val msgs = r.messages.value
+        val ok = store.saveMessages(r.id, msgs, maxHistory)
+        // 只有消息确实落盘成功才推进续接序号：写盘失败仍推进的话，
+        // 重开 App 会按这个序号做 Last-Event-ID，把没保存的那段永远跳过。
+        if (ok && r.runId.isNotEmpty()) prefs.putLastSeq(r.id, seq)
     }
 
     /**
@@ -2342,6 +2346,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         setMsgs(r, r.messages.value + Msg("assistant", "", pending = true, ts = stamp(), startedAt = r.startedAt))
         r.busy.value = true
         r.finished = false
+        r.stopRequested = false
         r.lastSeq = -1
         r.autoContinue = 0
         r.resumed = false
@@ -2372,6 +2377,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val run = a.startRun(text, sid, emptyList(), idemKey, inlineFiles)
                 r.runId = run.optString("run_id", run.optString("id", ""))
                 AppLog.log("send", "已建 run=" + r.runId.take(12) + " 重放=" + run.optBoolean("replayed", false) + " 内联附件=" + inlineFiles.size)
+                // 建 run 期间用户可能点过停止：startRun 是同步 HTTP、取消协程拦不住它，
+                // 请求已经发出去、服务端 run 可能已建好。此时补发一次 stopRun 收敛，
+                // 不再接流、不再记活跃 run，避免「界面已停、服务端还在跑」。
+                if (r.finished || r.stopRequested) {
+                    AppLog.log("stop", "建 run 期间已请求停止，补发 stopRun run=" + r.runId.take(12))
+                    if (r.runId.isNotEmpty()) a.stopRun(r.runId)
+                    finishPending(r)
+                    return@launch
+                }
                 // 计时起点不在这里重设：上传附件+建 run 的往返也算本轮耗时，
                 // 重设会把这一段抹掉，最终值比界面实时值小一截。
                 prefs.putActiveRun(sid, r.runId)
@@ -3209,6 +3223,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val rid = r.runId
         AppLog.log("stop", "用户停止 sid=" + sid.take(8) + " run=" + rid.take(12))
         r.finished = true
+        // 标记「已请求停止」：run 还没建好时 rid 为空，光置 finished 挡不住已在飞行的
+        // startRun 请求——它返回后据这个标记补发 stopRun（见 startRunWith）。
+        r.stopRequested = true
         r.recoveryJob?.cancel()
         r.coalescer?.discard()
         if (a != null && rid.isNotEmpty()) viewModelScope.launch(Dispatchers.IO) { a.stopRun(rid) }
