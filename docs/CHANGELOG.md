@@ -1,3 +1,17 @@
+## 2.139 — versionCode 150
+
+根治「发文件永远失败」：把附件从被边缘拦截的上传接口，改走已证明能通的 /v1/runs。
+
+根因（2.138 日志 + 服务端对照测试交叉确认）：App 单独 POST `/v1/artifacts/upload` 时，在到达服务端之前就被边缘 TCP RST（`连接级失败 原因=Connection reset`），两次重试全废；而**同一部手机的 `/v1/runs`、`/api/sessions`（连 164KB 响应）、`/api/applog`（19KB body）全部正常**——只有「上传」这个接口被按请求形状拦。服务端侧复刻同一条上传（同域名/同 42KB/同文件名/同 UA）连测 30 次 27 次成功（3 次仅限流 429），证明不是服务端、不是 MIME、不是 body 大小。
+
+修法（两端一起）：
+- **服务端**：`/v1/runs` 新增 `inline_files` 字段（每项 `{name, mime, data=gzip+base64}`，≤10 个），`_resolve_inline_files` 解开落盘到 `~/.hermes/uploads/<会话>/`（图片进 cache/images），其余处理与 artifact 路径完全一致。
+- **App**：发附件不再 POST `/v1/artifacts/upload`，改成把文件 gzip+base64 塞进 `/v1/runs` 的 JSON 一起发。纯文字发送、收发消息、语音均不受影响。
+
+（改 HermesApi.kt / ChatViewModel.kt；服务端 api_server_runs.py 补丁）
+
+---
+
 ## 2.137 — versionCode 148
 
 2.136 的兜底没生效，这次真正修掉「发文件被边缘重置」。
