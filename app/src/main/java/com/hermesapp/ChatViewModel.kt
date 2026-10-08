@@ -1664,7 +1664,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val a = api ?: return
         if (id.isEmpty()) return
         val r = rt(id)
-        if (r.busy.value) return
+        // 忙 = 推迟，不是丢弃。
+        //
+        // 2026-10-08：这里原来是静默 return，冷启动时被踩得很惨——onProfileChanged 先调
+        // refreshFromServer()、再调 resumeActiveRun()，请求发出时还没忙，回来时 run 已经
+        // 恢复成 busy，撞上函数内第二道守卫被丢掉；而两道守卫都不落 needSync，收尾时
+        // doneOk 看 needSync=false 就不补拉。表现就是用户报的「执行中途杀掉 App，重开进
+        // 该会话，内容停在退出前那一帧」——服务端 1.9MB 的记录拉回来了却被扔掉。
+        if (r.busy.value) {
+            r.needSync = true
+            AppLog.log("sync", "会话在跑，落待同步标记（入口）sid=" + id.take(8))
+            return
+        }
         // 挂进程级作用域而不是 viewModelScope：回前台同步与「收尾补拉」都可能在
         // Activity 已被重建/销毁之后触发，挂 viewModelScope 会随旧实例一起被取消，
         // 表现就是「该同步的时候没同步」。
@@ -1682,7 +1693,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     list.add(Msg(role, content, pending = false, ts = parseTs(o.optString("timestamp", ""))))
                 }
                 // 守卫：该会话此刻已在跑任务则不覆盖（切换会话不影响——只写它自己的缓冲）。
-                if (r.busy.value) return@launch
+                // 但要落 needSync：请求往返期间 run 可能刚开始/被恢复（冷启动就是这么撞上的），
+                // 直接丢就等于把服务端这一份记录白拉了。
+                if (r.busy.value) {
+                    r.needSync = true
+                    AppLog.log("sync", "会话在跑，落待同步标记（返回时）sid=" + id.take(8))
+                    return@launch
+                }
                 if (list.isEmpty()) {
                     AppLog.log("sync", "服务端会话无消息（本地保留 " + r.messages.value.size +
                         " 条）sid=" + id.take(8))
