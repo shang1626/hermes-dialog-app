@@ -504,7 +504,20 @@ fun TopBar(vm: ChatViewModel, prefs: Prefs, tab: Int, onMenu: () -> Unit) {
             )
             Spacer(Modifier.width(6.dp))
         }
-        Text(if (online) "● 在线" else "● 离线", color = if (online) c.ok else c.bad, fontSize = 12.sp)
+        // 在线状态：只留一个圆点（绿=在线 / 红=离线），文字去掉省地方。
+        Text("●", color = if (online) c.ok else c.bad, fontSize = 12.sp)
+        // 圆点右边：服务器 CPU 使用率，颜色随负载变（低绿 / 中黄 / 高红）。
+        // 值取到 -1（还没拉到）时不占位。
+        val cpu by vm.cpuPercent.collectAsState()
+        if (cpu >= 0) {
+            Spacer(Modifier.width(6.dp))
+            val cpuColor = when {
+                cpu >= 80 -> c.bad
+                cpu >= 50 -> c.warn
+                else -> c.ok
+            }
+            Text("CPU " + cpu.toInt() + "%", color = cpuColor, fontSize = 12.sp)
+        }
     }
     // 展开的明细挂在那一行下面；收起状态下一行都不渲染。
     if (tab == 0 && subOpen) SubagentList(vm)
