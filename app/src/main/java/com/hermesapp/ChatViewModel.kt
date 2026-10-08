@@ -1447,11 +1447,27 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 只处理本地已有的会话行：与「历史对话不要再拉取」一致，绝不为服务端独有的会话
         // 建本地行（那会把几十条别的端的会话灌进手机列表）。
         val known = _sessions.value.filter { !it.archived }.map { it.id }.toSet()
+        AppLog.log("resume", "接管检查 服务端在跑=" + runs.size + " 本地会话=" + known.size)
         for ((sid, rid) in runs) {
-            if (rid.isEmpty() || sid !in known) continue
+            if (rid.isEmpty() || sid !in known) {
+                AppLog.log("resume", "接管跳过 sid=" + sid.take(8) + " 不在本地列表")
+                continue
+            }
             val r = rt(sid)
-            // 本地已在跑同一轮 / 正在接流：不动。
-            if (r.busy.value || !resumingSids.add(sid)) continue
+            // 本地就在跑这一轮：不动（自己的流负责，重复接流会收两遍事件）。
+            if (r.busy.value && r.runId == rid) continue
+            // 本地在跑「别的」轮次：一个会话同时只该有一条 run，先信本地，但把分歧记下来
+            // （2026-10-08：这里原来一句静默 continue，日志里只剩「服务端在跑=N」却看不到
+            //  为什么没接管，排查时无从下手）。
+            if (r.busy.value) {
+                AppLog.log("resume", "接管跳过 sid=" + sid.take(8) + " 本地run=" + r.runId.take(12) +
+                    " 服务端run=" + rid.take(12))
+                continue
+            }
+            if (!resumingSids.add(sid)) {
+                AppLog.log("resume", "接管跳过 sid=" + sid.take(8) + " 已在接流中")
+                continue
+            }
             AppLog.log("resume", "服务端报告活跃轮次，接管 sid=" + sid.take(8) + " run=" + rid.take(12))
             RuntimeHub.scope.launch(Dispatchers.IO) {
                 try {
