@@ -19,7 +19,9 @@ Pure Android project, **no server code** — the server side is just the `api_se
 - [Project layout](#project-layout)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
-- [Build](#build)
+- [Build with your Hermes (recommended)](#build-with-your-hermes-recommended)
+- [Manual build](#manual-build)
+- [Build pitfalls](#build-pitfalls)
 - [Signing](#signing)
 - [Server preparation](#server-preparation)
 - [Server API contract](#server-api-contract)
@@ -174,13 +176,15 @@ cp local.properties.example local.properties   # or create it by hand
 $EDITOR local.properties
 
 # 3. Build
-./build.sh
+./build.sh release
 
 # 4. Output
-ls -l app/build/outputs/apk/debug/app-debug.apk
+ls -l app/build/outputs/apk/release/app-release.apk
 ```
 
-Install to a phone: `adb install -r app/build/outputs/apk/debug/app-debug.apk`, or copy the APK over and tap it.
+Install to a phone: `adb install -r app/build/outputs/apk/release/app-release.apk`, or copy the APK over and tap it.
+
+> No Android toolchain? See [Build with your Hermes](#build-with-your-hermes-recommended) below and hand the whole job to an AI agent.
 
 ---
 
@@ -215,7 +219,33 @@ These values are read by `app/build.gradle.kts` at build time and injected via `
 
 ---
 
-## Build
+## Build with your Hermes (recommended)
+
+**No Android toolchain on hand? Let Hermes do it.** This project builds from the command line with no Android Studio dependency, which makes it ideal for an AI agent to handle: it installs the toolchain, fills in the configuration, builds the APK, and hands it back — working around the usual setup snags itself.
+
+### The prompt to give your Hermes (copy-paste)
+
+Send this together with your real `local.properties` values:
+
+> Clone `<repo URL>` and build it as a **release** APK, following the README and `docs/BUILD.md`.
+> I copied `local.properties.example` to `local.properties` and filled it in (I will send the keys separately).
+> Install whatever is missing (JDK / Android SDK / Gradle) yourself.
+> When done, tell me the APK absolute path, size, and md5. **Do not write any secret into source, commit messages, or public channels.**
+
+### The four steps Hermes does for you (and where it usually trips)
+
+| Step | Key point |
+|---|---|
+| 1. Install the toolchain | JDK 17+, Android SDK (platform 34 + build-tools 34.0.0 + platform-tools), Gradle 8.9. **`sdkmanager --licenses` must be accepted**, or the build stalls on license checks |
+| 2. Create config | `cp local.properties.example local.properties` and fill it in. Missing this gives `SDK location not found` |
+| 3. Run the build | `./build.sh release`. The script auto-detects JDK / SDK / Gradle and prints what it found up front; anything missing fails loudly |
+| 4. Hand over | `app/build/outputs/apk/release/app-release.apk` |
+
+> Security: give secrets to Hermes only via the local `local.properties` — **never paste them into a public issue, chat, or commit message.** This repository itself contains no real values.
+
+---
+
+## Manual build
 
 ### Prerequisites
 
@@ -229,11 +259,35 @@ These values are read by `app/build.gradle.kts` at build time and injected via `
 ### One-shot build
 
 ```bash
-./build.sh            # build the debug APK
-./build.sh clean      # clean first, then build
+./build.sh            # debug APK
+./build.sh release    # release APK (R8 on; smaller, this is the one to install)
+./build.sh clean      # clean first (combinable: ./build.sh clean release)
 ```
 
-Output: `app/build/outputs/apk/debug/app-debug.apk`; the log goes to `build.log` (gitignored). Check the log for `BUILD SUCCESSFUL` and `EXIT=0`. A full build takes about half a minute (longer on the first run while dependencies download).
+The script prints the toolchain it detected, for example:
+
+```
+JDK    = /usr/lib/jvm/java-21-openjdk-amd64
+SDK    = /home/you/Android/Sdk
+GRADLE = /opt/gradle/bin/gradle
+TASK   = assembleRelease
+```
+
+Output:
+- debug → `app/build/outputs/apk/debug/app-debug.apk`
+- release → `app/build/outputs/apk/release/app-release.apk`
+
+The log goes to `build.log` (gitignored). Check it for `BUILD SUCCESSFUL` and `EXIT=0`. A full build takes about half a minute; release with R8 takes ~2–2.5 minutes.
+
+**Detection rules** (each overridable by an environment variable):
+
+| Component | Order |
+|---|---|
+| JDK | `$JAVA_HOME` → `~/.sdkman/candidates/java/current` → `/usr/lib/jvm/java-*-openjdk-*` → derived from `which javac` |
+| Android SDK | `$ANDROID_SDK_ROOT` → `sdk.dir` in `local.properties` → common locations like `~/Android/Sdk` / `~/Library/Android/sdk` |
+| Gradle | `$GRADLE` → `gradle` on PATH → `~/.sdkman/.../gradle/current` → common dirs → `./gradlew` if present |
+
+If it cannot find something, prefix the variables, e.g. `JAVA_HOME=/your/jdk ./build.sh release`.
 
 ### Manual build
 
@@ -352,13 +406,70 @@ Notes:
 
 ---
 
+## Build pitfalls
+
+Symptom → cause → fix. These are pitfalls this project actually hit, not a generic list.
+
+### 1. Environment / toolchain
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `gradle: command not found` | Gradle not installed or not on PATH | Run `./build.sh` (it auto-detects); or `export GRADLE=/path/to/gradle` |
+| `SDK location not found` | `ANDROID_HOME` not exported, or no `sdk.dir` in `local.properties` | Create `local.properties` with `sdk.dir` (see Configuration) |
+| `Failed to install ... licenses not accepted` | SDK licenses not accepted | `yes \| sdkmanager --licenses` (sdkmanager lives in `cmdline-tools/latest/bin/`) |
+| `Unsupported class file major version` | Wrong JDK (11 or lower) | Use JDK 17 or 21: `export JAVA_HOME=/path/to/jdk-17+` |
+| `command not found: javac` | JRE installed without a JDK | Install a full JDK, not just a JRE |
+
+### 2. Dependency downloads
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Build hangs on `Downloading ...` | Direct Google Maven is slow | The Alibaba mirrors are listed **first** in `settings.gradle.kts` on purpose — keep them (essential inside China) |
+| `Could not resolve ...` / `Connection timed out` | No route | Use a proxy: `export https_proxy=http://your-proxy:port`, or switch mirrors |
+| `Could not find com.android.tools.build:gradle` | Repo order changed | Restore the mirror list in `settings.gradle.kts` |
+
+### 3. Build process
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Builds get slower over time | Gradle / Kotlin daemons hold memory | Normal; they exit when idle (Gradle 3 h, Kotlin 2 h). `gradle --stop` to force |
+| `Unclosed comment` + `Missing '}'` | Kotlin block comments nest; writing `/*` inside `/** ... */` (e.g. `image/*`) opens a nested one | Use `//` for such notes, or avoid the wildcard |
+| A pile of `Unresolved reference` | Usually the **first** erroring file broke structurally; the rest is a cascade | Fix only the first file; do not chase the cascade |
+| `@Composable invocations can only happen...` | A `@Composable` annotation drifted off or went missing | Check the annotation sits directly above the right function |
+| Build "times out" but reports no error | A full build exceeded the tool wait window; the process is still running | Check the artifact mtime and the tail of `build.log` — **do not blindly rerun** |
+
+### 4. Configuration injection
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Login says wrong password | `HERMES_APP_PASSWORD` differs from what you typed | **Rebuild** after changing it (injected at build time) |
+| App stays "offline" | `HERMES_DEFAULT_URL` unreachable | Check the domain, certificate, and that `api_server` is running |
+| Edited `local.properties`, no effect | Values are injected at **build** time, not read at runtime | Rebuild |
+
+### 5. Signing / install
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Phone says "App not installed / signature conflict" | Different build machine, or `~/.android/debug.keystore` is gone | Rebuild with the **same** `debug.keystore`; when it is missing on a new machine the toolchain generates a new one, so the two signatures differ |
+| New version installed but the number is unchanged | Forgot to bump `versionCode` | `versionCode` in `app/build.gradle.kts` must increase (the client compares it) |
+
+### 6. Artifact / release
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| release APK much smaller than debug | Normal: R8 shrinking + resource trimming | Nothing to do; release is the one to install |
+| Update check sees the old version | CDN caching on the distribution path | Purge that path in the CDN console; the app appends a timestamp but that does not replace a manual purge |
+| `version.json` md5 mismatch | File edited / wrong copy | Recompute with `md5sum`; `size` via `stat -c%s` — both must match the actual file |
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
 | `gradle: command not found` | You did not use the full path. Run `./build.sh`, or export the toolchain path |
 | `SDK location not found` | `ANDROID_HOME` is not exported, or `local.properties` has no `sdk.dir` |
-| `licenses not accepted` | Re-run `sdkmanager --licenses`, e.g. `yes | sdkmanager --licenses` |
+| `licenses not accepted` | Re-run `sdkmanager --licenses`, e.g. `yes \| sdkmanager --licenses` |
 | Phone refuses the new package (signature conflict) | Different build machine / missing `debug.keystore`. Rebuild with the same keystore |
 | Build hangs downloading dependencies | Network issue. Check the mirror repositories are still in `settings.gradle.kts` |
 | App stays "offline" | Check `HERMES_DEFAULT_URL` is reachable, `api_server` is running, and the HTTPS certificate is valid |
