@@ -321,17 +321,38 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
     // （首次加载、切会话、批量合并）一律 scrollToItem 瞬间到底，无逐帧滚动。
     var lastCount by remember { mutableStateOf(-1) }
     var lastFirstId by remember { mutableStateOf(0L) }
+    // 「是否自动跟随到底部」。默认跟随；只有用户**自己手动**往上翻、并把视口停在半路时
+    // 才暂停跟随，一旦回到（或接近）底部立刻恢复。
+    //
+    // 为什么换掉旧的 `!listState.canScrollForward` 守卫：新消息作为新项插到列表末尾时，
+    // 视口还没跟上，`canScrollForward` 在下一帧就已经变成 true（下方还有可滚内容），于是
+    // 「新消息到达」被误判成「用户在翻历史」→ 贴底被跳过 → 用户必须手动滑（用户报障：
+    // 接收的新消息不自动聚焦）。改用「滚动停止那一刻视口是否在底部」判定：追加新项本身
+    // 不产生滚动事件，因此不会误判；用户手动往上翻会先进入 isScrollInProgress，停下时
+    // 不在底部 → 暂停跟随，语义正确。
+    val atBottomNow: () -> Boolean = {
+        val li = listState.layoutInfo
+        val last = li.visibleItemsInfo.lastOrNull()
+        last == null || last.index >= li.totalItemsCount - 1
+    }
+    var follow by remember { mutableStateOf(true) }
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }.collect { inProgress ->
+            if (!inProgress) follow = atBottomNow()
+        }
+    }
     LaunchedEffect(msgs.size, msgs.lastOrNull()?.id, msgs.lastOrNull()?.text, msgs.lastOrNull()?.pending) {
         if (msgs.isEmpty() || searchOn) return@LaunchedEffect
         val firstId = msgs.firstOrNull()?.id ?: 0L
         val sameConv = firstId == lastFirstId
-        // user scrolling up history must not be yanked back during streaming
+        // 首次加载 / 切会话：无条件瞬间到底（不用动画，避免几百条逐帧滚）。其余情况：
+        // 用户没往上翻（follow）时跟随到底——末尾恰好追加一条用平滑动画，批量合并瞬间到底。
         if (!sameConv) {
             listState.scrollToItem(msgs.size)
-        } else if (msgs.size == lastCount + 1) {
-            if (!listState.canScrollForward) listState.animateScrollToItem(msgs.size)
-        } else {
-            if (!listState.canScrollForward) listState.scrollToItem(msgs.size)
+            follow = true
+        } else if (follow) {
+            if (msgs.size == lastCount + 1) listState.animateScrollToItem(msgs.size)
+            else listState.scrollToItem(msgs.size)
         }
         lastCount = msgs.size
         lastFirstId = firstId
@@ -343,6 +364,7 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
     val bottomTick by vm.scrollBottomTick.collectAsStateWithLifecycle()
     LaunchedEffect(bottomTick) {
         if (bottomTick <= 0) return@LaunchedEffect
+        follow = true
         listState.animateScrollToItem(msgs.size)
     }
 
