@@ -4597,6 +4597,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         else -> b.toString() + " B"
     }
 
+    /**
+     * ViewModel 销毁：取消挂在进程级 scope 上的轮询 ticker。
+     *
+     * 原来没有 onCleared，每次 Activity 重建都会在 RuntimeHub.scope 上新起一条永不取消的
+     * ticker（字段在新实例里是 null，幂等守卫拦不住），越积越多。这里显式收掉。
+     */
+    override fun onCleared() {
+        runFlagsTicker?.cancel()
+        runFlagsTicker = null
+        super.onCleared()
+    }
+
     private fun installApk(ctx: Context, f: File) {
         try {
             val uri = FileProvider.getUriForFile(ctx, "com.hermesapp.fileprovider", f)

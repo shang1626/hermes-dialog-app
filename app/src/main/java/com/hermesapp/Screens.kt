@@ -1,5 +1,8 @@
 package com.hermesapp
 
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
@@ -80,8 +83,8 @@ fun ChatScreen(
     var fullscreen by remember { mutableStateOf(false) }
     val c = LocalAppColors.current
     val ctx = LocalContext.current
-    val pend by vm.pendingImages.collectAsState()
-    val note by vm.imageNote.collectAsState()
+    val pend by vm.pendingImages.collectAsStateWithLifecycle()
+    val note by vm.imageNote.collectAsStateWithLifecycle()
     var askVision by remember { mutableStateOf(false) }
 
     // 相册/图片选择器（系统 Photo Picker，无需存储权限）
@@ -98,13 +101,13 @@ fun ChatScreen(
         for (u in uris) vm.addFile(ctx, u)
     }
 
-    val quote by vm.quoteTarget.collectAsState()
+    val quote by vm.quoteTarget.collectAsStateWithLifecycle()
 
     Column(Modifier.fillMaxSize()) {
         // 「正在播放别的会话的语音」提示条：多任务排队时轮到的可能是另一个会话，
         // 光靠听分辨不出是谁的——这里显式标出来，并给「进入」「跳过」两个出口。
-        val curSid by vm.currentId.collectAsState()
-        val pSess by StreamVoicePlayer.playingSession.collectAsState()
+        val curSid by vm.currentId.collectAsStateWithLifecycle()
+        val pSess by StreamVoicePlayer.playingSession.collectAsStateWithLifecycle()
         val pOwner = pSess
         if (pOwner != null && pOwner.first.isNotEmpty() && pOwner.first != curSid) {
             Row(
@@ -144,7 +147,7 @@ fun ChatScreen(
         // 待处理卡片置顶提示：审批/澄清的卡片原来是嵌在助手气泡里的，长对话时埋在中间
         // 得滚半天才看得到（用户报「长文本上面看不到」）。这里在消息列表之上钉一条醒目
         // 提示，不管滚到哪都在眼前；点一下跳到那张卡片。没有待处理时不占任何高度。
-        val pendingAct by vm.pendingAction.collectAsState()
+        val pendingAct by vm.pendingAction.collectAsStateWithLifecycle()
         val pa = pendingAct
         if (pa != null) {
             Row(
@@ -286,7 +289,7 @@ fun ChatScreen(
 
     // 子任务进度面板：点气泡里的子任务行打开。数据由 vm 在刷（运行中每 3 秒一次），
     // 关掉即停；拿不到内容时面板里照实写「读不到」，不假装有进度。
-    val subDetail by vm.subDetail.collectAsState()
+    val subDetail by vm.subDetail.collectAsStateWithLifecycle()
     val sd = subDetail
     if (sd != null) SubagentDetailDialog(vm, sd)
 }
@@ -295,13 +298,13 @@ fun ChatScreen(
 @Composable
 fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
     val c = LocalAppColors.current
-    val msgs by vm.messages.collectAsState()
-    val note by vm.retryNote.collectAsState()
-    val searchOn by vm.searchActive.collectAsState()
-    val q by vm.searchQuery.collectAsState()
-    val hits by vm.searchIds.collectAsState()
-    val hitIdx by vm.searchIdx.collectAsState()
-    val rcMenu by vm.receiptMenu.collectAsState()
+    val msgs by vm.messages.collectAsStateWithLifecycle()
+    val note by vm.retryNote.collectAsStateWithLifecycle()
+    val searchOn by vm.searchActive.collectAsStateWithLifecycle()
+    val q by vm.searchQuery.collectAsStateWithLifecycle()
+    val hits by vm.searchIds.collectAsStateWithLifecycle()
+    val hitIdx by vm.searchIdx.collectAsStateWithLifecycle()
+    val rcMenu by vm.receiptMenu.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
     val focus = LocalFocusManager.current
     val ctx = LocalContext.current
@@ -342,7 +345,7 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
 
     // 顶部「待处理」提示点了「查看」：滚到那张卡片所在的消息，消费掉请求。
     // 单独一条通道，不复用搜索跳转（那条会把搜索栏弹出来）。
-    val scrollReq by vm.scrollToMsg.collectAsState()
+    val scrollReq by vm.scrollToMsg.collectAsStateWithLifecycle()
     LaunchedEffect(scrollReq) {
         val id = scrollReq ?: return@LaunchedEffect
         val pos = msgs.indexOfFirst { it.id == id }
@@ -446,10 +449,10 @@ fun ChatInputBar(
     onPasteImage: (android.net.Uri) -> Unit = {},
 ) {
     val c = LocalAppColors.current
-    val busy by vm.busy.collectAsState()
-    val queued by vm.queuedCount.collectAsState()
-    val paused by vm.queuedPaused.collectAsState()
-    val editText by vm.queuedEdit.collectAsState()
+    val busy by vm.busy.collectAsStateWithLifecycle()
+    val queued by vm.queuedCount.collectAsStateWithLifecycle()
+    val paused by vm.queuedPaused.collectAsStateWithLifecycle()
+    val editText by vm.queuedEdit.collectAsStateWithLifecycle()
     // 编辑排队消息：正文回填输入框，取走即清。
     LaunchedEffect(editText) {
         val e = editText
@@ -599,11 +602,33 @@ private fun fmtDuration(ms: Long): String {
  * 进行中的实时耗时：每秒重算一次并跳动显示，回复到达后该组件不再渲染。
  * 只读 startedAt，不碰任何状态机；就算一直没结束也只是每秒刷一个文本，开销可忽略。
  */
+/**
+ * 当前界面是否处于「前台可见」状态。
+ *
+ * 为什么需要：Compose 的 LaunchedEffect 在 App 退到后台时**不会**被取消（组合还在），
+ * 于是状态页 5 秒轮询、日志 2 秒轮询会一直跑——白耗电、白发包。
+ * 这里订阅生命周期，把「是否 RESUMED」暴露成 State，循环按它开关。
+ */
+@Composable
+private fun isResumedState(): State<Boolean> {
+    val owner = LocalLifecycleOwner.current
+    val st = remember { mutableStateOf(owner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) }
+    DisposableEffect(owner) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, _ ->
+            st.value = owner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+        }
+        owner.lifecycle.addObserver(obs)
+        onDispose { owner.lifecycle.removeObserver(obs) }
+    }
+    return st
+}
+
 @Composable
 private fun LiveElapsed(startedAt: Long, color: Color) {
+    val resumed by isResumedState()
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(startedAt) {
-        while (true) {
+    LaunchedEffect(startedAt, resumed) {
+        while (resumed) {
             now = System.currentTimeMillis()
             delay(1000L)
         }
@@ -655,7 +680,7 @@ private fun subagentProgressText(s: SubagentLine, now: Long): String {
 @Composable
 fun SubagentChip(vm: ChatViewModel, open: Boolean, onToggle: () -> Unit) {
     val c = LocalAppColors.current
-    val subs by vm.sessionSubagents.collectAsState()
+    val subs by vm.sessionSubagents.collectAsStateWithLifecycle()
     if (subs.isEmpty()) return
     val running = subs.count { it.status == "running" }
     Text(
@@ -678,7 +703,7 @@ fun SubagentChip(vm: ChatViewModel, open: Boolean, onToggle: () -> Unit) {
 @Composable
 fun SubagentList(vm: ChatViewModel) {
     val c = LocalAppColors.current
-    val subs by vm.sessionSubagents.collectAsState()
+    val subs by vm.sessionSubagents.collectAsStateWithLifecycle()
     if (subs.isEmpty()) return
     val running = subs.count { it.status == "running" }
     val cap = 5
@@ -686,13 +711,14 @@ fun SubagentList(vm: ChatViewModel) {
     val rows = if (showAll) subs else subs.take(cap)
     // 「N 秒前取的进度」的心跳：只在还有子任务在跑时才跳（进度本身 4 秒刷一回）。
     val tick = remember { mutableStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(running > 0) {
-        while (running > 0) {
+    val resumedSub by isResumedState()
+    LaunchedEffect(running > 0, resumedSub) {
+        while (running > 0 && resumedSub) {
             tick.value = System.currentTimeMillis()
             delay(3000L)
         }
     }
-    val curId by vm.currentId.collectAsState()
+    val curId by vm.currentId.collectAsStateWithLifecycle()
     Column(Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 10.dp, vertical = 4.dp)) {
         if (subs.size > cap) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1208,17 +1234,18 @@ fun Bubble(
 @Composable
 fun StatusScreen(vm: ChatViewModel, prefs: Prefs) {
     val c = LocalAppColors.current
-    val sections by vm.statusSections.collectAsState()
-    val metrics by vm.statusMetrics.collectAsState()
-    val hero by vm.statusHero.collectAsState()
-    val err by vm.statusErr.collectAsState()
-    val online by vm.online.collectAsState()
+    val sections by vm.statusSections.collectAsStateWithLifecycle()
+    val metrics by vm.statusMetrics.collectAsStateWithLifecycle()
+    val hero by vm.statusHero.collectAsStateWithLifecycle()
+    val err by vm.statusErr.collectAsStateWithLifecycle()
+    val online by vm.online.collectAsStateWithLifecycle()
     // 上次刷新时刻：给「每 5 秒自动刷新」配一个会动的秒数，一眼看出数据是新的。
     var refreshedAt by remember { mutableStateOf(0L) }
     LaunchedEffect(Unit) { vm.refreshStatus() }
-    // 每 5 秒自动刷新
-    LaunchedEffect(Unit) {
-        while (true) {
+    // 每 5 秒自动刷新（仅前台；退后台停，省电省包）
+    val resumedStatus by isResumedState()
+    LaunchedEffect(resumedStatus) {
+        while (resumedStatus) {
             delay(5000)
             vm.refreshStatus()
         }
@@ -1288,8 +1315,9 @@ fun StatusScreen(vm: ChatViewModel, prefs: Prefs) {
 private fun RefreshHeartbeat(refreshedAt: Long) {
     val c = LocalAppColors.current
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(Unit) {
-        while (true) {
+    val resumedHb by isResumedState()
+    LaunchedEffect(resumedHb) {
+        while (resumedHb) {
             now = System.currentTimeMillis()
             delay(1000L)
         }
@@ -1407,12 +1435,12 @@ fun StatusCard(s: StatusSection) {
 @Composable
 fun JobsScreen(vm: ChatViewModel, prefs: Prefs) {
     val c = LocalAppColors.current
-    val jobs by vm.jobs.collectAsState()
-    val err by vm.jobsErr.collectAsState()
-    val note by vm.jobsNote.collectAsState()
-    val reports by vm.inbox.collectAsState()
-    val unread by vm.inboxUnread.collectAsState()
-    val inboxErr by vm.inboxErr.collectAsState()
+    val jobs by vm.jobs.collectAsStateWithLifecycle()
+    val err by vm.jobsErr.collectAsStateWithLifecycle()
+    val note by vm.jobsNote.collectAsStateWithLifecycle()
+    val reports by vm.inbox.collectAsStateWithLifecycle()
+    val unread by vm.inboxUnread.collectAsStateWithLifecycle()
+    val inboxErr by vm.inboxErr.collectAsStateWithLifecycle()
     var showDisabled by remember { mutableStateOf(false) }
     var clearConfirm by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<CronReport?>(null) }
@@ -1499,7 +1527,7 @@ fun JobsScreen(vm: ChatViewModel, prefs: Prefs) {
     }
 
     // 产出全文：点收件箱某一条弹出。
-    val viewing by vm.cronReport.collectAsState()
+    val viewing by vm.cronReport.collectAsStateWithLifecycle()
     val vr = viewing
     if (vr != null) CronReportDialog(vm, vr)
 
@@ -1757,10 +1785,10 @@ fun SettingsScreen(
 ) {
     val c = LocalAppColors.current
     val ctx = LocalContext.current
-    val updateNote by vm.updateNote.collectAsState()
-    val pending by vm.pendingUpdate.collectAsState()
-    val pct by vm.downloadPct.collectAsState()
-    val dtext by vm.downloadText.collectAsState()
+    val updateNote by vm.updateNote.collectAsStateWithLifecycle()
+    val pending by vm.pendingUpdate.collectAsStateWithLifecycle()
+    val pct by vm.downloadPct.collectAsStateWithLifecycle()
+    val dtext by vm.downloadText.collectAsStateWithLifecycle()
     var url by remember { mutableStateOf(prefs.serverUrl) }
     var keepAlive by remember { mutableStateOf(prefs.keepAlive) }
     var notifyDone by remember { mutableStateOf(prefs.notifySessionCompletions) }
@@ -1769,7 +1797,7 @@ fun SettingsScreen(
     var showClear by remember { mutableStateOf(false) }
     // 排查诊断区默认收起：运行日志/闪退记录平时用不上，展开才占屏幕。
     var diagOpen by remember { mutableStateOf(false) }
-    val cacheText by vm.cacheText.collectAsState()
+    val cacheText by vm.cacheText.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.refreshCache() }
     val vc = remember {
         runCatching {
@@ -1874,7 +1902,7 @@ fun SettingsScreen(
         Spacer(Modifier.height(22.dp))
         SectionTitle("版本更新")
         Spacer(Modifier.height(10.dp))
-        val hasUpdate by vm.updateBadge.collectAsState()
+        val hasUpdate by vm.updateBadge.collectAsStateWithLifecycle()
         Box(Modifier.fillMaxWidth()) {
             OutlinedButton(
                 onClick = { vm.checkUpdate(vc, ctx) }, modifier = Modifier.fillMaxWidth()
@@ -1944,8 +1972,9 @@ fun SettingsScreen(
         if (diagOpen) {
             // 运行日志：连接/重连/发送/收流的关键节点留痕。排查「连不上」时复制全文发出来。
             var logText by remember { mutableStateOf(AppLog.tail(ctx, 300)) }
-            LaunchedEffect(Unit) {
-                while (true) {
+            val resumedLog by isResumedState()
+            LaunchedEffect(resumedLog) {
+                while (resumedLog) {
                     delay(2000)
                     logText = AppLog.tail(ctx, 300)
                 }
@@ -1998,7 +2027,7 @@ fun SettingsScreen(
                 ) { Text("清除", color = c.dim, fontSize = 12.sp) }
             }
             Spacer(Modifier.height(6.dp))
-            val diagNote by vm.diagNote.collectAsState()
+            val diagNote by vm.diagNote.collectAsStateWithLifecycle()
             if (diagNote.isNotEmpty()) {
                 Text(diagNote, color = c.accent, fontSize = 11.sp)
                 Spacer(Modifier.height(4.dp))

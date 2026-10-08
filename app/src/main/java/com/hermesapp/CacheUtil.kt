@@ -15,6 +15,10 @@ object CacheUtil {
     private fun apkDir(ctx: Context) = File(ctx.getExternalFilesDir(null), "apk")
     /** Coil 默认磁盘缓存目录；按目录清，避免依赖其 API 版本差异。 */
     private fun imgCache(ctx: Context) = File(ctx.cacheDir, "image_cache")
+    /** 流式语音落盘目录：每条约 10~100KB，只增不减会慢慢涨。 */
+    private fun voiceDir(ctx: Context) = File(ctx.cacheDir, "voice_replay")
+    /** 导出目录（日志/记录导出）：分享完就没用了，可清。 */
+    private fun exportsDir(ctx: Context) = File(ctx.filesDir, "exports")
 
     private fun dirSize(f: File?): Long {
         if (f == null || !f.exists()) return 0L
@@ -26,7 +30,8 @@ object CacheUtil {
     fun sizes(ctx: Context): Triple<Long, Long, Long> =
         Triple(dirSize(outbox(ctx)), dirSize(apkDir(ctx)), dirSize(imgCache(ctx)))
 
-    fun total(ctx: Context): Long = sizes(ctx).let { it.first + it.second + it.third }
+    fun total(ctx: Context): Long = sizes(ctx).let { it.first + it.second + it.third } +
+        dirSize(voiceDir(ctx)) + dirSize(exportsDir(ctx))
 
     /** 清空三项临时缓存；会话记录/草稿/登录状态一律不动。 */
     fun clear(ctx: Context) {
@@ -35,5 +40,8 @@ object CacheUtil {
         runCatching { imgCache(ctx).listFiles()?.forEach { it.deleteRecursively() } }
         // 附件落盘目录：打开/分享/保存每次都写一份，原来只增不减。
         runCatching { File(ctx.filesDir, "attachments").listFiles()?.forEach { it.deleteRecursively() } }
+        // 流式语音/导出目录：同样只增不减，纳入清理。
+        runCatching { voiceDir(ctx).listFiles()?.forEach { it.deleteRecursively() } }
+        runCatching { exportsDir(ctx).listFiles()?.forEach { it.deleteRecursively() } }
     }
 }

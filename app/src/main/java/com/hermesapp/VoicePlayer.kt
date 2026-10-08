@@ -118,6 +118,7 @@ object VoicePlayer {
                 if (player === it) {
                     player = null
                     _nowPlaying.value = ""
+                    AudioFocus.abandon()
                     StreamVoicePlayer.resumeQueue()   // 本播放器让位结束，队列接着播
                 }
             }
@@ -127,6 +128,7 @@ object VoicePlayer {
                 if (player === p) {
                     player = null
                     _nowPlaying.value = ""
+                    AudioFocus.abandon()
                     StreamVoicePlayer.resumeQueue()
                 }
                 true
@@ -137,6 +139,8 @@ object VoicePlayer {
             if (r != 1.0f) {
                 runCatching { mp.playbackParams = mp.playbackParams.setSpeed(r.coerceIn(0.5f, 2.0f)) }
             }
+            // 申请音频焦点：不申请的话，播语音不会压低正在放的音乐/视频，两条叠着响。
+            AudioFocus.request(ctx)
             mp.start()
             AppLog.log("voice", "语音已开始播放 " + bytes.size + " 字节")
         } catch (e: Exception) {
@@ -166,6 +170,7 @@ object VoicePlayer {
             runCatching { if (p.isPlaying) p.stop() }
             runCatching { p.release() }
         }
+        AudioFocus.abandon()
         // 让位结束：排队的流式语音接着播（若本次是「停全部」，队列已被清空，这里是空操作）。
         StreamVoicePlayer.resumeQueue()
     }

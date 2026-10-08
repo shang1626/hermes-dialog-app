@@ -1,3 +1,21 @@
+## 2.143 — versionCode 154
+
+按同事评估报告核实后，把剩余 7 条小项全部修完（结构性大工程另开专题）。
+
+- **后台轮询不停（P1-3）**：全仓 0 个 `collectAsStateWithLifecycle`，状态页 5 秒、日志 2 秒、侧栏心跳的轮询切后台照跑。改为生命周期感知（`isResumedState()` + 55 处 `collectAsStateWithLifecycle`），退后台即停，省电省包。
+- **网络层残留（P1-4）**：四个 `OkHttpClient` 各自独立连接池/线程池；改为共享同一 `ConnectionPool` + `Dispatcher`（OkHttp 官方推荐派生共享）。
+- **本地存储三处（P1-8）**：① 300 条上限硬丢 → 被裁的历史归档进 `.archive.json`，不再永久丢失；② 索引加 `schema` 版本字段（兼容老裸数组格式）；③ 老格式迁移改为「确认索引落盘后才删老文件」，失败不再丢历史。
+- **明文流量（P2）**：`usesCleartextTraffic` 关掉，登录页要求 `https://`，填 http 会提示（密钥不再明文上网）。
+- **目录只增不减（P2）**：`voice_replay`、`exports` 纳入 `CacheUtil` 清理与统计（此前只清 outbox/apk/image_cache/attachments）。
+- **无音频焦点（P2）**：新增 `AudioFocus`，三个播放器起播申请 `TRANSIENT_MAY_DUCK`、收尾/停止释放，播语音时系统会压低别的 App。
+- **ticker 泄漏（P1-7）**：`ChatViewModel` 补 `onCleared()` 取消挂在进程级 scope 上的 `runFlagsTicker`，不再每次界面重建泄漏一条。
+
+未采纳（实测判错/高估）：P0-3 语音队列（3 秒自愈）、P0-4（已有 finished 复位）、SSE 多行拼接（服务端单行 JSON）。结构性大工程（P1-1 跨线程状态、P1-2 上帝类、零测试、零 CI）另开专题。
+
+（改 Screens.kt / App.kt / Markdown.kt / ChatViewModel.kt / SessionStore.kt / CacheUtil.kt / VoicePlayer.kt / VoiceReplayPlayer.kt / StreamVoicePlayer.kt / net/HermesApi.kt / AndroidManifest.xml / build.gradle.kts；新增 AudioFocus.kt）
+
+---
+
 ## 2.142 — versionCode 153
 
 按同事评估报告核实后，继续修 6 处（都是实测属实的）。

@@ -67,7 +67,18 @@ class HermesApi(
     private val apiKey: String,
     private val prefix: String = "",
 ) {
+    /**
+     * 四个 client 共享同一连接池与调度器。
+     *
+     * 各自 new OkHttpClient() 会给每个实例配独立连接池 + 独立线程池：长连接数翻几倍，
+     * 闲置连接各占一份内存，边缘也更容易把某条连接掐掉。派生共享是 OkHttp 官方推荐做法。
+     */
+    private val sharedPool = okhttp3.ConnectionPool(5, 5, TimeUnit.MINUTES)
+    private val sharedDispatcher = okhttp3.Dispatcher()
+
     private val client = OkHttpClient.Builder()
+        .connectionPool(sharedPool)
+        .dispatcher(sharedDispatcher)
         .dns(IPv4FirstDns)
         .protocols(listOf(Protocol.HTTP_1_1))
         .connectTimeout(20, TimeUnit.SECONDS)
@@ -84,6 +95,8 @@ class HermesApi(
      * 在线状态冻结在最后一次结果（表现为「掉线了还显示在线」）。
      */
     private val probeClient = OkHttpClient.Builder()
+        .connectionPool(sharedPool)
+        .dispatcher(sharedDispatcher)
         .dns(IPv4FirstDns)
         // 2026-10-08：超时放宽到 15s 只是治标（仍远小于 SSE 的 30s 读超时）。
         // 真正的病根是「连着就走 IPv6 黑洞」+ 这里关着重试，见 IPv4FirstDns 的注释。
@@ -109,6 +122,8 @@ class HermesApi(
      * 真假死时 30 秒抛 SocketTimeoutException，交给上层走重连。
      */
     private val streamClient = OkHttpClient.Builder()
+        .connectionPool(sharedPool)
+        .dispatcher(sharedDispatcher)
         .dns(IPv4FirstDns)
         .protocols(listOf(Protocol.HTTP_1_1))
         .connectTimeout(20, TimeUnit.SECONDS)
@@ -130,6 +145,8 @@ class HermesApi(
      * 换协议重发即可绕开。故本 client 强制 HTTP/1.1、其余参数与主 client 一致。
      */
     private val h1Client = OkHttpClient.Builder()
+        .connectionPool(sharedPool)
+        .dispatcher(sharedDispatcher)
         .dns(IPv4FirstDns)
         .protocols(listOf(Protocol.HTTP_1_1))
         .connectTimeout(20, TimeUnit.SECONDS)
