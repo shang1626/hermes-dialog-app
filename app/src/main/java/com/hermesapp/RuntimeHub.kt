@@ -43,66 +43,66 @@ internal class SessionRuntime(val id: String) {
     val messages = MutableStateFlow<List<Msg>>(emptyList())
     val busy = MutableStateFlow(false)
     val retryNote = MutableStateFlow("")
-    var runId: String = ""
-    var call: Call? = null
+    @Volatile var runId: String = ""
+    @Volatile var call: Call? = null
     /**
      * 流的代际号：每起一条新流就 +1。被新流取代的旧流，其回调据此自我作废——
      * 否则两条流会同时收 run.completed，正文、通知与语音都执行两遍（实测 2.81 回前台重复播报）。
      */
-    var streamGen: Int = 0
-    var lastSeq: Int = -1
-    var autoContinue: Int = 0
+    @Volatile var streamGen: Int = 0
+    @Volatile var lastSeq: Int = -1
+    @Volatile var autoContinue: Int = 0
     /**
      * 退避探测单飞位：同一会话同时只允许一条退避链在等。
      * 多口子（onClosed / onError / 回前台体检）并发进来时，只有一个能排上重试。
      */
     val probing = java.util.concurrent.atomic.AtomicBoolean(false)
-    var finished: Boolean = false
+    @Volatile var finished: Boolean = false
     /** 这条 run 是重开 App 后从落盘标记恢复的（没有本地发送上下文，拿不到位置锚点）。 */
-    var resumed: Boolean = false
-    var startedAt: Long = 0L
-    var loaded: Boolean = false
+    @Volatile var resumed: Boolean = false
+    @Volatile var startedAt: Long = 0L
+    @Volatile var loaded: Boolean = false
     /** 正在异步读盘（防并发重复读）。 */
-    var loading: Boolean = false
+    @Volatile var loading: Boolean = false
     /**
      * 已删除/作废：待执行或正在跑的保存任务据此放弃写盘。
      * 没有它的话，「删除会话」之后刚到点的异步保存会把文件又写回来（文件复活）。
      */
-    var dead: Boolean = false
+    @Volatile var dead: Boolean = false
     /** 本次切到该会话的墙钟时刻：算「点一下到能看」的总耗时（perf 日志用）。 */
-    var switchStartedAt: Long = 0L
-    var saveJob: Job? = null
+    @Volatile var switchStartedAt: Long = 0L
+    @Volatile var saveJob: Job? = null
     /** 本轮发送（上传附件 + 建 run）协程：停止时要能掐掉，别让上传完还接着起流。 */
-    var sendJob: Job? = null
+    @Volatile var sendJob: Job? = null
     /** 最近一次收到事件的墙钟时间，用于「回到前台」判断流是否已假死。 */
-    var lastEventAt: Long = 0L
+    @Volatile var lastEventAt: Long = 0L
     /** 本轮（当前这条流）收到的 SSE 事件条数：排查「步骤不显示」时看事件到底到没到。 */
-    var evCount: Int = 0
+    @Volatile var evCount: Int = 0
     /** 本轮收到的工具事件（tool.started/completed/failed）条数。 */
-    var toolCount: Int = 0
+    @Volatile var toolCount: Int = 0
     /** 流式攒帧器：把碎字按帧放送，避免一大块一大块地跳。 */
-    var coalescer: StreamDeltaCoalescer? = null
+    @Volatile var coalescer: StreamDeltaCoalescer? = null
     /** 本轮发送前该会话已有多少条用户消息：断流翻历史时的位置锚点。 */
-    var priorUserCount: Int = 0
+    @Volatile var priorUserCount: Int = 0
     /** 本轮待发正文（trim 过）：锚点的内容校验用。 */
-    var pendingSendText: String = ""
+    @Volatile var pendingSendText: String = ""
     /** 最近一条用户消息的 id：投递回执按它认领。 */
-    var lastUserMsgId: Long = 0L
+    @Volatile var lastUserMsgId: Long = 0L
     /** 「确认送达」进行中要回写的用户消息 id；0 表示没有。 */
-    var confirmingMsgId: Long = 0L
+    @Volatile var confirmingMsgId: Long = 0L
     /** 断流翻历史的轮询任务；收到正常事件或任务结束时取消。 */
-    var recoveryJob: Job? = null
+    @Volatile var recoveryJob: Job? = null
     /**
      * 「待同步」标记：回前台想同步、但该会话此刻正在跑（服务端记录还是半成品），
      * 就先记下，等本轮收尾（doneOk / failPending）时自动补拉一次。
      * 放在会话运行态上而不是函数局部——收尾可能发生在另一个 ViewModel 实例里。
      */
-    var needSync: Boolean = false
+    @Volatile var needSync: Boolean = false
     /**
      * 子任务进度轮询：本会话有子代理在跑时挂一条，全部收工自动退出。
      * 加在会话运行态上（而不是函数局部）——Activity 被系统重建后，进度还接着刷。
      */
-    var subSweep: Job? = null
+    @Volatile var subSweep: Job? = null
     /** 本会话排队待发的消息（跑着任务时用户又发的那些），按先后顺序，本轮结束依次发。 */
     val queue = mutableListOf<QueuedSend>()
     /** 队列长度：输入栏显示「排队 N 条」。 */
