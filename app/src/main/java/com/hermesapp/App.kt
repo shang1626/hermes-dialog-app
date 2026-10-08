@@ -665,7 +665,7 @@ fun DrawerPanel(
                                 meta = s,
                                 selected = s.id == currentId && !showArchived,
                                 archived = showArchived,
-                                running = runFlags[s.id]?.busy == true,
+                                running = (runFlags[s.id]?.busy == true) || (runFlags[s.id]?.remote == true),
                                 flag = runFlags[s.id],
                                 showSort = sortMode,
                                 canUp = idx > 0,
@@ -789,7 +789,7 @@ fun SessionRow(
                     maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false)
                 )
                 val marks = mutableListOf<String>()
-                if (running) marks.add("执行中")
+                if (flag?.busy == true) marks.add("执行中") else if (flag?.remote == true) marks.add("其它端执行中")
                 if (sub > 0) marks.add("子任务 " + sub)
                 if (queued > 0) marks.add("排队 " + queued)
                 if (marks.isNotEmpty()) {
