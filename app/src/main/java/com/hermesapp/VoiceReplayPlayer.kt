@@ -96,6 +96,7 @@ object VoiceReplayPlayer {
                 if (player === it) {
                     player = null
                     _nowPlaying.value = ""
+                    AudioFocus.abandon()
                     StreamVoicePlayer.resumeQueue()   // 重播结束，队列接着播
                 }
             }
@@ -105,6 +106,7 @@ object VoiceReplayPlayer {
                 if (player === p) {
                     player = null
                     _nowPlaying.value = ""
+                    AudioFocus.abandon()
                     StreamVoicePlayer.resumeQueue()
                 }
                 true
@@ -114,6 +116,7 @@ object VoiceReplayPlayer {
             if (r != 1.0f) {
                 runCatching { mp.playbackParams = mp.playbackParams.setSpeed(r.coerceIn(0.5f, 2.0f)) }
             }
+            AudioFocus.request(ctx)
             mp.start()
             AppLog.log("voice", "重播已开始 run=" + runId.take(12) + " " + bytes.size + " 字节")
         } catch (e: Exception) {
@@ -143,6 +146,7 @@ object VoiceReplayPlayer {
             runCatching { if (p.isPlaying) p.stop() }
             runCatching { p.release() }
         }
+        AudioFocus.abandon()
         // 让位结束：排队的流式语音接着播（「停全部」时队列已清空，这里是空操作）。
         StreamVoicePlayer.resumeQueue()
     }

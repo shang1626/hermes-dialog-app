@@ -1,4 +1,6 @@
 package com.hermesapp
+
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Download
 
@@ -16,7 +18,6 @@ import androidx.compose.material3.Text
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -698,7 +699,7 @@ private fun MdAttachmentCard(name: String, dataUrl: String, token: String) {
 fun VoiceMiniButton(target: String, modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
     val c = LocalAppColors.current
-    val playing by VoicePlayer.nowPlaying.collectAsState()
+    val playing by VoicePlayer.nowPlaying.collectAsStateWithLifecycle()
     val isThis = target.isNotEmpty() && playing == target
     Icon(
         imageVector = if (isThis) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
@@ -720,7 +721,7 @@ fun VoiceMiniButton(target: String, modifier: Modifier = Modifier) {
 fun VoiceReplayMiniButton(runId: String, modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
     val c = LocalAppColors.current
-    val playing by VoiceReplayPlayer.nowPlaying.collectAsState()
+    val playing by VoiceReplayPlayer.nowPlaying.collectAsStateWithLifecycle()
     val isThis = runId.isNotEmpty() && playing == runId
     Icon(
         imageVector = if (isThis) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
@@ -742,8 +743,8 @@ fun VoiceReplayMiniButton(runId: String, modifier: Modifier = Modifier) {
 @Composable
 fun VoiceSpeakerMark(runId: String) {
     val c = LocalAppColors.current
-    val streamKey by StreamVoicePlayer.nowPlaying.collectAsState()
-    val replay by VoiceReplayPlayer.nowPlaying.collectAsState()
+    val streamKey by StreamVoicePlayer.nowPlaying.collectAsStateWithLifecycle()
+    val replay by VoiceReplayPlayer.nowPlaying.collectAsStateWithLifecycle()
     if (runId.isNotEmpty() && (streamKey == "stream:" + runId || replay == runId)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Spacer(Modifier.width(6.dp))

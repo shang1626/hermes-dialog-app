@@ -40,6 +40,9 @@ class SessionStore(ctx: Context, private val profile: String) {
 
     private val dir: File = ctx.filesDir
 
+    /** 索引文件格式版本：改了字段结构就 +1，读到旧值按旧格式解析。 */
+    private val SCHEMA_INDEX = 2
+
     private fun indexFile() = File(dir, "sessions_$profile.json")
 
     /** 同一文件的写盘串行锁：两个协程并发写同一份 JSON 会交错截断，留下半截文件。 */
@@ -100,7 +103,10 @@ class SessionStore(ctx: Context, private val profile: String) {
         // 排除原子写留下的 .bak/.tmp：它们不是会话本身，算进去会让「消息文件 N 个 / X 字节」
         // 虚高近一倍，而这条诊断正是为排查「历史对话没了」准备的，数字不能失真。
         val idxFiles = files.filter { it.name.startsWith("sessions_") && !it.name.endsWith(".bak") && !it.name.endsWith(".tmp") }
-        val chatFiles = files.filter { it.name.startsWith("chat_") && !it.name.endsWith(".bak") && !it.name.endsWith(".tmp") }
+        val chatFiles = files.filter {
+            it.name.startsWith("chat_") && !it.name.endsWith(".bak") &&
+                !it.name.endsWith(".tmp") && !it.name.endsWith(".archive.json")
+        }
         val names = if (idxFiles.size <= 4) idxFiles.joinToString(",") { it.name }
                     else "共" + idxFiles.size + "个"
         return "索引[" + (if (idx.exists()) idx.name + "=" + idx.length() + "B" else idx.name + "=无") + "]" +
@@ -114,14 +120,24 @@ class SessionStore(ctx: Context, private val profile: String) {
         val f = indexFile()
         if (!f.exists()) return out
         try {
+            // 兼容两种外形：老版是裸数组 `[...]`，新版是 `{"schema":N,"sessions":[...]}`。
+            // 解析辅助同时接受两者，老文件照常能读。
+            fun parseArr(text: String): JSONArray {
+                val t = text.trim()
+                return if (t.startsWith("{")) {
+                    JSONObject(t).optJSONArray("sessions") ?: JSONArray()
+                } else {
+                    JSONArray(t)
+                }
+            }
             val arr = try {
-                JSONArray(readTextOrBackup(f))
+                parseArr(readTextOrBackup(f))
             } catch (e: Exception) {
                 // 主文件是半截 JSON（写盘被中断）：回退上一次的备份。
                 val bak = File(dir, f.name + ".bak")
                 if (bak.exists()) {
                     AppLog.err("store", "索引解析失败，回退备份 字节=" + f.length(), e)
-                    JSONArray(bak.readText())
+                    parseArr(bak.readText())
                 } else throw e
             }
             for (i in 0 until arr.length()) {
@@ -164,9 +180,13 @@ class SessionStore(ctx: Context, private val profile: String) {
                         .put("order", s.order)
                 )
             }
-            writeAtomic(indexFile(), arr.toString())
+            // 加 schema 版本号：将来改字段格式时能判断来源版本，避免旧版读到新结构
+            // 后把不认识的字段当默认值写回、造成静默丢字段。旧文件没这个键，读到 0/缺失
+            // 一律按当前版本处理，向后兼容。
+            val wrapper = JSONObject().put("schema", SCHEMA_INDEX).put("sessions", arr)
+            writeAtomic(indexFile(), wrapper.toString())
             AppLog.log("store", "存索引 profile=" + profile + " 条数=" + list.size +
-                " 已归档=" + archivedCount)
+                " 已归档=" + archivedCount + " schema=" + SCHEMA_INDEX)
         } catch (e: Exception) {
             AppLog.err("store", "存索引失败 条数=" + list.size + " 已归档=" + archivedCount, e)
         }
@@ -296,6 +316,27 @@ class SessionStore(ctx: Context, private val profile: String) {
         return out
     }
 
+    /** 归档文件名（按会话隔离）。 */
+    private fun archiveFile(id: String) = File(dir, "chat_${profile}_$id.archive.json")
+
+    /**
+     * 把超上限被裁掉的历史消息追加进归档文件（JSON Array）。
+     * 追加式写入：读出旧数组 → 拼新条目 → 原子写回。归档只在裁剪时发生，频率很低。
+     */
+    private fun appendArchive(id: String, dropped: List<Msg>) {
+        runCatching {
+            val f = archiveFile(id)
+            val old = if (f.exists()) {
+                runCatching { JSONArray(f.readText()) }.getOrDefault(JSONArray())
+            } else JSONArray()
+            for (m in dropped) {
+                old.put(JSONObject().put("role", m.role).put("text", m.text).put("ts", m.ts))
+            }
+            writeAtomic(f, old.toString())
+            AppLog.log("store", "归档历史 id=" + id.take(8) + " 新增=" + dropped.size + " 总=" + old.length())
+        }
+    }
+
     fun saveMessages(id: String, list: List<Msg>, max: Int = 300) {
         runCatching {
             // pending 且正文空、轨迹空、又没有待办卡片的才是空壳可丢；
@@ -304,7 +345,16 @@ class SessionStore(ctx: Context, private val profile: String) {
                 !(it.pending && it.text.isEmpty() && it.trace.isEmpty() &&
                     it.approval == null && it.clarify == null && it.subagents.isEmpty())
             }
-            val tail = if (clean.size > max) clean.takeLast(max) else clean
+            // 超上限时把被裁掉的头部**归档**而不是丢掉：以前直接 takeLast(max) 硬丢，
+            // 长会话翻旧消息就永久找不回来了。归档到独立文件，主文件保持小而快。
+            val tail: List<Msg>
+            if (clean.size > max) {
+                val dropped = clean.dropLast(max)
+                appendArchive(id, dropped)
+                tail = clean.takeLast(max)
+            } else {
+                tail = clean
+            }
             val arr = JSONArray()
             for (m in tail) {
                 val o = JSONObject().put("role", m.role).put("text", m.text).put("ts", m.ts)
@@ -420,6 +470,8 @@ class SessionStore(ctx: Context, private val profile: String) {
         } else {
             AppLog.err("store", "删消息文件失败，保留备份 id=" + id.take(8), null)
         }
+        // 归档文件一并删：主文件删了还留着归档，既占空间又可能被误读回来。
+        runCatching { archiveFile(id).delete() }
         AppLog.log("store", "删消息文件 id=" + id.take(8) + " 删除=" + ok)
     }
 
@@ -538,9 +590,16 @@ class SessionStore(ctx: Context, private val profile: String) {
             }
             val id = legacySessionId.ifEmpty { UUID.randomUUID().toString() }
             f.copyTo(msgFile(id), overwrite = true)
-            f.delete()
             val meta = SessionMeta(id, "历史对话", System.currentTimeMillis(), false)
             saveIndex(listOf(meta))
+            // 只有确认索引真的写盘了，才删老格式文件。
+            // 以前是先删后写索引：saveIndex 静默失败时，老文件已经没了、索引也没建，
+            // 这段历史就永久丢失。
+            if (indexFile().exists()) {
+                f.delete()
+            } else {
+                AppLog.err("store", "迁移：索引未落盘，保留老文件", null)
+            }
             return meta
         }
         return null

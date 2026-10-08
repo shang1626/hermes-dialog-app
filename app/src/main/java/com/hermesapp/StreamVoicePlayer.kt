@@ -299,6 +299,7 @@ object StreamVoicePlayer {
             if (r != 1.0f) {
                 runCatching { exo.setPlaybackSpeed(r.coerceIn(0.5f, 2.0f)) }
             }
+            AudioFocus.request(ctx)
             exo.playWhenReady = true
             exo.addListener(object : androidx.media3.common.Player.Listener {
                 override fun onPlaybackStateChanged(state: Int) {
@@ -337,6 +338,7 @@ object StreamVoicePlayer {
             runCatching { old?.stop() }
             runCatching { old?.release() }
         }
+        AudioFocus.abandon()
         closeItem(it)
         AppLog.log("voice", "流式语音播完 key=" + key + " 队列剩=" + order.size)
         pump()
@@ -368,6 +370,7 @@ object StreamVoicePlayer {
             }
             for (r in rafs) runCatching { r?.close() }
         }
+        AudioFocus.abandon()
     }
 
     /**

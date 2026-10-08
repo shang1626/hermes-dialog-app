@@ -1,5 +1,7 @@
 package com.hermesapp
 
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
@@ -338,7 +340,7 @@ fun LoginScreen(prefs: Prefs, onDone: () -> Unit) {
                 val u = url.trim()
                 when {
                     u.isEmpty() -> err = "请先填写服务器地址"
-                    !u.startsWith("http") -> err = "地址需以 http(s):// 开头"
+                    !u.startsWith("https://") -> err = "地址需以 https:// 开头（明文 http 会泄露密钥，已禁用）"
                     pwd != Keys.APP_PASSWORD -> err = "密码错误"
                     else -> { prefs.serverUrl = u; choosing = true }
                 }
@@ -392,7 +394,7 @@ fun MainScaffold(
 ) {
     val c = LocalAppColors.current
     var tab by remember { mutableStateOf(0) }
-    val currentId by vm.currentId.collectAsState()
+    val currentId by vm.currentId.collectAsStateWithLifecycle()
     // 输入框内容提到这里，切到状态/设置再回来不丢；草稿写盘，进程被杀重进也能恢复。
     // ⚠️ 草稿按会话隔离：remember(currentId) 让切会话时重新取该会话自己的草稿。
     // 原来用全局一个 prefs.draftInput，导致「A 会话输入没发出去、切到 B 会话内容还在」。
@@ -475,7 +477,7 @@ fun MainScaffold(
 @Composable
 fun TopBar(vm: ChatViewModel, prefs: Prefs, tab: Int, onMenu: () -> Unit) {
     val c = LocalAppColors.current
-    val online by vm.online.collectAsState()
+    val online by vm.online.collectAsStateWithLifecycle()
     val title = when (tab) { 0 -> "对话"; 1 -> "状态"; 3 -> "定时任务"; else -> "设置" }
     // 子任务小标展开状态：默认折叠，点顶栏那个小标才在下面列明细。
     var subOpen by remember { mutableStateOf(false) }
@@ -510,7 +512,7 @@ fun TopBar(vm: ChatViewModel, prefs: Prefs, tab: Int, onMenu: () -> Unit) {
         Text("●", color = if (online) c.ok else c.bad, fontSize = 12.sp)
         // 圆点右边：服务器 CPU 使用率，只显百分比、不带文字标签；颜色随负载变
         //（低绿 / 中黄 / 高红）。值取到 -1（还没拉到）时不占位。
-        val cpu by vm.cpuPercent.collectAsState()
+        val cpu by vm.cpuPercent.collectAsStateWithLifecycle()
         if (cpu >= 0) {
             Spacer(Modifier.width(12.dp))
             val cpuColor = when {
@@ -538,10 +540,10 @@ fun DrawerPanel(
 ) {
     val c = LocalAppColors.current
     val ctx = LocalContext.current
-    val sessions by vm.sessions.collectAsState()
-    val currentId by vm.currentId.collectAsState()
-    val updateBadge by vm.updateBadge.collectAsState()
-    val runFlags by vm.runFlags.collectAsState()
+    val sessions by vm.sessions.collectAsStateWithLifecycle()
+    val currentId by vm.currentId.collectAsStateWithLifecycle()
+    val updateBadge by vm.updateBadge.collectAsStateWithLifecycle()
+    val runFlags by vm.runFlags.collectAsStateWithLifecycle()
     var showArchived by remember { mutableStateOf(false) }
     // 排序模式：默认关，标题行点「排序」才在每行右侧露出上/下移箭头。
     // 目的是把常驻的排序控件收进一个入口，平时列表干净。
@@ -610,9 +612,9 @@ fun DrawerPanel(
             }
             Spacer(Modifier.height(6.dp))
 
-            val gActive by vm.globalActive.collectAsState()
-            val gQuery by vm.globalQuery.collectAsState()
-            val gHits by vm.globalHits.collectAsState()
+            val gActive by vm.globalActive.collectAsStateWithLifecycle()
+            val gQuery by vm.globalQuery.collectAsStateWithLifecycle()
+            val gHits by vm.globalHits.collectAsStateWithLifecycle()
 
             if (gActive) {
                 // 跨会话搜索：搜本地全部会话，点结果跳到那个会话并定位到该条

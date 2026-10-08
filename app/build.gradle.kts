@@ -21,8 +21,8 @@ android {
         applicationId = "com.hermesapp"
         minSdk = 26
         targetSdk = 34
-        versionCode = 153
-        versionName = "2.142"
+        versionCode = 154
+        versionName = "2.143"
 
         // 敏感值由 local.properties 注入，源码零真值。
         buildConfigField("String", "APP_PASSWORD", "\"${cfg("HERMES_APP_PASSWORD")}\"")
@@ -72,6 +72,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.4")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.4")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.4")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("androidx.activity:activity-compose:1.9.1")
     implementation(platform("androidx.compose:compose-bom:2024.06.00"))
