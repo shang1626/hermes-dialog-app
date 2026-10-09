@@ -137,6 +137,22 @@ object Notifier {
         runCatching { NotificationManagerCompat.from(ctx).notify(ACTION_NOTIF_ID, n) }
     }
 
+    /**
+     * 清掉业务提醒：新消息/任务完成（2001）与审批/澄清（2002）。
+     *
+     * App 回到前台时调。此前这两条只在**点通知**时才自动消失（`setAutoCancel(true)` 只挂
+     * 在 tap 的 PendingIntent 上），用户直接点图标进 App、不点通知时，横幅就一直挂在通知栏
+     * （用户 2026-10-09 报障：a 对话完成的通知，直接开 App 进 a 对话后仍不消失）。
+     *
+     * ⚠ 只清这两条业务提醒，**绝不动 RunService 的后台常驻通知（id 1001）**——那条是
+     * 「后台运行」的可见性凭据，清掉会让用户以为服务挂了。
+     */
+    fun clearBusinessNotifications(ctx: Context) {
+        val mgr = NotificationManagerCompat.from(ctx)
+        runCatching { mgr.cancel(NOTIF_ID) }
+        runCatching { mgr.cancel(ACTION_NOTIF_ID) }
+    }
+
     const val ACTION_NOTIF_ID = 2002
     const val EXTRA_OPEN_SESSION = "hermes_open_session"
     const val EXTRA_OPEN_TAB = "hermes_open_tab"
