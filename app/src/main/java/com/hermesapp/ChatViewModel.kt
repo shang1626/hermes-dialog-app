@@ -585,15 +585,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun saveRuntime(r: SessionRuntime) {
+    private suspend fun saveRuntime(r: SessionRuntime) {
         // 已删除的会话：一个字都不许再写盘，否则删掉的消息文件会复活。
         // deleteSession 会 cancel 掉去抖任务，但若 400ms 已过、协程已进到这里，cancel 就无效了。
         if (r.dead) return
-        // 顺序关键：先取 lastSeq 再取 messages。主线程在这两行之间又收事件时，
-        // 最坏是「序号落后于消息」（重启会重放已存事件，安全，不会丢），
-        // 绝不会「序号领先于消息」（重启按它 Last-Event-ID 就会跳过没保存的内容）。反过来取必丢。
-        val seq = r.lastSeq
-        val msgs = r.messages.value
+        // 检查点必须在**主线程**上取，并且要把攒帧缓冲里还没显示出来的增量先并入消息模型（F12）。
+        // 为什么：事件处理在主线程、落盘在 IO 线程，两者之间隔着线程边界——原来「先读 lastSeq
+        // 再读 messages」只是把跨线程窗口缩小，并不能消掉它；更根本的是流式正文先进攒帧缓冲、
+        // 再由 16ms 的放帧循环写进消息模型，所以「序号已推进、正文还没落地」是常态。
+        // 那一刻若被杀进程/退后台，重启会按 Last-Event-ID 从该序号之后续接，缓冲里那一小段
+        // （用户看到的就是「最后一段答案没了」）永远补不回来。
+        // 现在：主线程就是事件处理线程，「放帧 → 取序号 → 取正文」在这里是一个不可分割的检查点。
+        val (seq, msgs) = withContext(Dispatchers.Main.immediate) {
+            r.coalescer?.flushNow()   // 把已收到、还没显示的增量立刻并入消息模型
+            r.lastSeq to r.messages.value
+        }
         val ok = store.saveMessages(r.id, msgs, maxHistory)
         // 只有消息确实落盘成功才推进续接序号：写盘失败仍推进的话，
         // 重开 App 会按这个序号做 Last-Event-ID，把没保存的那段永远跳过。
@@ -1954,9 +1960,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 记下发送前的用户消息条数（翻历史时的位置锚点）与本轮正文（内容校验）。
         // 锚点用拼好引用的 sendText：服务端记录里存的就是这一版，才能对上。
         val prior = r.messages.value.count { it.role == "user" }
-        r.priorUserCount = prior
-        r.pendingSendText = wireText.trim()
-        r.recoveryJob?.cancel()
+        // 只有「这一条要立刻发」时才安装本轮的锚点、并掐掉上一轮的翻历史恢复任务（F05）。
+        // 排队时绝不能动它们：那是**正在跑那一轮**的恢复上下文；被覆盖或取消之后，一旦断流
+        // 要翻历史找答案，就会拿错正文与条数去认领（误报「本次发送没落到服务端」），
+        // 甚至把正在进行中的恢复直接取消掉。排队条目自己带着 prior 与正文，出队时再装上。
+        if (!willQueue) {
+            r.priorUserCount = prior
+            r.pendingSendText = wireText.trim()
+            r.recoveryJob?.cancel()
+        }
         // 发出去的图先落进 App 私有「已发送」目录：相册给的 content:// 会被系统回收
         // （换机/清数据/授权到期），outbox 会被「清理缓存」清掉——两者都会让历史里的图变白框。
         // sent/ 不参与清理、又是私有文件，重开、清缓存后都还在。
