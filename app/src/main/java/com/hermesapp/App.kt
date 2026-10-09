@@ -320,8 +320,14 @@ fun LoginScreen(prefs: Prefs, onDone: () -> Unit) {
     var err by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    // 已登录过的身份（凭据存在手机本地）：有就显示一键进入（R20）
-    val saved = remember { listOf("default", "friend").filter { prefs.credential(it).isNotEmpty() } }
+    // 已登录过的账号（凭据存在手机本地）：直接按**账号名**列出，点一下进入。
+    // 不写「本人/朋友」——身份由账号本身决定（YOUR_ACCOUNT_A=本人、YOUR_ACCOUNT_B=朋友），界面只认账号。
+    val saved = remember {
+        listOf("default", "friend").mapNotNull { p ->
+            val cred = prefs.credential(p)
+            if (cred.isEmpty()) null else p to cred.substringBefore(':')
+        }
+    }
 
     Column(
         Modifier.fillMaxSize().padding(28.dp),
@@ -331,29 +337,29 @@ fun LoginScreen(prefs: Prefs, onDone: () -> Unit) {
         Text("Hermes", color = c.accent, fontSize = 34.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(6.dp))
         Text(
-            if (saved.isEmpty()) "首次使用请填写服务器地址" else "用账号密码登录（确定身份）",
+            if (saved.isEmpty()) "首次使用请填写服务器地址" else "用账号密码登录",
             color = c.dim, fontSize = 13.sp
         )
-        // 已登录过的身份：一键进入，不用重新输（切身份后想回来也走这里）
+        // 已登录过的账号：直接按账号名一键进入，不用重新输（切换身份也走这里）
         if (saved.isNotEmpty()) {
             Spacer(Modifier.height(14.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                saved.forEach { p ->
+                saved.forEach { (p, acct) ->
                     OutlinedButton(
                         onClick = {
                             prefs.profile = p
                             prefs.loggedIn = true
-                            AppLog.log("ui", "一键进入已登录身份 profile=" + p)
+                            AppLog.log("ui", "一键进入已登录账号 account=" + acct)
                             onDone()
                         },
                         modifier = Modifier.weight(1f),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                         shape = RoundedCornerShape(8.dp),
-                    ) { Text(if (p == "default") "本人（已登录）" else "朋友（已登录）", color = c.accent, fontSize = 13.sp) }
+                    ) { Text(acct, color = c.accent, fontSize = 13.sp) }
                 }
             }
             Spacer(Modifier.height(6.dp))
-            Text("或用另一个账号登录：", color = c.dim, fontSize = 11.sp)
+            Text("已登录的账号，点一下直接进入；或用另一个账号登录：", color = c.dim, fontSize = 11.sp)
         }
         Spacer(Modifier.height(16.dp))
         OutlinedTextField(
@@ -437,7 +443,7 @@ fun LoginScreen(prefs: Prefs, onDone: () -> Unit) {
         ) { Text(if (busy) "登录中…" else "登录", color = c.accent) }
 
         Spacer(Modifier.height(10.dp))
-        Text("账号决定身份（本人 / 朋友），登录后可在设置里一键切换", color = c.dim, fontSize = 11.sp)
+        Text("身份由账号决定：用哪个账号登录就是哪个身份，界面不另设身份选项", color = c.dim, fontSize = 11.sp)
     }
 }
 
