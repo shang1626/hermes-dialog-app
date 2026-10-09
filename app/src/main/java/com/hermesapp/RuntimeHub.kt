@@ -63,6 +63,15 @@ internal class SessionRuntime(val id: String) {
      * 请求返回后必须据这个标记补发一次 stopRun，否则服务端任务会照跑下去（界面却已显示停止）。
      */
     @Volatile var stopRequested: Boolean = false
+    /**
+     * 发送轮次号：每发起一次发送（startRunWith）+1；停止也 +1（把当前轮作废）。
+     *
+     * 为什么需要它：startRun 是同步 HTTP，协程取消拦不住它。旧代码只用 finished/stopRequested
+     * 两个共享布尔判断「要不要补发停止」，可下一轮发送会把这两个布尔重置为 false——上一轮那条
+     * 迟到的响应回来看见「没有停止标记」，就误以为自己还是当前轮，把新轮的 runId 顶掉并重新接流
+     * （两条流抢同一会话，F04）。现在每轮带号，迟到的响应先对号，对不上只补发 stop 收掉自己。
+     */
+    @Volatile var sendGen: Int = 0
     /** 这条 run 是重开 App 后从落盘标记恢复的（没有本地发送上下文，拿不到位置锚点）。 */
     @Volatile var resumed: Boolean = false
     @Volatile var startedAt: Long = 0L
