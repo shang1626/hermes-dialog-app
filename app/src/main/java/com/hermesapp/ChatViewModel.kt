@@ -1685,7 +1685,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         Notifier.notifyMessage(
                             getApplication(),
                             (if (newestUnread.failed) "定时任务失败：" else "定时任务完成：") +
-                                (newestUnread.jobName.ifEmpty { newestUnread.jobId }),
+                                jobDisplayName(newestUnread.jobName, newestUnread.jobId),
                             newestUnread.body.replace(Regex("\\s+"), " ").trim().take(80),
                             // 点这条通知要跳到「定时任务」页(tab 3)，不是某个会话——
                             // 原来不带任何跳转标识，点击只把 App 拉到前台、停在原页（用户报障）。
