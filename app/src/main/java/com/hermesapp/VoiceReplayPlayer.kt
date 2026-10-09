@@ -44,6 +44,15 @@ object VoiceReplayPlayer {
     @Volatile
     private var gen: Int = 0
 
+    /**
+     * 保护「对号 + 起播」与 [stop] 之间的原子性（F16）。
+     *
+     * 旧实现是「先查代际号、再起播」两步，中间那一小段里用户点停止，旧线程照样把播放器建起来、
+     * 声音照响（本机用证据包复现：`confirmed.stop-after-generation-check … audible=true`）。
+     * 现在起播走锁内提交、stop 也走同一把锁，那个窗口就没了。
+     */
+    private val lock = Any()
+
     /** 界面播放按钮：同一个 run 正在播就停掉，否则播它。 */
     fun toggle(ctx: Context, runId: String) {
         if (runId.isEmpty()) return
@@ -72,7 +81,10 @@ object VoiceReplayPlayer {
                 val bytes = local ?: fetcher?.invoke(runId)
                 if (bytes == null || bytes.isEmpty()) {
                     AppLog.log("voice", "重播取音频失败 run=" + runId.take(12) + "（服务端无留档或已淘汰）")
-                    _nowPlaying.value = ""
+                    // 只有本线程仍是当前代际时才清「在播」标记。否则那是**别人**（用户已经切到
+                    // 的另一条）的状态：清掉就会出现「B 还在响、界面却显示没在播」
+                    //（F16，本机已复现：stale-failure.nowPlaying= 而 audible=true）。
+                    synchronized(lock) { if (myGen == gen) _nowPlaying.value = "" }
                     return@Thread
                 }
                 // 取回来的才落盘，供下次离线重播。
@@ -84,15 +96,16 @@ object VoiceReplayPlayer {
                     AppLog.log("voice", "重播放弃（已被停止/切换取代）run=" + runId.take(12))
                     return@Thread
                 }
-                startPlayback(ctx, runId, bytes)
+                startPlayback(ctx, runId, bytes, myGen)
             } catch (e: Exception) {
                 AppLog.err("voice", "重播失败 run=" + runId.take(12), e)
-                _nowPlaying.value = ""
+                // 同上：迟到线程不许动别人的「在播」标记（F16）。
+                synchronized(lock) { if (myGen == gen) _nowPlaying.value = "" }
             }
         }.start()
     }
 
-    private fun startPlayback(ctx: Context, runId: String, bytes: ByteArray) {
+    private fun startPlayback(ctx: Context, runId: String, bytes: ByteArray, myGen: Int) {
         try {
             // 只本地释放旧播放器，**不要**走公开的 stop()：那个会给流式队列发
             // 「让位结束」信号，把刚让位的语音又拉起来从头播——表现就是
@@ -129,8 +142,18 @@ object VoiceReplayPlayer {
             if (r != 1.0f) {
                 runCatching { mp.playbackParams = mp.playbackParams.setSpeed(r.coerceIn(0.5f, 2.0f)) }
             }
-            AudioFocus.request(ctx)
-            mp.start()
+            // 提交点（F16）：在锁内最后一次对号，然后原子地「登记播放器 + 请求音频焦点 + 起播」。
+            // stop() 走同一把锁，所以「检查通过之后用户才点停止，旧线程照样出声」不会再发生。
+            synchronized(lock) {
+                if (myGen != gen) {
+                    runCatching { mp.release() }
+                    AppLog.log("voice", "重播放弃（起播前已被停止/切换取代）run=" + runId.take(12))
+                    return
+                }
+                player = mp
+                AudioFocus.request(ctx)
+                mp.start()
+            }
             AppLog.log("voice", "重播已开始 run=" + runId.take(12) + " " + bytes.size + " 字节")
         } catch (e: Exception) {
             AppLog.err("voice", "重播播放失败 run=" + runId.take(12), e)
@@ -152,13 +175,15 @@ object VoiceReplayPlayer {
 
     /** 播下一条前先停掉上一条；也用于「停止」按钮。 */
     fun stop() {
-        gen++          // 作废正在下载的线程：晚到的下载不许再起播
-        val p = player
-        player = null
-        _nowPlaying.value = ""
-        if (p != null) {
-            runCatching { if (p.isPlaying) p.stop() }
-            runCatching { p.release() }
+        synchronized(lock) {
+            gen++          // 作废正在下载的线程：晚到的下载不许再起播
+            val p = player
+            player = null
+            _nowPlaying.value = ""
+            if (p != null) {
+                runCatching { if (p.isPlaying) p.stop() }
+                runCatching { p.release() }
+            }
         }
         AudioFocus.abandon()
         // 让位结束：排队的流式语音接着播（「停全部」时队列已清空，这里是空操作）。

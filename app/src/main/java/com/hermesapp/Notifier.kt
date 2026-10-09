@@ -177,7 +177,10 @@ class ReplyReceiver : android.content.BroadcastReceiver() {
             ?.getCharSequence(Notifier.KEY_TEXT_REPLY)?.toString()?.trim().orEmpty()
         if (text.isEmpty()) return
         val sid = intent.getStringExtra(Notifier.EXTRA_SESSION_ID).orEmpty()
-        Prefs(ctx).pendingReply = sid + "\u0000" + text
+        // 记下这句话是哪个身份下打的（F18）：切身份后不许当成新身份的消息发出去。
+        val p = Prefs(ctx)
+        p.pendingReplyProfile = p.profile
+        p.pendingReply = sid + "\u0000" + text
         runCatching { NotificationManagerCompat.from(ctx).cancel(Notifier.NOTIF_ID) }
         PendingReply.poke()
     }

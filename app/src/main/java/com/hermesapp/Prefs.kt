@@ -54,6 +54,16 @@ class Prefs(ctx: Context) {
         set(v) { sp.edit().putString("pending_reply", v).apply() }
 
     /**
+     * 上面那条回复是**哪个身份**写的（F18）。
+     *
+     * 暂存本身只有会话 id 与文本，不带身份；切到另一个身份后旧回复仍会被当作当前身份的
+     * 消息发出去。存下写入时的身份，取出时对不上就丢弃。空串 = 升级前写的旧数据。
+     */
+    var pendingReplyProfile: String
+        get() = sp.getString("pending_reply_profile", "") ?: ""
+        set(v) { sp.edit().putString("pending_reply_profile", v).apply() }
+
+    /**
      * 正在跑的 run_id：按 sessionId 存（多会话可同时跑）。
      * 进程被杀后重开，用它逐个确认任务是否还在执行（决定按钮显示发送还是停止）。
      * 键形如 "run:<sessionId>"。

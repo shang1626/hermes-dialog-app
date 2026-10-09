@@ -528,14 +528,23 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun drainPendingReply() {
         val raw = prefs.pendingReply
         if (raw.isEmpty()) return
+        // 身份闸门（F18）：这条回复是哪个身份下打的？对不上就丢掉，绝不当成当前身份的消息发出去。
+        val stored = prefs.pendingReplyProfile
+        if (!pendingReplyAllowed(stored, prefs.profile)) {
+            AppLog.log("notify", "丢弃旧身份的通知栏回复（写在 " + stored + "，当前 " + prefs.profile + "）")
+            prefs.pendingReply = ""
+            prefs.pendingReplyProfile = ""
+            return
+        }
         val sid = raw.substringBefore('\u0000')
         val text = raw.substringAfter('\u0000')
-        if (text.isBlank()) { prefs.pendingReply = ""; return }
+        if (text.isBlank()) { prefs.pendingReply = ""; prefs.pendingReplyProfile = ""; return }
         if (api == null) return
         val target = if (sid.isNotEmpty()) sid else _currentId.value
         if (target.isEmpty()) return
         if (rt(target).busy.value) return
         prefs.pendingReply = ""
+        prefs.pendingReplyProfile = ""
         if (target != _currentId.value) switchSession(target)
         send(text)
     }
@@ -994,6 +1003,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onProfileChanged(p: Prefs) {
         AppLog.log("ui", "切身份 profile=" + p.profile + " 服务器=" + p.serverUrl)
+        // 切身份 = 换个人说话（F18）：上一身份的通知栏回复暂存与通知一并作废。否则旧通知上的
+        // 「回复」入口还在，用户对着它打字，那句话会以**新身份**发出去（他也看不出入口已过期）。
+        p.pendingReply = ""
+        p.pendingReplyProfile = ""
+        runCatching { Notifier.clearBusinessNotifications(getApplication()) }
         migrateLegacyHost(p)
         val key = if (p.profile == "default") Keys.DEFAULT_KEY else Keys.FRIEND_KEY
         val prefix = if (p.profile == "default") "" else "/p/friend"
