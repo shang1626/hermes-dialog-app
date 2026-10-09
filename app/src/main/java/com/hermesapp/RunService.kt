@@ -61,6 +61,9 @@ class RunService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        // 记下「服务确实在前台跑着」（R17）：后台要把 active 推给已在运行的服务时，
+        // 先据此判断要不要发 startService，避免在后台硬启撞上 Android 12+ 的限制。
+        isRunning = true
         // 保活：有任务在跑才持锁，无任务立刻释放。
         // intent 为 null 时拿不到 EXTRA_ACTIVE（系统重建/异常路径），按「无任务」处理并留痕。
         val active = intent?.getBooleanExtra(EXTRA_ACTIVE, false) ?: false
@@ -73,6 +76,7 @@ class RunService : Service() {
     }
 
     override fun onDestroy() {
+        isRunning = false
         releaseLocks()
         super.onDestroy()
     }
@@ -160,6 +164,9 @@ class RunService : Service() {
         const val NOTIF_ID = 1001
         const val EXTRA_ACTIVE = "hermes_run_active"
 
+        /** 服务当前是否真的在前台跑着（进程内静态标记，供 updateActive 判断）。 */
+        @Volatile var isRunning: Boolean = false
+
         /** active=true 表示有任务在跑：持 CPU 唤醒锁，保证后台也能持续收 SSE。 */
         fun start(ctx: Context, active: Boolean = false) {
             AppLog.log("service", "RunService.start")
@@ -177,6 +184,24 @@ class RunService : Service() {
         fun stop(ctx: Context) {
             AppLog.log("service", "RunService.stop")
             runCatching { ctx.stopService(Intent(ctx, RunService::class.java)) }
+        }
+
+        /**
+         * 后台把「还有没有任务」推给**已在运行**的服务（R17）。
+         *
+         * 为什么需要：`updateRunService` 在 App 处于后台时不敢新起前台服务（Android 12+ 会拦），
+         * 于是最后一个任务在后台跑完时，它既不 start 也不 stop —— 已经拿到的 CPU 唤醒锁与
+         * Wi-Fi 锁就一直占着，直到用户下次切回前台或进程被杀。这里用 `startService`（不是
+         * `startForegroundService`）把 active=false 推给已经在跑的服务，服务收到即释放锁、
+         * 通知保留。服务没在跑就什么都不做，避免后台硬启撞墙。
+         */
+        fun updateActive(ctx: Context, active: Boolean) {
+            if (!isRunning) return
+            runCatching {
+                ctx.startService(
+                    Intent(ctx, RunService::class.java).putExtra(EXTRA_ACTIVE, active)
+                )
+            }
         }
     }
 }

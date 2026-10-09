@@ -536,6 +536,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun drainPendingReply() {
         val raw = prefs.pendingReply
         if (raw.isEmpty()) return
+        // 已退出登录就不再替任何身份发送（R10：「退出即撤销发送能力」那一半）。
+        if (!prefs.loggedIn) {
+            AppLog.log("ui", "已退出登录，暂存回复不发送")
+            return
+        }
         // 身份闸门（F18）：这条回复是哪个身份下打的？对不上就丢掉，绝不当成当前身份的消息发出去。
         val stored = prefs.pendingReplyProfile
         if (!pendingReplyAllowed(stored, prefs.profile)) {
@@ -2542,7 +2547,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val inlineFiles = mutableListOf<com.hermesapp.net.InlineFile>()
                 for ((i, f) in files.withIndex()) {
                     _imageNote.value = "准备附件 ${i + 1}/${files.size}…"
-                    val bytes = f.readBytes()
+                    // 单文件也走有界读（R16）：批量预算只在**选择时**按当时长度算过，文件之后
+                    // 可能被换大；readBytes() 会先整包进堆再判断大小，等于没有边界。
+                    val bytes = readFileBounded(f)
+                    if (bytes == null) {
+                        _imageNote.value = ""
+                        AppLog.log("attach", "附件超限拒绝 name=" + f.name + " " + f.length() + "B")
+                        r.retryNote.value = "附件过大（" + f.name + "），未发送"
+                        dropEmptyPending(r)
+                        advanceReceipt(sid, receiptMsgId, Receipt.FAILED, note = "附件过大，已拒绝")
+                        failPending(sid)
+                        return@launch
+                    }
                     AppLog.log("attach", "内联附件 ${i + 1}/${files.size} name=" + f.name + " mime=" + mimeOf(f) + " " + bytes.size + "B")
                     inlineFiles.add(com.hermesapp.net.InlineFile(f.name, mimeOf(f), bytes))
                 }
@@ -2582,7 +2598,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch   // 用户停止主动取消，不算发送失败
             } catch (e: Exception) {
                 val msg = e.message ?: "?"
-                val httpReject = msg.startsWith("HTTP ")
+                // 「服务端明确拒绝」只认 4xx（R09）。5xx 可能发生在后台**已经接受**之后
+                // （实测网关 500 也可能任务已入库），单凭状态码断言「没执行」会把已收下的
+                // 说成没送到；5xx 走「不确定」并允许带幂等键的安全重试。
+                val httpCode = Regex("^HTTP (\\d{3})").find(msg)?.groupValues?.get(1)?.toIntOrNull()
+                val httpReject = httpCode != null && httpCode in 400..499
                 // 归属校验放在最前（R01）：这条异常可能来自已被取代的旧轮
                 // （Stop A → 发 B → A 迟到返回 500）。旧代码在这里无脑 dropEmptyPending +
                 // failPending，把 B 的 busy/runId/active 全清掉（探针实测 busy=false、runId=、
@@ -2621,7 +2641,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 if (httpReject) {
                     advanceReceipt(sid, receiptMsgId, Receipt.FAILED, note = msg)
                 } else {
-                    r.retryNote.value = "发送结果不确定：网络中断，服务端可能已收下，可重发（不会重复）"
+                    // 5xx / 超时 / 网络中断：服务端可能已收下，一律按「不确定」等用户处置（R09）。
+                    r.retryNote.value = if (httpCode != null)
+                        "服务端返回 " + httpCode + "，结果不确定：可能已收下，可重发（不会重复）"
+                    else
+                        "发送结果不确定：网络中断，服务端可能已收下，可重发（不会重复）"
                     advanceReceipt(sid, receiptMsgId, Receipt.UNCERTAIN, note = msg)
                 }
                 failPending(sid)
@@ -3588,7 +3612,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             AppLog.log("service", "起前台服务 运行中会话=" + running.size + " keepAlive=" + prefs.keepAlive)
             RunService.start(getApplication(), running.isNotEmpty())
         } else {
-            AppLog.log("service", "跳过起服务（App 不在前台）运行中会话=" + running.size)
+            // 后台不许**新起**前台服务，但已在跑的服务可以把 active 推给它（R17）：
+            // 最后一个任务在后台结束时，旧代码既不 start 也不 stop，CPU/Wi-Fi 锁一直占着；
+            // 现在推 active=false，服务收到即释放锁（常驻通知不变）。
+            AppLog.log("service", "后台更新服务 active=" + running.isNotEmpty() + " 运行中会话=" + running.size)
+            RunService.updateActive(getApplication(), running.isNotEmpty())
         }
     }
 
@@ -3653,7 +3681,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * 新判据：只有「就在当前这个会话里」才不弹（卡片已在屏幕上），其余情况都弹，前台也弹。
      */
     private fun notifyNeedAction(sid: String, title: String, text: String) {
-        val onThisSession = AppForeground.isForeground && sid == _currentId.value
+        val onThisSession = ChatVisibility.visible() && sid == _currentId.value
         if (onThisSession) return
         // 落盘一份：App 若在用户点通知前被系统杀掉，冷启动的 Intent extra 可能丢，
         // 靠这份落盘仍能跳回那条待处理卡片。

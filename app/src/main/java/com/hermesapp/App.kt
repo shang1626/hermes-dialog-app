@@ -408,6 +408,9 @@ fun MainScaffold(
 ) {
     val c = LocalAppColors.current
     var tab by remember { mutableStateOf(0) }
+    // R18：把「聊天页是否真的在眼前」发布出去。用户在设置/状态/任务页时 currentId 仍是同一个，
+    // 旧的 AppForeground && sid==currentId 判据会误以为审批卡看得见，从而抑制系统通知。
+    LaunchedEffect(tab) { ChatVisibility.chatVisible = (tab == 0) }
     val currentId by vm.currentId.collectAsStateWithLifecycle()
     // 输入框内容提到这里，切到状态/设置再回来不丢；草稿写盘，进程被杀重进也能恢复。
     // ⚠️ 草稿按会话隔离：remember(currentId) 让切会话时重新取该会话自己的草稿。

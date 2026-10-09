@@ -17,6 +17,32 @@ package com.hermesapp
 internal const val MAX_ATTACH_TOTAL_BYTES = 64L * 1024 * 1024
 
 /**
+ * 有界读文件（R16）：超过 [limit] 立即中止并返回 null。
+ *
+ * 为什么不能用 `readBytes()`：批量预算只在**选择时**按当时的长度算过一次，
+ * 文件之后可能被替换成更大的；而 `readBytes()` 先把整个文件读进堆再判断大小，
+ * 等于没有边界。这里边读边累计，越限即停。
+ */
+internal fun readFileBounded(f: java.io.File, limit: Long = MAX_ATTACH_TOTAL_BYTES): ByteArray? {
+    if (!f.isFile || f.length() > limit) return null
+    return try {
+        val out = java.io.ByteArrayOutputStream(minOf(f.length(), 1L shl 20).toInt())
+        java.io.FileInputStream(f).use { input ->
+            val buf = ByteArray(64 * 1024)
+            while (true) {
+                val n = input.read(buf)
+                if (n <= 0) break
+                if (out.size().toLong() + n > limit) return null
+                out.write(buf, 0, n)
+            }
+        }
+        out.toByteArray()
+    } catch (_: Exception) {
+        null
+    }
+}
+
+/**
  * 已有 [currentBytes] 字节时，再收 [incomingBytes] 字节是否会超出预算。
  * 纯函数、无副作用，便于单测钉住边界（正好等于预算时允许，超过才拒）。
  */
