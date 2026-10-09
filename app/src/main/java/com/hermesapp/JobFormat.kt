@@ -106,16 +106,6 @@ internal fun jobZhStatus(s: String): String = when (s) {
     else -> s
 }
 
-/** 执行记录状态翻译（latest_execution.status）。 */
-internal fun jobZhExecStatus(s: String): String = when (s) {
-    "claimed" -> "已排入队列"
-    "running" -> "执行中"
-    "completed" -> "已完成"
-    "failed" -> "失败"
-    "unknown" -> "状态未知"
-    else -> s
-}
-
 /**
  * 执行耗时文案：优先 finished-claimed 的墙钟差，跑着就 started-claimed。
  * 时间戳是带时区的 ISO 串，用 OffsetDateTime 解析再相减；解析失败返回空串。

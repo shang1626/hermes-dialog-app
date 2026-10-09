@@ -572,9 +572,6 @@ class HermesApi(
         return sync(base("/api/applog").post(body.toString().toRequestBody(jsonType)).build())
     }
 
-    /** 轮询服务端是否请求过「请上报」：requested=true 时 App 自动传一份。 */
-    fun applogPending(): JSONObject = sync(base("/api/applog/pending").get().build())
-
     /** gzip 压缩 + base64：日志纯文本压缩比高（1MB→约 100KB），省流量。失败退回空串。 */
     private fun gzipBase64(text: String): String = runCatching {
         val bos = java.io.ByteArrayOutputStream()
@@ -583,8 +580,6 @@ class HermesApi(
     }.getOrDefault("")
 
     fun sysinfo(): JSONObject = sync(base("/health/sysinfo").get().build())
-
-    fun healthDetailed(): JSONObject = sync(base("/health/detailed").get().build())
 
     fun ping(): Boolean = runCatching {
         probeClient.newCall(base("/health").get().build()).execute().use { resp ->

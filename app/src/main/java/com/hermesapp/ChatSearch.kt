@@ -23,20 +23,4 @@ object ChatSearch {
         }
         return out
     }
-
-    /** 一段文本里命中几处（用于「第 n / 共 m 条」的处数统计，不跨消息合并）。 */
-    fun countOccurrences(haystack: String, query: String): Int {
-        val n = query.trim().lowercase()
-        if (n.isEmpty()) return 0
-        val h = haystack.lowercase()
-        var i = 0
-        var c = 0
-        while (i <= h.length - n.length) {
-            val k = h.indexOf(n, i)
-            if (k < 0) break
-            c++
-            i = k + n.length
-        }
-        return c
-    }
 }

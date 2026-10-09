@@ -21,14 +21,13 @@ android {
         applicationId = "com.hermesapp"
         minSdk = 26
         targetSdk = 34
-        versionCode = 164
-        versionName = "2.153"
+        versionCode = 165
+        versionName = "2.154"
 
         // 敏感值由 local.properties 注入，源码零真值。
         buildConfigField("String", "APP_PASSWORD", "\"${cfg("HERMES_APP_PASSWORD")}\"")
         buildConfigField("String", "DEFAULT_KEY", "\"${cfg("HERMES_DEFAULT_KEY")}\"")
         buildConfigField("String", "FRIEND_KEY", "\"${cfg("HERMES_FRIEND_KEY")}\"")
-        buildConfigField("String", "DEFAULT_URL", "\"${cfg("HERMES_DEFAULT_URL")}\"")
         buildConfigField("String", "UPDATE_URL", "\"${cfg("HERMES_UPDATE_URL")}\"")
         buildConfigField("String", "LEGACY_HOSTS", "\"${cfg("HERMES_LEGACY_HOSTS")}\"")
     }
