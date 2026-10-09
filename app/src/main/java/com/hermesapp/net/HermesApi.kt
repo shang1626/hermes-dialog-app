@@ -22,6 +22,8 @@ import okhttp3.Protocol
 
 /** 单个附件下载上限：超过直接拒绝（服务端下行上限 50MB，这里留一倍余量）。 */
 private const val MAX_MEDIA_BYTES = 100L * 1024 * 1024
+/** 留档语音的上限（R16）：语音/音频都该有边界，旧代码在这条路上没有任何限制。 */
+private const val MAX_VOICE_BYTES = 16L * 1024 * 1024
 
 data class SseEvent(val id: Int?, val event: String?, val data: JSONObject)
 
@@ -719,7 +721,28 @@ class HermesApi(
                     AppLog.log("voice", "取留档语音 HTTP " + resp.code + " run=" + runId.take(12))
                     null
                 } else {
-                    resp.body?.bytes()?.takeIf { it.isNotEmpty() }
+                    val body = resp.body ?: return@use null
+                    // 语音也有边界（R16）：旧代码直接 body.bytes()，服务端那条路被塞进
+                    // 一个大文件就整包进堆。与 downloadMedia 同法：先看声明长度，再边读边卡上限。
+                    val declared = body.contentLength()
+                    if (declared > MAX_VOICE_BYTES) {
+                        AppLog.log("voice", "留档语音超上限 声明=" + declared + "B 上限=" + MAX_VOICE_BYTES + "B")
+                        return@use null
+                    }
+                    val buf = ByteArray(64 * 1024)
+                    val out = java.io.ByteArrayOutputStream(if (declared > 0) declared.toInt() else 256 * 1024)
+                    body.byteStream().use { input ->
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n <= 0) break
+                            if (out.size().toLong() + n > MAX_VOICE_BYTES) {
+                                AppLog.log("voice", "留档语音读取超上限，中止 已读=" + (out.size() + n) + "B")
+                                return@use null
+                            }
+                            out.write(buf, 0, n)
+                        }
+                    }
+                    out.toByteArray().takeIf { it.isNotEmpty() }
                 }
             }
         } catch (e: Exception) {
