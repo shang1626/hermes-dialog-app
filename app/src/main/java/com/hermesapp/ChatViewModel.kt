@@ -659,6 +659,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                                    else mergeByUserAnchor(r.messages.value, msgs))
                 r.loaded = true
                 r.loading = false
+                // 落盘里可能还有排队没发出去的消息（R05）：重开 App 接着发，别让它卡在「排队中」。
+                restoreQueue(id)
                 // 落盘里还有「运行中」的子任务（长任务跑一半重开 App）：把进度轮询接回去，
                 // 否则界面上那行会一直停在重开前的步数。只对当前会话接线（预热其它会话时
                 // 不该替用户去轮询）。
@@ -671,6 +673,32 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     "ms" + (if (total >= 0) " 点击到就绪=" + total + "ms" else ""))
             }
         }
+    }
+
+    /**
+     * 恢复落盘的待发队列（R05）。
+     *
+     * 只在「该会话当前没有队列」时恢复，并且**逐条按回执状态复核**：只有回执还停在
+     * 「排队中」的才恢复——落盘的队列文件可能是旧的，回执才是真相。双保险之外还有
+     * 幂等键兜底：即便漏判重发一次，服务端也只会执行一遍。
+     */
+    private fun restoreQueue(id: String) {
+        val r = rt(id)
+        if (r.queue.isNotEmpty()) return
+        val saved = runCatching { store.loadQueue(id) }.getOrDefault(emptyList())
+        if (saved.isEmpty()) return
+        val queued = saved.filter { item ->
+            r.messages.value.firstOrNull { it.id == item.msgId }?.receipt?.status == Receipt.QUEUED
+        }
+        if (queued.isEmpty()) {
+            runCatching { store.saveQueue(id, emptyList()) }
+            return
+        }
+        r.queue.addAll(queued)
+        r.queued.value = r.queue.size
+        AppLog.log("queue", "恢复待发队列 sid=" + id.take(8) + " 条数=" + queued.size)
+        // 只对当前会话自动接着发：预热其它会话时不该替用户往外发东西。
+        if (id == _currentId.value && !r.busy.value) drainQueue(id)
     }
 
     /**
@@ -1034,7 +1062,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
         runCatching { Notifier.clearBusinessNotifications(getApplication()) }
         migrateLegacyHost(p)
-        val key = if (p.profile == "default") Keys.DEFAULT_KEY else Keys.FRIEND_KEY
+        // R20：密钥不再编进包里，改用该身份的登录凭据（"账号:密码"）；未登录则该身份为空。
+        val key = p.credential(p.profile)
         val prefix = if (p.profile == "default") "" else "/p/friend"
         api = HermesApi(p.serverUrl, key, prefix)
         // 网关托管媒体：把带鉴权的取文件函数挂给 Markdown 附件卡片
@@ -2063,6 +2092,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             // 排队：气泡先落下（回执标「排队中」），本轮一结束由 drainQueue 自动发。
             r.queue.add(QueuedSend(wireText, uploadFiles.toList(), userMsg.id, prior, idemKey))
             r.queued.value = r.queue.size
+            // 入队即落盘（R05）：队列原来只在内存里，排队期间进程被杀这条就永远发不出去。
+            store.saveQueue(sid, r.queue.toList())
             AppLog.log("queue", "入队 sid=" + sid.take(8) + " msg=" + userMsg.id + " 队列=" + r.queue.size)
             return
         }
@@ -2079,6 +2110,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (r.busy.value || r.queue.isEmpty() || r.queuePaused.value) return
         val next = r.queue.removeAt(0)
         r.queued.value = r.queue.size
+        // 出队同步落盘（R05）：保持磁盘与内存一致，重开后不会把已发出的又发一遍。
+        store.saveQueue(sid, r.queue.toList())
         AppLog.log("queue", "出队发送 sid=" + sid.take(8) + " msg=" + next.msgId + " 剩余=" + r.queue.size)
         r.priorUserCount = next.priorUserCount
         r.pendingSendText = next.text.trim()

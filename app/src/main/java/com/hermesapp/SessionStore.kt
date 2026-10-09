@@ -77,6 +77,74 @@ class SessionStore(ctx: Context, private val profile: String) {
         return t
     }
     private fun msgFile(id: String) = File(dir, "chat_${profile}_$id.json")
+
+    // ---------- 排队待发消息的落盘（R05）----------
+
+    private fun queueFile(id: String) = File(dir, "queue_${profile}_$id.json")
+
+    /**
+     * 读取该会话落盘的待发队列。
+     *
+     * 为什么队列要落盘：发出时若本会话正在跑，这条消息只会进**内存**队列等本轮结束，
+     * 排队期间进程被杀（或历史超 300 条把它裁掉）它便永远发不出去，而回执还停在
+     * 「排队中」——界面看不出问题，也没有重试入口。调用方还要按回执状态再筛一遍
+     * （见 ChatViewModel.restoreQueue），落盘只是素材，回执才是真相。
+     */
+    fun loadQueue(id: String): List<QueuedSend> {
+        if (id.isEmpty()) return emptyList()
+        val raw = AtomicStore.readTextOrBackupOrNull(queueFile(id)) ?: return emptyList()
+        if (raw.isBlank()) return emptyList()
+        return runCatching {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                val msgId = o.optLong("msgId", -1L)
+                if (msgId < 0) return@mapNotNull null
+                val files = mutableListOf<File>()
+                val fa = o.optJSONArray("files")
+                if (fa != null) {
+                    for (j in 0 until fa.length()) {
+                        val p = fa.optString(j, "")
+                        if (p.isEmpty()) continue
+                        val ff = File(p)
+                        // 附件是按路径存在沙盒里的：文件已不在，这条就没法原样重发，整条丢弃。
+                        if (!ff.exists()) return@mapNotNull null
+                        files.add(ff)
+                    }
+                }
+                QueuedSend(
+                    text = o.optString("text", ""),
+                    files = files,
+                    msgId = msgId,
+                    priorUserCount = o.optInt("prior", 0),
+                    idemKey = o.optString("idemKey", ""),
+                )
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    /** 写入待发队列；传空列表 = 删掉文件（队列已空）。 */
+    fun saveQueue(id: String, items: List<QueuedSend>) {
+        if (id.isEmpty()) return
+        val f = queueFile(id)
+        if (items.isEmpty()) {
+            runCatching { if (f.exists()) f.delete() }
+            return
+        }
+        val arr = JSONArray()
+        for (item in items) {
+            val o = JSONObject()
+            o.put("text", item.text)
+            o.put("msgId", item.msgId)
+            o.put("prior", item.priorUserCount)
+            o.put("idemKey", item.idemKey)
+            val fa = JSONArray()
+            item.files.forEach { file -> fa.put(file.absolutePath) }
+            o.put("files", fa)
+            arr.put(o)
+        }
+        AtomicStore.writeAtomic(f, arr.toString())
+    }
     private fun legacyFile() = File(dir, "chat_$profile.json")
 
     /**

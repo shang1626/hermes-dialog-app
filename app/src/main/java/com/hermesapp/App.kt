@@ -43,9 +43,11 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 // ---------- 昼夜配色 ----------
 data class AppColors(
@@ -313,9 +315,13 @@ fun HermesApp(vm: ChatViewModel, prefs: Prefs) {
 fun LoginScreen(prefs: Prefs, onDone: () -> Unit) {
     val c = LocalAppColors.current
     var url by remember { mutableStateOf(prefs.serverUrl) }
+    var acct by remember { mutableStateOf("") }
     var pwd by remember { mutableStateOf("") }
     var err by remember { mutableStateOf("") }
-    var choosing by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    // 已登录过的身份（凭据存在手机本地）：有就显示一键进入（R20）
+    val saved = remember { listOf("default", "friend").filter { prefs.credential(it).isNotEmpty() } }
 
     Column(
         Modifier.fillMaxSize().padding(28.dp),
@@ -324,7 +330,31 @@ fun LoginScreen(prefs: Prefs, onDone: () -> Unit) {
     ) {
         Text("Hermes", color = c.accent, fontSize = 34.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(6.dp))
-        Text("首次使用请填写服务器地址", color = c.dim, fontSize = 13.sp)
+        Text(
+            if (saved.isEmpty()) "首次使用请填写服务器地址" else "用账号密码登录（确定身份）",
+            color = c.dim, fontSize = 13.sp
+        )
+        // 已登录过的身份：一键进入，不用重新输（切身份后想回来也走这里）
+        if (saved.isNotEmpty()) {
+            Spacer(Modifier.height(14.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                saved.forEach { p ->
+                    OutlinedButton(
+                        onClick = {
+                            prefs.profile = p
+                            prefs.loggedIn = true
+                            AppLog.log("ui", "一键进入已登录身份 profile=" + p)
+                            onDone()
+                        },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        shape = RoundedCornerShape(8.dp),
+                    ) { Text(if (p == "default") "本人（已登录）" else "朋友（已登录）", color = c.accent, fontSize = 13.sp) }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Text("或用另一个账号登录：", color = c.dim, fontSize = 11.sp)
+        }
         Spacer(Modifier.height(16.dp))
         OutlinedTextField(
             value = url, onValueChange = { url = it; err = "" },
@@ -337,11 +367,21 @@ fun LoginScreen(prefs: Prefs, onDone: () -> Unit) {
         )
         Spacer(Modifier.height(14.dp))
         OutlinedTextField(
+            value = acct, onValueChange = { acct = it; err = "" },
+            label = { Text("账号") },
+            singleLine = true,
+            colors = fieldColors(c),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(14.dp))
+        OutlinedTextField(
             value = pwd, onValueChange = { pwd = it; err = "" },
             label = { Text("密码") },
             singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
             colors = fieldColors(c),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
             modifier = Modifier.fillMaxWidth()
         )
         if (err.isNotEmpty()) {
@@ -350,32 +390,54 @@ fun LoginScreen(prefs: Prefs, onDone: () -> Unit) {
         }
         Spacer(Modifier.height(18.dp))
         OutlinedButton(
+            enabled = !busy,
             onClick = {
                 val u = url.trim()
+                val a = acct.trim()
                 when {
                     u.isEmpty() -> err = "请先填写服务器地址"
-                    !u.startsWith("https://") -> err = "地址需以 https:// 开头（明文 http 会泄露密钥，已禁用）"
-                    pwd != Keys.APP_PASSWORD -> err = "密码错误"
-                    else -> { prefs.serverUrl = u; choosing = true }
+                    !u.startsWith("https://") -> err = "地址需以 https:// 开头（明文 http 会泄露账号密码，已禁用）"
+                    a.isEmpty() -> err = "请填写账号"
+                    pwd.isEmpty() -> err = "请填写密码"
+                    else -> {
+                        err = ""
+                        busy = true
+                        scope.launch {
+                            val cred = a + ":" + pwd
+                            // 账号决定身份（R20）：先按 friend 打一次、再按 default 打一次，
+                            // 谁回 200 就是谁。密码只在登录这一刻发给网关，之后凭据存手机本地
+                            // —— APK 包里不再编入任何密钥，包泄露不再等于密钥泄露。
+                            val res = withContext(Dispatchers.IO) {
+                                val f = com.hermesapp.net.HermesApi(u, cred, "/p/friend").checkCredential()
+                                if (f == 200) "friend" to 200
+                                else {
+                                    val d = com.hermesapp.net.HermesApi(u, cred, "").checkCredential()
+                                    if (d == 200) "default" to 200 else "" to maxOf(f, d)
+                                }
+                            }
+                            busy = false
+                            val who = res.first
+                            when {
+                                who.isNotEmpty() -> {
+                                    prefs.serverUrl = u
+                                    prefs.setCredential(who, cred)
+                                    prefs.profile = who
+                                    prefs.loggedIn = true
+                                    AppLog.log("ui", "登录成功 profile=" + who)
+                                    onDone()
+                                }
+                                res.second == 401 -> err = "账号或密码不对"
+                                res.second <= 0 -> err = "连不上服务器，检查地址后重试"
+                                else -> err = "服务器返回 " + res.second + "，稍后再试"
+                            }
+                        }
+                    }
                 }
             }, modifier = Modifier.fillMaxWidth()
-        ) { Text("登录", color = c.accent) }
+        ) { Text(if (busy) "登录中…" else "登录", color = c.accent) }
 
-        if (choosing) {
-            Spacer(Modifier.height(28.dp))
-            Text("选择对话身份", color = c.dim, fontSize = 13.sp)
-            Spacer(Modifier.height(12.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                ProfileBtn("friend", Modifier.weight(1f)) {
-                    prefs.profile = "friend"; prefs.loggedIn = true; onDone()
-                }
-                ProfileBtn("default", Modifier.weight(1f)) {
-                    prefs.profile = "default"; prefs.loggedIn = true; onDone()
-                }
-            }
-            Spacer(Modifier.height(10.dp))
-            Text("选定后默认保持，除非退出登录", color = c.dim, fontSize = 11.sp)
-        }
+        Spacer(Modifier.height(10.dp))
+        Text("账号决定身份（本人 / 朋友），登录后可在设置里一键切换", color = c.dim, fontSize = 11.sp)
     }
 }
 

@@ -8,9 +8,9 @@ package com.hermesapp
  * local.properties 里填写自己的服务域名、更新域名与密钥。
  */
 object Keys {
-    val APP_PASSWORD = BuildConfig.APP_PASSWORD
-    val DEFAULT_KEY = BuildConfig.DEFAULT_KEY
-    val FRIEND_KEY = BuildConfig.FRIEND_KEY
+    // R20：APP_PASSWORD / DEFAULT_KEY / FRIEND_KEY 已删除——它们会被编成明文字符串进
+    // classes.dex，而更新包是公开可下载的。App 改用「账号:密码」登录，凭据存手机本地
+    // （见 Prefs.credential 与服务端补丁 apply_app_login_patch.py）。
     val UPDATE_URL = BuildConfig.UPDATE_URL
 }
 

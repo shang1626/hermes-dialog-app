@@ -21,6 +21,30 @@ class Prefs(ctx: Context) {
         get() = sp.getString("session_id", null)
         set(v) { sp.edit().putString("session_id", v).apply() }
 
+    /**
+     * 某个身份的登录凭据（"账号:密码"），空串 = 还没登录过这个身份（R20）。
+     *
+     * 为什么要按身份分开存：账号决定身份（YOUR_ACCOUNT_A→本人、YOUR_ACCOUNT_B→朋友），两个身份各有各的
+     * 凭据；已登录过的身份切过去就免输。凭据只存在手机本地的 SharedPreferences 里，
+     * APK 包里不再编入任何密钥。
+     */
+    fun credential(profile: String): String {
+        if (profile.isEmpty()) return ""
+        return sp.getString("credential:" + profile, "") ?: ""
+    }
+
+    fun setCredential(profile: String, value: String) {
+        if (profile.isEmpty()) return
+        sp.edit().putString("credential:" + profile, value).apply()
+    }
+
+    /** 退出登录：清掉所有身份的凭据（下次要用得重新输账号密码）。 */
+    fun clearCredentials() {
+        sp.edit().apply {
+            for (p in listOf("default", "friend")) remove("credential:" + p)
+        }.apply()
+    }
+
     /** 主题：system / day / night，默认跟随系统 */
     var themeMode: String
         get() = sp.getString("theme_mode", "system") ?: "system"
