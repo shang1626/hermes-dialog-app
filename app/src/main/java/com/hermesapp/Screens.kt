@@ -1119,6 +1119,7 @@ fun Bubble(
                     Receipt.SENDING -> "◌"
                     Receipt.QUEUED -> "⋯"
                     Receipt.NOT_SENT -> "↑"
+                    Receipt.STEER_FAILED -> "✗"
                     Receipt.ACCEPTED -> "✓"
                     Receipt.UNCERTAIN -> "?"
                     Receipt.FAILED -> "!"
@@ -1127,7 +1128,7 @@ fun Bubble(
                 }
                 val markCol = when (rc?.status) {
                     Receipt.UNCERTAIN, Receipt.QUEUED, Receipt.NOT_SENT -> c.warn
-                    Receipt.FAILED -> c.bad
+                    Receipt.FAILED, Receipt.STEER_FAILED -> c.bad
                     else -> c.dim
                 }
                 // 语音附件的迷你图标：跟时间并排同一行，不单独占一行。
@@ -1178,6 +1179,7 @@ fun Bubble(
                             val tip = when (rc.status) {
                                 Receipt.QUEUED -> "排队中，本轮结束后自动发送（点这里可撤回或编辑）"
                                 Receipt.NOT_SENT -> "未发送（App 重启后没自动发出），点这里重发或忽略"
+                                Receipt.STEER_FAILED -> if (rc.note.isNotEmpty()) rc.note else "插话没送达"
                                 Receipt.UNCERTAIN -> "发送结果不确定，点这里处理"
                                 Receipt.FAILED -> if (rc.note.isNotEmpty()) rc.note else "发送失败，点这里重发"
                                 else -> ""
@@ -1186,7 +1188,8 @@ fun Bubble(
                                 Spacer(Modifier.width(6.dp))
                                 Text(
                                     tip,
-                                    color = if (rc.status == Receipt.FAILED) c.bad else c.warn,
+                                    color = if (rc.status == Receipt.FAILED ||
+                                        rc.status == Receipt.STEER_FAILED) c.bad else c.warn,
                                     fontSize = 10.sp,
                                     maxLines = 1, overflow = TextOverflow.Ellipsis
                                 )

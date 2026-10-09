@@ -43,6 +43,15 @@ class SessionStore(ctx: Context, private val profile: String) {
     /** 索引文件格式版本：改了字段结构就 +1，读到旧值按旧格式解析。 */
     private val SCHEMA_INDEX = 2
 
+    /**
+     * 本次实际读到的索引格式版本（缺省按 1 = 老版裸数组）。
+     *
+     * 用途只有一个：**别把「不认识的（更新版本的）」索引降级覆盖掉**（F24）。
+     * 旧实现无论读到什么都按当前格式重写一遍，未来版本新加的字段会被静默抹掉 ——
+     * 用户看到的就是「装了旧包之后历史结构被改坏」。
+     */
+    private var loadedIndexSchema: Int = SCHEMA_INDEX
+
     private fun indexFile() = File(dir, "sessions_$profile.json")
 
     /** 原子写/回退：逻辑抽到 AtomicStore（纯 java.io，便于单测），此处仅委托。 */
@@ -92,8 +101,12 @@ class SessionStore(ctx: Context, private val profile: String) {
             fun parseArr(text: String): JSONArray {
                 val t = text.trim()
                 return if (t.startsWith("{")) {
-                    JSONObject(t).optJSONArray("sessions") ?: JSONArray()
+                    val o = JSONObject(t)
+                    // 记下这份索引自称的格式版本，供 saveIndex 判断能不能安全写回（F24）。
+                    loadedIndexSchema = o.optInt("schema", 1)
+                    o.optJSONArray("sessions") ?: JSONArray()
                 } else {
+                    loadedIndexSchema = 1
                     JSONArray(t)
                 }
             }
@@ -135,6 +148,13 @@ class SessionStore(ctx: Context, private val profile: String) {
         // 列表变更的唯一落盘点：每次写盘记写了几条、几条归档。
         // 用户报历史对话没了时，靠这串记录能看出是哪一次操作把列表写空的。
         val archivedCount = list.count { it.archived }
+        // 读到的是「更新版本写的」索引：说明写它的 App 比这台设备上的新（装过新包又降级）。
+        // 此时按当前格式重写会把不认识的字段静默抹掉（F24），所以拒绝写回、保留原件 ——
+        // 只读仍然能用；改标题/归档这类写操作在装上能理解该版本的 App 之前不会落盘。
+        if (loadedIndexSchema > SCHEMA_INDEX) {
+            AppLog.err("store", "索引版本 $loadedIndexSchema 高于本版 $SCHEMA_INDEX，拒绝写回以保住原件", null)
+            return
+        }
         try {
             val arr = JSONArray()
             for (s in list) {
