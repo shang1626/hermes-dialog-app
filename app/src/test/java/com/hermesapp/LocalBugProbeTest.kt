@@ -246,4 +246,27 @@ class LocalBugProbeTest {
         assertEquals(false, exceedsAttachBudget(0L, 64L * 1024 * 1024, 64L * 1024 * 1024))
         assertEquals(true, exceedsAttachBudget(0L, 64L * 1024 * 1024 + 1, 64L * 1024 * 1024))
     }
+
+    // ------------------------------------------------------------------
+    // F18：退出/切换身份后，旧身份的通知栏回复仍能发出去
+    // ------------------------------------------------------------------
+
+    @Test
+    fun reproduce_old_pending_reply_carries_no_identity_and_is_still_sent_after_switch() {
+        // 旧格式（2.162 及以前）：暂存里只有「会话 id + 文本」，drain 时不看身份
+        val stored = "sid-1\u0000帮我看下这个"
+        val currentProfile = "friend"
+        val oldLogicStillSends = stored.contains('\u0000')   // 旧代码：能拆出文本就发
+        println("[复现][F18] 旧逻辑：$currentProfile 身份下仍会发出 default 身份时打的「${stored.substringAfter('\u0000')}」 = $oldLogicStillSends")
+        assertTrue(oldLogicStillSends)
+    }
+
+    @Test
+    fun new_pending_reply_is_dropped_when_the_identity_changed() {
+        // 换身份：丢；同身份：发；升级前没有身份记录的旧数据：放行一次
+        assertEquals(false, pendingReplyAllowed("default", "friend"))
+        assertEquals(true, pendingReplyAllowed("friend", "friend"))
+        assertEquals(true, pendingReplyAllowed("", "friend"))
+        println("[修复][F18] 身份不符 → 丢弃；同身份 → 放行；无记录(旧数据) → 放行一次")
+    }
 }
