@@ -1986,6 +1986,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             durableNames.add(f.name)
             if (p.isImage) durableImgs.add(uri)
         }
+        // 发送前再核一次总量（F20）：拦住「选的时候没超、文件后来变大或被别的路径塞进来」。
+        // 超了就不发、待发区保持原样，让用户自己删几个 —— 比把一堆大文件同时读进内存崩掉好。
+        val attachTotal = uploadFiles.sumOf { it.length() }
+        if (exceedsAttachBudget(0L, attachTotal)) {
+            _imageNote.value = attachBudgetText()
+            AppLog.log("attach", "发送前合计超预算 " + attachTotal + "B，已拦下（待发区保留）")
+            return
+        }
         // 投递状态挂在用户消息自己身上（按 msgId 认领，不靠位置）：POST 没回来前是 sending，
         // 拿到 run_id 才转 accepted，中途断了转 uncertain 等用户处置。
         // 幂等键在发送前一次性生成，写进回执并随请求发出：服务端凭它保证同一句话只执行
@@ -2354,6 +2362,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     dst.delete()
                     return@launch
                 }
+                // 批量总量也要卡（F20）：单文件 20MB × 10 个仍是 200MB，发送时全都会读进内存。
+                // 求和用**已拷贝文件的实际长度**，不只看 provider 声明的大小。
+                if (exceedsAttachBudget(_pendingImages.value.sumOf { it.file.length() }, dst.length())) {
+                    _imageNote.value = attachBudgetText()
+                    AppLog.log("attach", "选图失败：合计超预算 name=" + name + " 本文件=" + dst.length() + "B")
+                    dst.delete()
+                    return@launch
+                }
                 _imageNote.value = ""
                 AppLog.log("attach", "已选图 name=" + name + " size=" + size + "B -> " + dst.name)
                 _pendingImages.value = _pendingImages.value + PendingImage(Msg.nextMsgId(), uri.toString(), dst, isImage = true)
@@ -2390,6 +2406,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 if (_pendingImages.value.size >= 10) {
                     _imageNote.value = "最多 10 个附件"
                     AppLog.log("attach", "选文件失败：已达上限 10 个 name=" + name)
+                    dst.delete()
+                    return@launch
+                }
+                // 同选图：总量预算（F20）。10 × 50MB 全收下，发送时峰值是原始量的数倍。
+                if (exceedsAttachBudget(_pendingImages.value.sumOf { it.file.length() }, dst.length())) {
+                    _imageNote.value = attachBudgetText()
+                    AppLog.log("attach", "选文件失败：合计超预算 name=" + name + " 本文件=" + dst.length() + "B")
                     dst.delete()
                     return@launch
                 }

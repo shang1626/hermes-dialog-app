@@ -182,4 +182,68 @@ class LocalBugProbeTest {
             scope.cancel()
         }
     }
+
+    // ------------------------------------------------------------------
+    // F11：连发重复短句时，服务端的答案被贴到错误的一轮上
+    // ------------------------------------------------------------------
+
+    @Test
+    fun reproduce_repeated_short_questions_get_the_answer_attached_to_the_wrong_turn() {
+        // 场景（第三方报告 F11）：用户连发两次「继续」（相差 1 秒），服务端压缩把**第一条**删了。
+        // 下面直接调真函数 mergeByUserAnchor（生产代码），不是模型。
+        fun u(t: String, ts: Long) = Msg("user", t, ts = ts)
+        fun a(t: String, ts: Long = 0L) = Msg("assistant", t, ts = ts)
+        val local = listOf(
+            u("继续", 1000L), a("第一轮回答"),
+            u("继续", 2000L), a("第二轮回答"),
+        )
+        val srv = listOf(u("继续", 2000L), a("第二轮回答"))
+        val merged = mergeByUserAnchor(local, srv)
+        val line = merged.joinToString(" | ") { it.role + ":" + it.text }
+        println("[复现][F11] 合并结果 = $line")
+        // 期望（修复后）：第二轮回答必须挂在**第二条**「继续」之后；第一条保持它自己的回答。
+        val idx1 = merged.indexOfFirst { it.text == "继续" }
+        val idx2 = merged.indexOfLast { it.text == "继续" }
+        val after1 = merged.subList(idx1 + 1, idx2).map { it.text }
+        val after2 = merged.subList(idx2 + 1, merged.size).map { it.text }
+        println("[复现][F11] 第一条「继续」之后 = $after1 ；第二条之后 = $after2")
+        assertEquals("第一条「继续」之后应保持它自己的回答", listOf("第一轮回答"), after1)
+        assertTrue("第二轮回答必须挂在第二条「继续」之后", after2.contains("第二轮回答"))
+    }
+
+    // ------------------------------------------------------------------
+    // F20：附件只有单文件上限，没有批量总量预算
+    // ------------------------------------------------------------------
+
+    @Test
+    fun reproduce_old_selection_accepts_ten_50mb_files_with_no_total_budget() {
+        // 旧逻辑：只卡「单文件 50MB」+「最多 10 个」，没有任何总量判断
+        val perFile = 50L * 1024 * 1024
+        val maxCount = 10
+        var total = 0L
+        var accepted = 0
+        while (accepted < maxCount) { total += perFile; accepted++ }
+        println("[复现][F20] 旧逻辑收下 $accepted 个文件，合计 ${total / 1024 / 1024}MB（无总量预算）")
+        assertEquals(500L * 1024 * 1024, total)
+        // 发送时这些会各自 readBytes() 驻留，再 gzip/base64 复制一份 —— 峰值是原始量的数倍
+        assertTrue("500MB 原始量根本不该被同时收下", total > 4 * 64L * 1024 * 1024)
+    }
+
+    @Test
+    fun new_selection_stops_at_the_batch_budget() {
+        val perFile = 50L * 1024 * 1024
+        var total = 0L
+        var accepted = 0
+        repeat(10) { if (!exceedsAttachBudget(total, perFile)) { total += perFile; accepted++ } }
+        println("[修复][F20] 新逻辑收下 $accepted 个文件，合计 ${total / 1024 / 1024}MB（预算 ${MAX_ATTACH_TOTAL_BYTES / 1024 / 1024}MB）")
+        assertTrue("第 3 个 50MB 文件应当被拒（2 个 = 100MB > 64MB）", accepted <= 1)
+        assertEquals(50L * 1024 * 1024, total)
+    }
+
+    @Test
+    fun budget_boundary_is_inclusive() {
+        // 正好等于预算：允许（别把「刚好 64MB」也拒了）；超一字节：拒绝。
+        assertEquals(false, exceedsAttachBudget(0L, 64L * 1024 * 1024, 64L * 1024 * 1024))
+        assertEquals(true, exceedsAttachBudget(0L, 64L * 1024 * 1024 + 1, 64L * 1024 * 1024))
+    }
 }
