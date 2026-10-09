@@ -52,4 +52,17 @@ object AtomicStore {
             if (bak.exists()) bak.readText() else throw e
         }
     }
+
+    /**
+     * 同 readTextOrBackup，但**主文件缺失**时也回退 .bak；两者都没有返回 null。
+     *
+     * 为什么单列一个（R13）：readTextOrBackup 只在「读主文件抛异常」时回退，而调用方
+     * 常见写法是先 `if (!f.exists()) return` —— 主文件被删/没落盘时直接返回空，
+     * 同目录里那份完好的 .bak 被白白绕过，用户看到「历史全没了」而内容其实可恢复。
+     */
+    fun readTextOrBackupOrNull(f: File): String? {
+        runCatching { f.readText() }.getOrNull()?.let { return it }
+        val bak = File(f.parentFile, f.name + ".bak")
+        return runCatching { bak.readText() }.getOrNull()?.takeIf { it.isNotBlank() }
+    }
 }

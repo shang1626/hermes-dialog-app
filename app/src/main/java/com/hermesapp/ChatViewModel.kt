@@ -73,6 +73,14 @@ private const val TRUNCATED_NOTICE = "\n[提示] 断线期间有内容未收到�
  */
 private const val HISTORY_RECOVERY_WINDOW_MS = 30L * 60_000L
 
+/**
+ * 落盘检查点（R03）：把「这一份属于哪一轮」一起带出来。
+ * 旧实现只带 seq 与正文，提交时不认轮次——写盘期间用户停掉 A 并起了 B，放行后
+ * 仍按当前会话把 A 的 seq 提交进 prefs（探针实测 persistedSeq={s:100} 落在 run-B 上），
+ * B 断线续接时会按这个序号跳过事件。
+ */
+private data class SaveCheckpoint(val gen: Int, val runId: String, val seq: Int, val msgs: List<Msg>)
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = Prefs(app)
@@ -605,14 +613,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 那一刻若被杀进程/退后台，重启会按 Last-Event-ID 从该序号之后续接，缓冲里那一小段
         // （用户看到的就是「最后一段答案没了」）永远补不回来。
         // 现在：主线程就是事件处理线程，「放帧 → 取序号 → 取正文」在这里是一个不可分割的检查点。
-        val (seq, msgs) = withContext(Dispatchers.Main.immediate) {
+        val cp = withContext(Dispatchers.Main.immediate) {
             r.coalescer?.flushNow()   // 把已收到、还没显示的增量立刻并入消息模型
-            r.lastSeq to r.messages.value
+            SaveCheckpoint(r.sendGen, r.runId, r.lastSeq, r.messages.value)
         }
-        val ok = store.saveMessages(r.id, msgs, maxHistory)
-        // 只有消息确实落盘成功才推进续接序号：写盘失败仍推进的话，
-        // 重开 App 会按这个序号做 Last-Event-ID，把没保存的那段永远跳过。
-        if (ok && r.runId.isNotEmpty()) prefs.putLastSeq(r.id, seq)
+        val ok = store.saveMessages(r.id, cp.msgs, maxHistory)
+        // 只有消息确实落盘成功、**且这一轮的轮次号与 runId 没变过**，才推进续接序号：
+        // 写盘失败仍推进的话，重开 App 会按这个序号做 Last-Event-ID、把没保存的那段永远跳过；
+        // 而写盘期间用户停/换轮的话，这份检查点属于旧轮，把它的 seq 写进当前会话会让新轮
+        // 续接时跳过事件（R03，探针实测 persistedSeq={s:100} 落在 run-B 上）。
+        if (ok && cp.runId.isNotEmpty() && r.sendGen == cp.gen && r.runId == cp.runId) {
+            prefs.putLastSeq(r.id, cp.seq)
+        } else if (ok && cp.runId.isNotEmpty()) {
+            AppLog.log("store", "检查点已过期，不提交序号 sid=" + r.id.take(8) +
+                " 本轮run=" + cp.runId.take(12) + " 现存run=" + r.runId.take(12) +
+                " gen=" + cp.gen + "/" + r.sendGen)
+        }
     }
 
     /**
@@ -1003,10 +1019,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onProfileChanged(p: Prefs) {
         AppLog.log("ui", "切身份 profile=" + p.profile + " 服务器=" + p.serverUrl)
-        // 切身份 = 换个人说话（F18）：上一身份的通知栏回复暂存与通知一并作废。否则旧通知上的
-        // 「回复」入口还在，用户对着它打字，那句话会以**新身份**发出去（他也看不出入口已过期）。
-        p.pendingReply = ""
-        p.pendingReplyProfile = ""
+        // 换身份才作废通知栏暂存回复（F18）；**同身份**（冷启动 / 手动重连）必须保留 ——
+        // 原来这里无条件清空，于是「进程被杀 → 通知栏回复 → 重开 App」在恢复落地后又被
+        // 这一行抹掉，那条回复静默消失（R11，调用顺序可确定复现）。判据与消费端
+        // pendingReplyAllowed 同源：来源身份不一致才作废，旧数据(来源为空)放行。
+        if (!pendingReplyAllowed(p.pendingReplyProfile, p.profile)) {
+            p.pendingReply = ""
+            p.pendingReplyProfile = ""
+        }
         runCatching { Notifier.clearBusinessNotifications(getApplication()) }
         migrateLegacyHost(p)
         val key = if (p.profile == "default") Keys.DEFAULT_KEY else Keys.FRIEND_KEY
@@ -2233,6 +2253,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val a = api ?: return
         val sid = _currentId.value
         val r = rt(sid)
+        // 轮次守卫（R21）：确认一条**旧**回执不能接管正在跑的新轮。旧代码进来就把
+        // busy/finished/runId/pendingSendText 全覆盖并起历史恢复，B 跑到一半被 A 的确认
+        // 顶掉，随后 adoptRecovered 还会清掉 B 的 runId 并放行队列、提前发 C。
+        if (r.busy.value) {
+            r.retryNote.value = "本会话还在跑另一轮，等它结束再确认这条"
+            return
+        }
+        val genAtEntry = r.sendGen
         val list = r.messages.value
         val i = list.indexOfFirst { it.id == msgId }
         if (i < 0) return
@@ -2251,9 +2279,30 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 advanceReceipt(sid, msgId, Receipt.UNCERTAIN, note = "查询失败（网络问题），稍后再试")
                 return@launch
             }
+            // 查询往返期间可能已经开了新轮：这份确认针对的是旧状态，只更新回执，不碰会话（R21）。
+            if (r.busy.value || r.sendGen != genAtEntry) {
+                advanceReceipt(sid, msgId, Receipt.UNCERTAIN, note = "确认期间本会话开始了新的一轮，稍后再确认")
+                return@launch
+            }
+            // 没有原正文就没法核对（例如插话重启后的回执，rawText 读回是空的）：
+            // 这种只能给「不确定」，不能拿位置锚点去猜（R15）。
+            if (rc.rawText.isBlank() || rc.priorUserCount < 0) {
+                advanceReceipt(sid, msgId, Receipt.UNCERTAIN, note = "这条没有可核对的原正文（如插话），无法定位，稍后可在服务端核对")
+                return@launch
+            }
             val anchor = if (rows.isEmpty()) -1 else resolveAnchor(rows, rc.rawText, rc.priorUserCount)
             if (anchor < 0) {
-                advanceReceipt(sid, msgId, Receipt.FAILED, note = "服务端记录里没有这条消息，可重新发送")
+                // 锚点对不上有两种原因：① 本地被 300 条窗口裁过，prior 是**窗口内**的相对位置、
+                // 与服务端全历史对不上（R06，探针实测 local-prior=150 而真实位置 602）；
+                // ② 这条确实没落到服务端。分不出来时给「不确定」，
+                // 绝不武断宣称「服务端没有这条」去诱导用户重发（那句话会把已送达的说成没送到）。
+                val capped = r.messages.value.size >= maxHistory
+                if (capped) {
+                    advanceReceipt(sid, msgId, Receipt.UNCERTAIN,
+                        note = "本地历史已超出显示窗口，位置对不上，无法确认（未判定为未送达）")
+                } else {
+                    advanceReceipt(sid, msgId, Receipt.FAILED, note = "服务端记录里没有这条消息，可重新发送")
+                }
                 return@launch
             }
             advanceReceipt(sid, msgId, Receipt.ACCEPTED, note = "")
@@ -2470,6 +2519,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.busy.value = true
         r.finished = false
         r.stopRequested = false
+        // 新轮有自己的停止语义：上一轮「未确认的停止」不再挂着（R08）。
+        r.stopIntentRid = ""
         r.lastSeq = -1
         r.autoContinue = 0
         r.resumed = false
@@ -2530,9 +2581,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: kotlinx.coroutines.CancellationException) {
                 return@launch   // 用户停止主动取消，不算发送失败
             } catch (e: Exception) {
-                _imageNote.value = ""
                 val msg = e.message ?: "?"
                 val httpReject = msg.startsWith("HTTP ")
+                // 归属校验放在最前（R01）：这条异常可能来自已被取代的旧轮
+                // （Stop A → 发 B → A 迟到返回 500）。旧代码在这里无脑 dropEmptyPending +
+                // failPending，把 B 的 busy/runId/active 全清掉（探针实测 busy=false、runId=、
+                // active={}、drains=2）。旧轮只许更新**自己那条**回执，不许碰会话状态、
+                // 不许出队、不许起重试。
+                if (!ownsTurn(gen, r.sendGen, r.finished, r.stopRequested)) {
+                    AppLog.log("send", "旧轮异常迟到，只更新自己的回执（不碰会话）gen=" + gen +
+                        " cur=" + r.sendGen + " 内容=" + msg.take(140))
+                    if (httpReject) advanceReceipt(sid, receiptMsgId, Receipt.FAILED, note = msg)
+                    else advanceReceipt(sid, receiptMsgId, Receipt.UNCERTAIN, note = msg)
+                    return@launch
+                }
+                _imageNote.value = ""
                 AppLog.err("send", "发送失败 服务端拒绝=" + httpReject + " 内容=" + msg.take(200), e)
                 // 网络中断（收不到回执）、带幂等键、且还没重试过 → 自动安全重试一次。
                 // 为什么现在敢自动重试：服务端对同一个键只执行一次，重试要么接上原来那轮
@@ -3167,19 +3230,32 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val waitMs = backoffDelayMs(attempt)
         r.retryNote.value = "连接中断，${waitMs / 1000} 秒后重试（$attempt/$MAX_RECONNECT_ATTEMPTS）"
         AppLog.log("retry", "第 $attempt/$MAX_RECONNECT_ATTEMPTS 次重试，${waitMs / 1000}s 后探 run=" + rid.take(12))
+        // 退避链认轮（R02）：进入时记下轮次与 runId，结果回来时逐字核对。
+        // 旧实现只查 busy/finished —— 用户 Stop A 后起了 B 时 busy 仍是 true，于是
+        // A 探测回来的 Known("completed")/Missing 会按当前会话收尾，把 B 的 busy、
+        // runId 与 active 全清掉（探针实测 busy=false、runId=run-B、active={}、drains=2）。
+        val gen = r.sendGen
         RuntimeHub.scope.launch(Dispatchers.IO) {
             delay(waitMs)
             // 退出前必须留一行：这条退避链可能已被别的路径（切回前台的体检、
             // 翻历史取回、手动停止）抢先收尾。静默 return 会让日志里只剩
             // 「第 N 次重试」却没有「探测结果」，排查时被误读成重试卡死。
-            if (!r.busy.value || r.finished) {
+            if (!r.busy.value || r.finished || r.runId != rid || r.sendGen != gen) {
                 r.probing.set(false)
                 AppLog.log("retry", "退避作废 run=" + rid.take(12) +
-                    "（本轮已由其它路径收尾 busy=" + r.busy.value + " finished=" + r.finished + "）")
+                    "（本轮已由其它路径收尾 busy=" + r.busy.value + " finished=" + r.finished +
+                    " 现run=" + r.runId.take(12) + " gen=" + gen + "/" + r.sendGen + "）")
                 return@launch
             }
             val st = a.probeRun(rid)
             r.probing.set(false)   // 探测出结果即释放单飞位，后续该重试还能再进
+            // 探测期间（阻塞网络调用）用户也可能停/换轮：这份结果属于旧轮，
+            // 不许拿它改当前会话（R02）。
+            if (r.sendGen != gen || r.runId != rid || !r.busy.value || r.finished) {
+                AppLog.log("retry", "探测结果属于旧轮，忽略 run=" + rid.take(12) +
+                    " 现run=" + r.runId.take(12) + " gen=" + gen + "/" + r.sendGen)
+                return@launch
+            }
             AppLog.log("retry", "探测结果 " + when (st) {
                 is HermesApi.RunStatus.Known -> "Known(" + st.status + ")"
                 HermesApi.RunStatus.Missing -> "Missing(404)"
@@ -3356,9 +3432,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun stopSession(sid: String) {
         if (sid.isEmpty()) return
         val r = rt(sid)
-        if (!r.busy.value && r.runId.isEmpty()) return
+        // 上一次停止没被确认时 runId 已清、但 stopIntentRid 还留着：这时再点停止
+        // 就是对那条未确认的 run 重试（R08），不能像旧代码那样直接 return。
+        val pendingStop = r.stopIntentRid
+        if (!r.busy.value && r.runId.isEmpty() && pendingStop.isEmpty()) return
         val a = api
-        val rid = r.runId
+        val rid = r.runId.ifEmpty { pendingStop }
         AppLog.log("stop", "用户停止 sid=" + sid.take(8) + " run=" + rid.take(12))
         r.finished = true
         // 标记「已请求停止」：run 还没建好时 rid 为空，光置 finished 挡不住已在飞行的
@@ -3373,10 +3452,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             // 停止请求本身也可能没送达（网络问题/服务端报错）。旧代码吞掉异常、界面照样
             // 显示「已请求停止」，用户以为停了其实还在跑。这里如实回一句（F21）。
             val sent = a.stopRun(rid)
-            if (!sent) {
-                withContext(Dispatchers.Main) {
-                    r.retryNote.value = "停止请求没送达，服务端可能仍在跑（可再点一次停止）"
-                    AppLog.log("stop", "stopRun 未确认 run=" + rid.take(12))
+            withContext(Dispatchers.Main) {
+                if (sent) {
+                    // 服务端收下了停止请求：未确认意图作废（R08）。
+                    if (r.stopIntentRid == rid) r.stopIntentRid = ""
+                } else {
+                    // 留着重试凭据，提示也改成「再点一次＝对同一条重试」，别再说得含糊（R08）。
+                    r.stopIntentRid = rid
+                    r.retryNote.value = "停止请求没送达，服务端可能仍在跑（再点一次停止会重试这条）"
+                    AppLog.log("stop", "stopRun 未确认，保留重试 run=" + rid.take(12))
                 }
             }
         }

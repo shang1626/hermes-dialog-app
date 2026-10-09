@@ -107,15 +107,14 @@ object VoiceReplayPlayer {
 
     private fun startPlayback(ctx: Context, runId: String, bytes: ByteArray, myGen: Int) {
         try {
-            // 只本地释放旧播放器，**不要**走公开的 stop()：那个会给流式队列发
-            // 「让位结束」信号，把刚让位的语音又拉起来从头播——表现就是
-            // 「点了别的任务，当前这条停不掉」。详见 StreamVoicePlayer.yieldAndDrop。
-            releaseCurrent()
-            _nowPlaying.value = runId
+            // 准备阶段只碰本地变量（R12）：锁外**不许**释放旧句柄、改 nowPlaying、发布 player。
+            // 旧代码在这里就 releaseCurrent()+改 nowPlaying+player=mp，迟到的 A 线程会把 B
+            // 正在用的句柄冲掉（B 还在出声、句柄已被换成 A 的，随后 A 在提交点判自己过期，
+            // 只 release 自己那份）；Stop 时 nowPlaying 为空、B 的播放器已无人管理——
+            // 替身实测 after-late-A-then-stop.nowPlaying= 而 active 仍为 1。
             val f = StreamVoicePlayer.voiceFile(ctx, runId)
             if (!f.isFile || f.length() == 0L) f.writeBytes(bytes)
             val mp = MediaPlayer()
-            player = mp
             mp.setDataSource(f.absolutePath)
             mp.setOnCompletionListener {
                 runCatching { it.release() }
@@ -151,14 +150,15 @@ object VoiceReplayPlayer {
                     return
                 }
                 player = mp
+                _nowPlaying.value = runId
                 AudioFocus.request(ctx)
                 mp.start()
             }
             AppLog.log("voice", "重播已开始 run=" + runId.take(12) + " " + bytes.size + " 字节")
         } catch (e: Exception) {
             AppLog.err("voice", "重播播放失败 run=" + runId.take(12), e)
-            releaseCurrent()
-            _nowPlaying.value = ""
+            // 只有自己那一代才许动共享状态：迟到线程失败不能清掉新播放器的登记（R12）。
+            synchronized(lock) { if (myGen == gen) { releaseCurrent(); _nowPlaying.value = "" } }
             StreamVoicePlayer.resumeQueue()
         }
     }
