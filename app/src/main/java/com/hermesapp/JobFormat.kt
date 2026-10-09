@@ -20,6 +20,9 @@ internal fun jobZhName(name: String): String {
         "apk-keep-30" -> return "安装包只留 30 个"
         "friend-nightly-memory-refactor" -> return "夜间记忆整理"
         "ds-upstream-watch" -> return "上游巡检（DeepSeek）"
+        "patch-registry-audit" -> return "补丁登记巡检"
+        "mem0-night-acceptance" -> return "记忆库夜间验收"
+        "vision-restart-verify" -> return "重启后自检"
     }
     // 精确表认不出时按关键词兜底：别的档案（friend）和以后新加的任务都能自动出中文，
     // 不用每加一个任务改一次代码。顺序有讲究：watchdog 必须排在 watch 前面。
@@ -32,6 +35,7 @@ internal fun jobZhName(name: String): String {
         n.contains("reaper") -> "空闲回收"
         n.contains("apk") || n.contains("keep") -> "安装包清理"
         n.contains("postcheck") -> "升级检查"
+        n.contains("audit") -> "巡检"
         n.contains("backup") -> "备份"
         n.contains("report") -> "结果报告"
         n.contains("verify") || n.contains("check") -> "自检"
@@ -64,6 +68,12 @@ internal fun jobZhNote(name: String): String {
             return "每天凌晨自动整理记忆：做容量体检，把待落盘的内容并进记忆文件，超限就压缩。"
         "ds-upstream-watch" ->
             return "每天巡检 DeepSeek 上游的状态变化，有变化才出报告；无变化时静默。"
+        "patch-registry-audit" ->
+            return "每天上午 9 点核对本地补丁登记（跑 verify_patches.py）：看补丁是否齐全、有没有漏打或要重打的。正常时静默，只有发现问题才出报告。"
+        "mem0-night-acceptance" ->
+            return "一次性任务：把 mem0 夜间安装验收报告的摘要（版本、记忆完整性、结论）投进收件箱，跑完即止。"
+        "vision-restart-verify" ->
+            return "重启后自动体检：确认网关已起来、视觉补丁已加载、平台连接与三路记忆信号正常；有异常才出报告。"
     }
     val n = name.lowercase()
     return when {
@@ -79,6 +89,8 @@ internal fun jobZhNote(name: String): String {
             "定期清理安装包，只保留最近 30 个，防止旧版本堆满磁盘。"
         n.contains("postcheck") ->
             "一次性任务：升级后的检查报告，跑完自动删。"
+        n.contains("audit") ->
+            "定期巡检，发现问题才出报告；正常时静默。"
         n.contains("backup") ->
             "定时备份数据。"
         n.contains("report") ->
@@ -88,6 +100,15 @@ internal fun jobZhNote(name: String): String {
         else -> ""
     }
 }
+
+/**
+ * 收件箱/通知里显示的任务名：优先中文名，认不出才回落原始英文名，再兜底 jobId。
+ *
+ * 收件箱行、产出弹窗、以及「定时任务完成/失败」的系统通知过去一直直接用服务端原始名
+ * （如 ds-upstream-watch），任务卡片是中文、这几处却是英文，用户在通知栏看到英文无法理解。
+ */
+internal fun jobDisplayName(name: String, id: String = ""): String =
+    jobZhName(name).ifEmpty { name.ifEmpty { id } }
 
 /** 运行状态翻译。 */
 internal fun jobZhState(s: String): String = when (s) {

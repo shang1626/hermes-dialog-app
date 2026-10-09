@@ -1586,7 +1586,7 @@ fun JobsScreen(vm: ChatViewModel, prefs: Prefs) {
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
             title = { Text("删除这条产出？", color = c.text, fontSize = 15.sp) },
-            text = { Text((pd.jobName.ifEmpty { pd.jobId }) + " 的这条产出会被删除，删了找不回来。", color = c.dim, fontSize = 12.sp) },
+            text = { Text(jobDisplayName(pd.jobName, pd.jobId) + " 的这条产出会被删除，删了找不回来。", color = c.dim, fontSize = 12.sp) },
             confirmButton = {
                 TextButton(onClick = { pendingDelete = null; vm.deleteInbox(listOf(pd.id)) }) {
                     Text("删除", color = c.bad, fontSize = 14.sp)
@@ -1617,7 +1617,7 @@ private fun CronReportRow(r: CronReport, onOpen: () -> Unit, onLongPress: () -> 
                 Spacer(Modifier.width(5.dp))
             }
             Text(
-                (if (r.failed) "✗ " else "✓ ") + r.jobName.ifEmpty { r.jobId },
+                (if (r.failed) "✗ " else "✓ ") + jobDisplayName(r.jobName, r.jobId),
                 color = if (r.failed) c.bad else c.text, fontSize = 12.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
@@ -1640,7 +1640,7 @@ fun CronReportDialog(vm: ChatViewModel, r: CronReport) {
         onDismissRequest = { vm.closeCronReport() },
         title = {
             Text(
-                (if (r.failed) "定时任务失败 · " else "定时任务产出 · ") + r.jobName.ifEmpty { r.jobId },
+                (if (r.failed) "定时任务失败 · " else "定时任务产出 · ") + jobDisplayName(r.jobName, r.jobId),
                 color = if (r.failed) c.bad else c.text, fontSize = 14.sp,
                 maxLines = 2, overflow = TextOverflow.Ellipsis,
             )
