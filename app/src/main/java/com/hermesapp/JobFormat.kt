@@ -74,6 +74,8 @@ internal fun jobZhNote(name: String): String {
             return "一次性任务：把 mem0 夜间安装验收报告的摘要（版本、记忆完整性、结论）投进收件箱，跑完即止。"
         "vision-restart-verify" ->
             return "重启后自动体检：确认网关已起来、视觉补丁已加载、平台连接与三路记忆信号正常；有异常才出报告。"
+        "峰谷密钥自动切换" ->
+            return "按时间自动切换 FreeLLMAPI 的密钥：工作日 9-12 点、14-18 点（高峰）关掉 opencode-go、启用 ds.example.com；其余时段含周末反过来。每 5 分钟核对一次。"
     }
     val n = name.lowercase()
     return when {

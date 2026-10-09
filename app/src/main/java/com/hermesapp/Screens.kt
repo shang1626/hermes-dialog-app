@@ -1712,7 +1712,6 @@ fun JobCard(j: JobItem, onAction: (String) -> Unit) {
                 Text(j.note, color = c.dim, fontSize = 11.sp)
             }
             Spacer(Modifier.height(6.dp))
-            if (j.zhName.isNotEmpty()) Text("标识  " + j.name, color = c.dim, fontSize = 10.sp)
             if (j.schedule.isNotEmpty()) Text("排期  " + j.schedule, color = c.dim, fontSize = 11.sp)
             if (j.lastRun.isNotEmpty()) {
                 Text(
