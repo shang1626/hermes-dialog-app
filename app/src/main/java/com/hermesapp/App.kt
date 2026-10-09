@@ -187,6 +187,11 @@ class MainActivity : ComponentActivity() {
         // 光靠 30 秒读超时要等很久，这里主动判定一次并重连。
         vm.onAppForeground()
         openFromNotification()
+        // 回到前台就清掉「新消息/任务完成」「审批」两条业务通知：用户已经在 App 里了，
+        // 那两条横幅是多余的。它们原本只在「点通知」时才自动消失（setAutoCancel 挂在
+        // tap 的 PendingIntent 上），所以「直接点图标进 App」时一直挂着（用户报障）。
+        // 只清业务通知，后台常驻通知（RunService, id 1001）不受影响。
+        Notifier.clearBusinessNotifications(this)
     }
 
     override fun onStop() {
