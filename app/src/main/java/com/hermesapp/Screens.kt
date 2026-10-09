@@ -1876,31 +1876,37 @@ fun SettingsScreen(
             shape = RoundedCornerShape(8.dp),
         ) { Text("保存", color = c.accent, fontSize = 13.sp) }
 
-        // ── 已登录账号（R20）：凭据按身份存在手机本地，列出的是**账号名**（身份由账号决定）──
-        Spacer(Modifier.height(12.dp))
-        Text("已登录账号", color = c.text, fontSize = 13.sp)
-        Spacer(Modifier.height(6.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            listOf("default", "friend").forEach { p ->
-                val cred = prefs.credential(p)
-                val has = cred.isNotEmpty()
-                val cur = prefs.profile == p
-                val who = if (has) cred.substringBefore(':') else "未登录"
-                OutlinedButton(
-                    onClick = { if (has && !cur) { prefs.profile = p; vm.onProfileChanged(prefs) } },
-                    enabled = has && !cur,
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
-                    shape = RoundedCornerShape(8.dp),
-                ) {
-                    Text(
-                        if (cur) who + "（当前）" else who,
-                        color = if (cur) c.dim else c.accent, fontSize = 13.sp
-                    )
+        // ── 已登录账号（R20）：凭据按身份存在手机本地，只列**已登录**的账号名（身份由账号决定）──
+        // 没凭据的身份不再出现「未登录」占位（按反馈：设置页不应出现未登录项）。
+        val accounts = listOf("default", "friend").mapNotNull { p ->
+            val cred = prefs.credential(p)
+            if (cred.isEmpty()) null
+            else Triple(p, cred.substringBefore(':'), prefs.profile == p)
+        }
+        if (accounts.isNotEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            Text("已登录账号", color = c.text, fontSize = 13.sp)
+            Spacer(Modifier.height(6.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                accounts.forEach { (p, who, cur) ->
+                    OutlinedButton(
+                        onClick = { if (!cur) { prefs.profile = p; vm.onProfileChanged(prefs) } },
+                        enabled = !cur,
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+                        shape = RoundedCornerShape(8.dp),
+                    ) {
+                        Text(
+                            if (cur) who + "（当前）" else who,
+                            color = if (cur) c.dim else c.accent, fontSize = 13.sp
+                        )
+                    }
                 }
             }
+            if (accounts.size == 1) {
+                Spacer(Modifier.height(4.dp))
+                Text("要加/换账号：退出登录后用另一个账号登录一次即可", color = c.dim, fontSize = 11.sp)
+            }
         }
-        Spacer(Modifier.height(4.dp))
-        Text("「未登录」的那个：退出登录后用它的账号密码登录一次即可", color = c.dim, fontSize = 11.sp)
 
         // ───────── 二、通知与语音 ─────────
         Spacer(Modifier.height(22.dp))
