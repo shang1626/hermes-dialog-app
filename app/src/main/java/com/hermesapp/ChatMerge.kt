@@ -77,6 +77,24 @@ internal fun mergeByUserAnchor(local: List<Msg>, srv: List<Msg>): List<Msg> {
 
     // 用户消息顺序匹配：正文归一相同（时间做二次确认，避免同文本误配）才认成同一条。
     // 服务端压缩删掉的老用户消息匹配不上 → 跳过，不影响其后各块。
+    // 同文本重复时，服务端那一行要留给「时间最吻合」的那条本地消息（F11）。
+    // 场景：用户连发两次「继续」，服务端压缩把**更老**的那条删了、只留第二条。旧实现是
+    // 「遇到第一个未匹配的服务端行就认」，于是第一条「继续」把它抢走——第二轮的答案被贴到
+    // 第一轮、第一轮还凭空多出一条助手行（本机实测合并结果正是
+    // 「继续 | 第二轮回答 | 第一轮回答 | 继续 | 第二轮回答」）。
+    // 裁决规则：若**后面还有**同文本、且与该服务端行时间更接近的本地消息，就把这一行让给它；
+    // 没有时间戳的老数据（<=0）维持原来的先到先得。
+    fun closerLaterExists(li: Int, k: Int): Boolean {
+        val b = sUsers[k]
+        if (b.ts <= 0 || lUsers[li].ts <= 0) return false
+        val d0 = kotlin.math.abs(lUsers[li].ts - b.ts)
+        for (lj in li + 1 until lUsers.size) {
+            val c = lUsers[lj]
+            if (c.ts <= 0 || norm(c.text) != norm(b.text)) continue
+            if (kotlin.math.abs(c.ts - b.ts) < d0) return true
+        }
+        return false
+    }
     val l2s = IntArray(lUsers.size) { -1 }
     var sj = 0
     for (li in lUsers.indices) {
@@ -87,7 +105,7 @@ internal fun mergeByUserAnchor(local: List<Msg>, srv: List<Msg>): List<Msg> {
             val b = sUsers[k]
             val sameText = na.isNotEmpty() && na == norm(b.text)
             val tsOk = a.ts <= 0 || b.ts <= 0 || kotlin.math.abs(a.ts - b.ts) <= REWRITTEN_ROW_WINDOW_MS
-            if (sameText && tsOk) { l2s[li] = k; sj = k + 1; break }
+            if (sameText && tsOk && !closerLaterExists(li, k)) { l2s[li] = k; sj = k + 1; break }
             k++
         }
     }
