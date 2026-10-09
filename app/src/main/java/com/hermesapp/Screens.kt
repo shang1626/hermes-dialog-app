@@ -1876,6 +1876,34 @@ fun SettingsScreen(
             shape = RoundedCornerShape(8.dp),
         ) { Text("保存", color = c.accent, fontSize = 13.sp) }
 
+        // ── 对话身份切换（R20）：凭据按身份存在手机本地，登录过的身份可一键切 ──
+        Spacer(Modifier.height(12.dp))
+        Text("对话身份", color = c.text, fontSize = 13.sp)
+        Spacer(Modifier.height(6.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            listOf("default" to "本人", "friend" to "朋友").forEach { (p, label) ->
+                val has = prefs.credential(p).isNotEmpty()
+                val cur = prefs.profile == p
+                OutlinedButton(
+                    onClick = { if (has && !cur) { prefs.profile = p; vm.onProfileChanged(prefs) } },
+                    enabled = has && !cur,
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+                    shape = RoundedCornerShape(8.dp),
+                ) {
+                    Text(
+                        when {
+                            cur -> label + "（当前）"
+                            has -> label
+                            else -> label + "（未登录）"
+                        },
+                        color = if (cur) c.dim else c.accent, fontSize = 13.sp
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text("「未登录」的身份：退出登录后用它的账号密码登录一次即可", color = c.dim, fontSize = 11.sp)
+
         // ───────── 二、通知与语音 ─────────
         Spacer(Modifier.height(22.dp))
         SectionTitle("通知与语音")

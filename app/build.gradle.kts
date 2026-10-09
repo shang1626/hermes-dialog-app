@@ -21,13 +21,13 @@ android {
         applicationId = "com.hermesapp"
         minSdk = 26
         targetSdk = 34
-        versionCode = 176
-        versionName = "2.165"
+        versionCode = 177
+        versionName = "2.166"
 
         // 敏感值由 local.properties 注入，源码零真值。
-        buildConfigField("String", "APP_PASSWORD", "\"${cfg("HERMES_APP_PASSWORD")}\"")
-        buildConfigField("String", "DEFAULT_KEY", "\"${cfg("HERMES_DEFAULT_KEY")}\"")
-        buildConfigField("String", "FRIEND_KEY", "\"${cfg("HERMES_FRIEND_KEY")}\"")
+        // R20 起：口令与 API 密钥**不再编进包里**（旧版这三样明文字符串躺在 classes.dex 里，
+        // 实测可提取；而更新包挂在公网可任意下载）。App 改用「账号:密码」登录
+        // （服务端补丁 apply_app_login_patch.py），凭据只存手机本地。
         buildConfigField("String", "UPDATE_URL", "\"${cfg("HERMES_UPDATE_URL")}\"")
         buildConfigField("String", "LEGACY_HOSTS", "\"${cfg("HERMES_LEGACY_HOSTS")}\"")
     }

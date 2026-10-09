@@ -165,6 +165,15 @@ class HermesApi(
 
     private fun full(path: String) = baseUrl.trimEnd('/') + prefix + path
 
+    /**
+     * 登录校验（R20）：拿「账号:密码」当令牌，打一次最便宜的已认证接口，只看 HTTP 码。
+     * 200=凭据有效；401=账号或密码不对；-1=网络/服务问题（别把它误报成「密码错」）。
+     * 约定为阻塞调用：调用方在 Dispatchers.IO 里跑。
+     */
+    fun checkCredential(): Int = runCatching {
+        client.newCall(base("/api/inbox?limit=1").get().build()).execute().use { it.code }
+    }.getOrElse { -1 }
+
     private fun base(path: String) = Request.Builder()
         .url(full(path))
         .header("Authorization", "Bearer " + apiKey)
