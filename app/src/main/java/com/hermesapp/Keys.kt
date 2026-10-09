@@ -11,7 +11,6 @@ object Keys {
     val APP_PASSWORD = BuildConfig.APP_PASSWORD
     val DEFAULT_KEY = BuildConfig.DEFAULT_KEY
     val FRIEND_KEY = BuildConfig.FRIEND_KEY
-    val DEFAULT_URL = BuildConfig.DEFAULT_URL
     val UPDATE_URL = BuildConfig.UPDATE_URL
 }
 

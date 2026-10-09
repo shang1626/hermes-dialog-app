@@ -155,20 +155,6 @@ object AppLog {
         return all.split('\n').takeLast(n).joinToString("\n")
     }
 
-    /**
-     * 把日志全文落进可分享目录 exports/（file_paths.xml 已声明，可直接 FileProvider 分享），
-     * 返回文件；失败返回 null。给「导出日志文件」用——直接发文件比复制粘贴更省事、
-     * 也不会被剪贴板长度截断。
-     */
-    fun exportToFile(ctx: Context): File? = runCatching {
-        val dir = File(ctx.filesDir, "exports").apply { mkdirs() }
-        val name = "run-" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.CHINA).format(Date()) + ".log"
-        val f = File(dir, name)
-        val text = read(ctx)
-        f.writeText(if (text.isEmpty()) "(空日志)" else text)
-        f
-    }.getOrNull()
-
     fun clear(ctx: Context) {
         synchronized(lock) { mem.clear() }
         runCatching { File(ctx.filesDir, FILE).delete() }

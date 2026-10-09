@@ -4,8 +4,6 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.provider.OpenableColumns
-import android.widget.Toast
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -26,7 +24,6 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import okhttp3.Call
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -230,7 +227,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * 如此（发送后立刻被杀那一瞬还没落盘）。这份映射是唯一能覆盖这两种情况的信息源。
      */
     private val _serverRuns = MutableStateFlow<Map<String, String>>(emptyMap())
-    val serverRuns = _serverRuns.asStateFlow()
+    // 注：曾暴露过 `val serverRuns = _serverRuns.asStateFlow()`，无人订阅，已删（内部仍用 _serverRuns）。
 
     /** 服务端每行 last_active（毫秒）。回前台挑「比本地新」的会话对齐时用。 */
     private var serverLastActive: Map<String, Long> = emptyMap()
@@ -305,7 +302,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 模型是否支持原生图片（/v1/capabilities features.supports_vision）；未知按 true。 */
     private val _supportsVision = MutableStateFlow(true)
-    val supportsVision = _supportsVision.asStateFlow()
+    // 注：曾暴露过 `val supportsVision = ...`，无人订阅，已删（内部仍用 _supportsVision）。
 
     /** 图片上传进度文案（空表示无进行中上传）。 */
     private val _imageNote = MutableStateFlow("")
@@ -2113,17 +2110,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 按消息 id 改投递状态（找不到就忽略——消息可能已被「清理缓存」截掉）。 */
-    private fun setReceipt(sid: String, msgId: Long, receipt: Receipt?) {
-        if (msgId <= 0) return
-        val r = rt(sid)
-        val list = r.messages.value.toMutableList()
-        val i = list.indexOfFirst { it.id == msgId }
-        if (i < 0) return
-        list[i] = list[i].copy(receipt = receipt)
-        setMsgs(r, list)
-    }
-
     /** 把某条用户消息的投递状态推到下一档，其余字段保留。 */
     private fun advanceReceipt(
         sid: String,
@@ -2179,10 +2165,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun openReceiptMenu(msgId: Long) {
         _receiptMenu.value = if (_receiptMenu.value == msgId) 0L else msgId
-    }
-
-    fun closeReceiptMenu() {
-        _receiptMenu.value = 0L
     }
 
     /**

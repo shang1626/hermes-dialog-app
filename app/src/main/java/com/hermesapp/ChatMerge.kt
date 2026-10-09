@@ -1,7 +1,5 @@
 package com.hermesapp
 
-import org.json.JSONObject
-
 /**
  * 从 ChatViewModel 抽出的纯逻辑（历史合并 / 锚点 / 富文本片段）。
  * 无实例依赖、无 UI 依赖，便于单测覆盖——动主状态机前的测试网。
