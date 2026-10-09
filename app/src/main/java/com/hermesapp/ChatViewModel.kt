@@ -2374,6 +2374,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         autoRetryLeft: Int = 1,
     ) {
         val r = rt(sid)
+        // 本轮轮次号：这次发送的「身份证」。之后任何共享状态的写入都要先对号
+        // （见 ownsTurn 与 RuntimeHub.SessionRuntime.sendGen）：迟到的旧轮不得接管会话（F04）。
+        val gen = ++r.sendGen
         // 本轮计时起点先定好：气泡与最终耗时都锚在它上面，中途气泡被重建也不会漂。
         r.startedAt = stamp()
         setMsgs(r, r.messages.value + Msg("assistant", "", pending = true, ts = stamp(), startedAt = r.startedAt))
@@ -2391,7 +2394,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         var uploadsDone = reuseArtifacts.isNotEmpty()
         r.sendJob = viewModelScope.launch(Dispatchers.IO) {
             try {
-                if (r.finished) return@launch   // 起流前用户已点停止
+                // 起流前先对号：用户已点停止、或又发了新的一轮，本轮直接作废（不发、不写状态）。
+                if (!ownsTurn(gen, r.sendGen, r.finished, r.stopRequested)) return@launch
                 // 附件 id：重发必须复用首次那份（服务端算指纹含请求体，换了 id 会被判冲突）。
                 // Hermes 本地补丁：不再单独 POST /v1/artifacts/upload（实测该接口被边缘按请求
                 // 形状拦掉、TCP RST，而 /v1/runs 同样带 body 却正常）。改把文件 gzip+base64
@@ -2405,27 +2409,35 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     inlineFiles.add(com.hermesapp.net.InlineFile(f.name, mimeOf(f), bytes))
                 }
                 uploadsDone = true
-                if (r.finished) { AppLog.log("send", "停止排除：上传完成但用户已停止，不起流"); return@launch }
-                _imageNote.value = ""
-                val run = a.startRun(text, sid, emptyList(), idemKey, inlineFiles)
-                r.runId = run.optString("run_id", run.optString("id", ""))
-                AppLog.log("send", "已建 run=" + r.runId.take(12) + " 重放=" + run.optBoolean("replayed", false) + " 内联附件=" + inlineFiles.size)
-                // 建 run 期间用户可能点过停止：startRun 是同步 HTTP、取消协程拦不住它，
-                // 请求已经发出去、服务端 run 可能已建好。此时补发一次 stopRun 收敛，
-                // 不再接流、不再记活跃 run，避免「界面已停、服务端还在跑」。
-                if (r.finished || r.stopRequested) {
-                    AppLog.log("stop", "建 run 期间已请求停止，补发 stopRun run=" + r.runId.take(12))
-                    if (r.runId.isNotEmpty()) a.stopRun(r.runId)
-                    finishPending(r)
+                if (!ownsTurn(gen, r.sendGen, r.finished, r.stopRequested)) {
+                    AppLog.log("send", "停止排除：上传完成但本轮已作废（停止或已开新轮），不起流 gen=" + gen + " cur=" + r.sendGen)
                     return@launch
                 }
+                _imageNote.value = ""
+                val run = a.startRun(text, sid, emptyList(), idemKey, inlineFiles)
+                val myRun = run.optString("run_id", run.optString("id", ""))
+                AppLog.log("send", "已建 run=" + myRun.take(12) + " 重放=" + run.optBoolean("replayed", false) + " 内联附件=" + inlineFiles.size)
+                // 归属校验必须在写任何共享状态之前：startRun 是同步 HTTP、取消协程拦不住它，
+                // 请求已经发出去、服务端这条 run 可能已建好。但这期间用户可能点过停止、或已经
+                // 发了下一轮——那时 r.sendGen 已推进，本轮号对不上，绝不能把 myRun 写进
+                // r.runId / activeRun、更不能接流（否则会顶掉新轮的 runId、两条流抢同一会话，F04）。
+                // 过时的一轮只需用自己那条 runId 补一次 stop 把它收掉即可。
+                // 也正因如此这里不再调 finishPending：那个气泡此刻很可能已属于新的一轮。
+                if (!ownsTurn(gen, r.sendGen, r.finished, r.stopRequested)) {
+                    AppLog.log("stop", "本轮已被取代，补发 stopRun run=" + myRun.take(12) +
+                        " gen=" + gen + " cur=" + r.sendGen + " finished=" + r.finished +
+                        " stopRequested=" + r.stopRequested)
+                    if (myRun.isNotEmpty()) a.stopRun(myRun)
+                    return@launch
+                }
+                r.runId = myRun
                 // 计时起点不在这里重设：上传附件+建 run 的往返也算本轮耗时，
                 // 重设会把这一段抹掉，最终值比界面实时值小一截。
-                prefs.putActiveRun(sid, r.runId)
+                prefs.putActiveRun(sid, myRun)
                 prefs.putLastSeq(sid, -1)   // 新 run 从 0 开始，清掉上一轮的续接序号
                 // 拿到 run_id 才算「服务端已收下」，此时回执才转已送达。
                 // 幂等键与附件 id 一并落进回执，供后续重发原样复用。
-                advanceReceipt(sid, receiptMsgId, Receipt.ACCEPTED, runId = r.runId,
+                advanceReceipt(sid, receiptMsgId, Receipt.ACCEPTED, runId = myRun,
                     idemKey = idemKey, artifactIds = ids)
                 streamRun(a, sid)
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -3259,6 +3271,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 标记「已请求停止」：run 还没建好时 rid 为空，光置 finished 挡不住已在飞行的
         // startRun 请求——它返回后据这个标记补发 stopRun（见 startRunWith）。
         r.stopRequested = true
+        // 把当前轮作废：万一还有一条 startRun 的同步请求在飞，它回来时轮次号对不上，
+        // 只会补发 stop 收掉自己，不会重新接管会话（F04）。
+        r.sendGen++
         r.recoveryJob?.cancel()
         r.coalescer?.discard()
         if (a != null && rid.isNotEmpty()) viewModelScope.launch(Dispatchers.IO) { a.stopRun(rid) }
