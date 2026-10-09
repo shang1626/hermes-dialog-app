@@ -11,6 +11,16 @@ data class Msg(
     val images: List<String> = emptyList(),
     /** 本条消息附带的非图片附件名（气泡里回显成文件卡片）。 */
     val files: List<String> = emptyList(),
+    /**
+     * 本条消息真正发出去时用的附件清单（文件**名**，按发送顺序）。全部文件都在 App 私有
+     * 「已发送」目录 `filesDir/sent/` 下——图片与非图片都留了一份。
+     *
+     * 为什么要按顺序存这份清单（F07）：重发必须拼出与首次**一模一样**的请求体——
+     * 服务端算指纹含请求体，附件内容或顺序变了就会被判「键相同、内容不同」而 409。
+     * 只靠 images/files 两个展示字段拼不出原始顺序（一个是图片、一个是非图片），
+     * 所以单存这一份有序清单作为「原载荷」的凭据。老消息没有这个键 → 为空，重发按旧逻辑。
+     */
+    val attachments: List<String> = emptyList(),
     /** 过程轨迹（工具调用等）。与正文分开存，界面上默认折叠，不占屏幕。 */
     val trace: String = "",
     /** 本轮 token 用量（run.completed 的 usage），仅助手消息有。 */
@@ -83,6 +93,12 @@ data class Receipt(
         const val QUEUED = "queued"
         /** 用户已确认忽略「不确定」：收掉角标与提示，不再反复提醒，也不自动重发。 */
         const val ACKED = "acked"
+        /**
+         * 未发送：入队时状态是 QUEUED，但 **App 重启后内存里的待发队列已丢**，这条永远不会
+         * 自动发出去。读盘时把 QUEUED 归到这一档，别继续显示「排队中」（那是句假话），
+         * 界面上给「重新发送 / 知道了」两个出口。
+         */
+        const val NOT_SENT = "not_sent"
     }
 }
 

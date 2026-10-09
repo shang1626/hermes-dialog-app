@@ -182,6 +182,11 @@ class SessionStore(ctx: Context, private val profile: String) {
                 o.optJSONArray("files")?.let { fa ->
                     for (k in 0 until fa.length()) fa.optString(k)?.takeIf { it.isNotEmpty() }?.let { files.add(it) }
                 }
+                // 原始附件清单（有序，按发送顺序）：重发时用它拼出与首次一致的请求体。
+                val attachments = mutableListOf<String>()
+                o.optJSONArray("attachments")?.let { aa ->
+                    for (k in 0 until aa.length()) aa.optString(k)?.takeIf { it.isNotEmpty() }?.let { attachments.add(it) }
+                }
                 // 只要还有正文 / 工具轨迹 / 图片 / 附件，这条就得留住。
                 // 「只发了图、没打字」的消息正文是空的，按老条件（只查正文与轨迹）会被整条丢掉，
                 // 重开 App 后那条图就凭空消失——附件消息必须按附件是否为空一起判。
@@ -241,7 +246,11 @@ class SessionStore(ctx: Context, private val profile: String) {
                         for (k in 0 until aa.length()) aa.optString(k)?.takeIf { it.isNotEmpty() }?.let { arts.add(it) }
                     }
                     Receipt(
-                        status = ro.optString("status", Receipt.ACCEPTED),
+                        // 读回时把「只在当次运行里有意义」的两个状态归位，否则重启后会一直
+                        // 转圈 / 一直显示「排队中」（F03）：
+                        //   sending → uncertain：那个 POST 早就没了，收没收不知道 → 结果未知
+                        //   queued  → not_sent ：内存里的待发队列重启即丢，它不会再自动发
+                        status = restartSafeStatus(ro.optString("status", Receipt.ACCEPTED)),
                         runId = ro.optString("runId", ""),
                         note = ro.optString("note", ""),
                         rawText = ro.optString("rawText", text.trim()),
@@ -258,6 +267,7 @@ class SessionStore(ctx: Context, private val profile: String) {
                         ts = o.optLong("ts", 0L),
                         images = imgs,
                         files = files,
+                        attachments = attachments,
                         trace = trace,
                         receipt = rc,
                         quote = o.optString("quote", ""),
@@ -313,6 +323,12 @@ class SessionStore(ctx: Context, private val profile: String) {
                     for (n in m.files) fa.put(n)
                     o.put("files", fa)
                 }
+                // 原始附件清单（有序）：重发时靠它拼出与首次一致的请求体（F07）。
+                if (m.attachments.isNotEmpty()) {
+                    val aa = JSONArray()
+                    for (n in m.attachments) aa.put(n)
+                    o.put("attachments", aa)
+                }
                 // 待办卡片（审批/澄清）落盘：重启后即使还没联网也能先把卡片挂回来，
                 // 联网探测到 run 已结束再清掉（见 ChatViewModel.clearStaleCards）。
                 m.approval?.let { c ->
@@ -351,10 +367,12 @@ class SessionStore(ctx: Context, private val profile: String) {
                 }
                 // 进行中气泡的计时起点也要落盘，否则 App 退出重进后计时从 0 重新开始。
                 if (m.startedAt > 0) o.put("startedAt", m.startedAt)
-                // 投递状态要落盘：重开 App 后「不确定/失败」的消息还得能处置。
-                // sending 不落盘——重启后那个 POST 已经没了，留着会一直转圈；
-                // queued 同理——内存里的排队队列重启即丢，落盘会永远停在「排队中」。
-                m.receipt?.takeIf { it.status != Receipt.SENDING && it.status != Receipt.QUEUED }?.let { rc ->
+                // 投递状态**一律**落盘，含 sending / queued（F03）。
+                // 旧实现故意过滤掉这两个状态，理由是「重启后那个 POST 已经没了，留着会一直转圈」；
+                // 代价是重启后那条消息的回执、幂等键、附件清单全丢——用户再也认不出
+                // 「这条到底发出去没有」，也没法安全重发。现在改为**落盘 + 读回时归位**
+                // （restartSafeStatus：sending→uncertain、queued→not_sent），两者都不转圈、都带处置按钮。
+                m.receipt?.let { rc ->
                     val rj = JSONObject()
                         .put("status", rc.status)
                         .put("runId", rc.runId)
@@ -549,4 +567,16 @@ class SessionStore(ctx: Context, private val profile: String) {
         }
         return null
     }
+}
+
+/**
+ * 读盘时把「只在当次运行里有意义」的投递状态归位（F03）——纯函数，便于单测。
+ *   sending → uncertain：那个 POST 早已结束，服务端收没收不知道 → 结果未知，交用户处置
+ *   queued  → not_sent ：内存里的待发队列重启即丢，这条不会再自动发出
+ * 其余状态原样返回。这样重启后既不会一直转圈，也不会显示一句做不到的「排队中」。
+ */
+internal fun restartSafeStatus(s: String): String = when (s) {
+    Receipt.SENDING -> Receipt.UNCERTAIN
+    Receipt.QUEUED -> Receipt.NOT_SENT
+    else -> s
 }

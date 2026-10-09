@@ -1114,10 +1114,11 @@ fun Bubble(
                 val rc = m.receipt
                 val actionable = rc != null &&
                     (rc.status == Receipt.UNCERTAIN || rc.status == Receipt.FAILED ||
-                        rc.status == Receipt.QUEUED)
+                        rc.status == Receipt.QUEUED || rc.status == Receipt.NOT_SENT)
                 val mark = when (rc?.status) {
                     Receipt.SENDING -> "◌"
                     Receipt.QUEUED -> "⋯"
+                    Receipt.NOT_SENT -> "↑"
                     Receipt.ACCEPTED -> "✓"
                     Receipt.UNCERTAIN -> "?"
                     Receipt.FAILED -> "!"
@@ -1125,7 +1126,7 @@ fun Bubble(
                     else -> ""
                 }
                 val markCol = when (rc?.status) {
-                    Receipt.UNCERTAIN, Receipt.QUEUED -> c.warn
+                    Receipt.UNCERTAIN, Receipt.QUEUED, Receipt.NOT_SENT -> c.warn
                     Receipt.FAILED -> c.bad
                     else -> c.dim
                 }
@@ -1176,6 +1177,7 @@ fun Bubble(
                         if (rc != null) {
                             val tip = when (rc.status) {
                                 Receipt.QUEUED -> "排队中，本轮结束后自动发送（点这里可撤回或编辑）"
+                                Receipt.NOT_SENT -> "未发送（App 重启后没自动发出），点这里重发或忽略"
                                 Receipt.UNCERTAIN -> "发送结果不确定，点这里处理"
                                 Receipt.FAILED -> if (rc.note.isNotEmpty()) rc.note else "发送失败，点这里重发"
                                 else -> ""
@@ -1206,6 +1208,18 @@ fun Bubble(
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
                                     shape = RoundedCornerShape(8.dp),
                                 ) { Text("编辑", color = c.accent, fontSize = 12.sp) }
+                            } else if (rc?.status == Receipt.NOT_SENT) {
+                                // 重启后归位的「未发送」：这条不会再自动发出，交给用户决定。
+                                OutlinedButton(
+                                    onClick = { onResendReceipt(m.id) },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                ) { Text("重新发送", color = c.accent, fontSize = 12.sp) }
+                                OutlinedButton(
+                                    onClick = { onAckReceipt(m.id) },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                ) { Text("知道了", color = c.dim, fontSize = 12.sp) }
                             } else {
                                 OutlinedButton(
                                     onClick = { onConfirmReceipt(m.id) },

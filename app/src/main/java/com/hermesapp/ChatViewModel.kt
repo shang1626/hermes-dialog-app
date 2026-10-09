@@ -1965,14 +1965,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // outbox 原文件删了，可后面发请求时还按老路径读 → 文件已不存在，附件必然发不出去。
         val durableImgs = mutableListOf<String>()
         val uploadFiles = mutableListOf<java.io.File>()
+        val durableNames = mutableListOf<String>()
         for (p in imgs) {
-            if (p.isImage) {
-                val (f, uri) = persistOutgoing(p)
-                durableImgs.add(uri)
-                uploadFiles.add(f)
-            } else {
-                uploadFiles.add(p.file)
-            }
+            // 图片与非图片**都**挪进「已发送」目录（原来只挪图片）：非图片也要留一份，
+            // 否则重发时拼不出与首次一致的请求体，同幂等键会被判「键同体不同」而 409（F07）。
+            val (f, uri) = persistOutgoing(p)
+            uploadFiles.add(f)
+            durableNames.add(f.name)
+            if (p.isImage) durableImgs.add(uri)
         }
         // 投递状态挂在用户消息自己身上（按 msgId 认领，不靠位置）：POST 没回来前是 sending，
         // 拿到 run_id 才转 accepted，中途断了转 uncertain 等用户处置。
@@ -1983,6 +1983,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             "user", text, ts = stamp(),
             images = durableImgs.toList(),
             files = imgs.filter { !it.isImage }.map { it.file.name },
+            attachments = durableNames.toList(),
             receipt = Receipt(
                 status = if (willQueue) Receipt.QUEUED else Receipt.SENDING,
                 rawText = wireText.trim(),
@@ -2237,14 +2238,30 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.priorUserCount = list.take(i).count { it.role == "user" }
         r.pendingSendText = rc.rawText
         r.recoveryJob?.cancel()
-        val files = m.images.mapNotNull { u ->
-            runCatching { File(Uri.parse(u).path ?: "") }.getOrNull()?.takeIf { it.exists() }
+        // 按「原始附件清单」重建这一轮的附件，顺序与首次一致（F07）。
+        // 拼不出原载荷就明确拒绝同键重发——宁可让用户重发一条，也不要发重或发漏。
+        val sentDir = File(getApplication<Application>().filesDir, "sent")
+        val files = mutableListOf<File>()
+        var missing = 0
+        if (m.attachments.isNotEmpty()) {
+            for (n in m.attachments) {
+                val f = File(sentDir, n)
+                if (f.exists()) files.add(f) else missing++
+            }
+        } else {
+            // 老消息没有这份清单：只能按图片重建；非图片附件在旧版本没留档。
+            for (u in m.images) {
+                val f = runCatching { File(Uri.parse(u).path ?: "") }.getOrNull()
+                if (f != null && f.exists()) files.add(f) else missing++
+            }
+            missing += m.files.size
+        }
+        if (missing > 0) {
+            r.retryNote.value = "原附件已不在本机，无法原样重发；请把这条重新发一次（这样不会发重、也不会发漏）"
+            return
         }
         // 附件已有 artifact id 就复用，不再重传（重传会换 id、指纹不符会被判冲突）。
         val reuse = rc.artifactIds
-        if (m.files.isNotEmpty() && reuse.isEmpty()) {
-            r.retryNote.value = "这条带过附件，重发只带上图片，其他附件请重新选"
-        }
         advanceReceipt(sid, msgId, Receipt.SENDING, note = "")
         startRunWith(
             a, sid, rc.rawText, files,
@@ -3117,6 +3134,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         prefs.removeActiveRun(sid)
                         updateRunService()
                         if (sid == _currentId.value) refreshFromServer()
+                        // 本轮已确认结束 → 把排队中的下一条接着发（原来这条路径漏了 drainQueue，
+                        // 表现是「断流被判结束后，排队的消息一直卡着不走」，F06）。
+                        // 用户点过「停止」而按住的队列不受影响——drainQueue 会看 queuePaused。
+                        drainQueue(sid)
                     }
                 }
                 // 服务端明确说没这个 run：判结束（极少见，run 记录被清）。
@@ -3130,6 +3151,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     prefs.removeActiveRun(sid)
                     updateRunService()
                     if (sid == _currentId.value) refreshFromServer()
+                    // 同「已完成」分支：本轮结束就把队列放行（F06）。
+                    drainQueue(sid)
                 }
                 // 探不出来（网还没通）：不知道 ≠ 已结束，继续退避重试。
                 // 这是原实现最大的坑——把「不知道」当成了「已结束」，第一次探测
