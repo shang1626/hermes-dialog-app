@@ -438,13 +438,21 @@ class HermesApi(
     fun listSessions(limit: Int = 200): JSONObject =
         sync(base("/api/sessions?limit=" + limit).get().build())
 
-    fun stopRun(runId: String) {
-        runCatching {
+    /**
+     * 请求停止一条 run。
+     *
+     * 返回值 = 服务端是否确认收到（HTTP 2xx）。调用方据此区分「已请求停止」与
+     * 「停止请求没送达」——旧实现吞掉一切（含 4xx/5xx 与网络异常）且界面一律显示已停止，
+     * 用户以为停了、服务端其实还在跑（F21）。
+     */
+    fun stopRun(runId: String): Boolean {
+        return runCatching {
             client.newCall(base("/v1/runs/" + runId + "/stop").post("{}".toRequestBody(jsonType)).build())
                 .execute().use { resp ->
                     AppLog.log("stop", "停止请求 run=" + runId.take(12) + " -> " + resp.code)
+                    resp.isSuccessful
                 }
-        }
+        }.getOrDefault(false)
     }
 
     /**

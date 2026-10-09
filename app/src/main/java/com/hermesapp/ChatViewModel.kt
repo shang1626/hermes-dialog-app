@@ -2104,11 +2104,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val r = rt(sid)
         val rid = r.runId
         if (rid.isEmpty()) return
-        // 插话要在聊天界面看得见：直接插一条用户气泡（标「插话」），
-        // 不再只往折叠的过程里塞一行——那样用户以为没发出去。
+        // 插话要在聊天界面看得见：直接插一条用户气泡（标「插话」）。
+        // 顺带给它一个投递回执：插话失败时才有地方如实标注，否则气泡看着像发出去了（F13）。
+        val steerMsg = Msg("user", t, pending = false, ts = stamp(), steer = true,
+            receipt = Receipt(Receipt.SENDING))
         run {
             val list = r.messages.value.toMutableList()
-            list.add(Msg("user", t, pending = false, ts = stamp(), steer = true))
+            list.add(steerMsg)
             setMsgs(r, list)
         }
         // 插话结果要可见：200 才算送进本轮；409/其它说明本轮已收尾、这句没赶上。
@@ -2117,8 +2119,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val ok = a.steer(rid, t)
             AppLog.log("steer", "插话 run=" + rid.take(12) + " 结果=" + (if (ok) "送达" else "未送达") + " len=" + t.length)
             withContext(Dispatchers.Main) {
-                r.retryNote.value = if (ok) "插话已送达，本轮会读到"
-                else "插话没送达：本轮可能已收尾，这句话没赶上"
+                if (ok) {
+                    advanceReceipt(sid, steerMsg.id, Receipt.ACCEPTED, note = "")
+                    r.retryNote.value = "插话已送达，本轮会读到"
+                } else {
+                    // 没送达就标在这条气泡自己身上：光在顶部闪一行字，气泡本身看着还是
+                    // 「发出去了」，用户会以为这句话进了本轮（F13）。
+                    advanceReceipt(sid, steerMsg.id, Receipt.STEER_FAILED,
+                        note = "插话没赶上下一次工具调用，本轮可能已收尾")
+                    r.retryNote.value = "插话没送达：本轮可能已收尾，这句话没赶上"
+                }
             }
         }
     }
@@ -2207,7 +2217,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val rc = list[i].receipt ?: return
         _receiptMenu.value = 0L
         viewModelScope.launch(Dispatchers.IO) {
-            val rows = try { historyRows(a, sid) } catch (_: Exception) { emptyList() }
+            // 「没查到」和「查询失败」必须分开（F21）：网络断了、或历史接口出错时，
+            // 旧代码把异常吞成空列表，于是直接宣告「服务端记录里没有这条消息」——
+            // 那是把「不知道」说成了「确定没有」，会诱导用户重发一条其实已送达的话。
+            val rows = try {
+                historyRows(a, sid)
+            } catch (_: Exception) {
+                null
+            }
+            if (rows == null) {
+                advanceReceipt(sid, msgId, Receipt.UNCERTAIN, note = "查询失败（网络问题），稍后再试")
+                return@launch
+            }
             val anchor = if (rows.isEmpty()) -1 else resolveAnchor(rows, rc.rawText, rc.priorUserCount)
             if (anchor < 0) {
                 advanceReceipt(sid, msgId, Receipt.FAILED, note = "服务端记录里没有这条消息，可重新发送")
@@ -3311,7 +3332,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.sendGen++
         r.recoveryJob?.cancel()
         r.coalescer?.discard()
-        if (a != null && rid.isNotEmpty()) viewModelScope.launch(Dispatchers.IO) { a.stopRun(rid) }
+        if (a != null && rid.isNotEmpty()) viewModelScope.launch(Dispatchers.IO) {
+            // 停止请求本身也可能没送达（网络问题/服务端报错）。旧代码吞掉异常、界面照样
+            // 显示「已请求停止」，用户以为停了其实还在跑。这里如实回一句（F21）。
+            val sent = a.stopRun(rid)
+            if (!sent) {
+                withContext(Dispatchers.Main) {
+                    r.retryNote.value = "停止请求没送达，服务端可能仍在跑（可再点一次停止）"
+                    AppLog.log("stop", "stopRun 未确认 run=" + rid.take(12))
+                }
+            }
+        }
         r.call?.cancel()
         r.sendJob?.cancel()
         appendDelta(r, "\n[已请求停止]")
