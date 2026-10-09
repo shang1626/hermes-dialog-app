@@ -1876,14 +1876,16 @@ fun SettingsScreen(
             shape = RoundedCornerShape(8.dp),
         ) { Text("保存", color = c.accent, fontSize = 13.sp) }
 
-        // ── 对话身份切换（R20）：凭据按身份存在手机本地，登录过的身份可一键切 ──
+        // ── 已登录账号（R20）：凭据按身份存在手机本地，列出的是**账号名**（身份由账号决定）──
         Spacer(Modifier.height(12.dp))
-        Text("对话身份", color = c.text, fontSize = 13.sp)
+        Text("已登录账号", color = c.text, fontSize = 13.sp)
         Spacer(Modifier.height(6.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            listOf("default" to "本人", "friend" to "朋友").forEach { (p, label) ->
-                val has = prefs.credential(p).isNotEmpty()
+            listOf("default", "friend").forEach { p ->
+                val cred = prefs.credential(p)
+                val has = cred.isNotEmpty()
                 val cur = prefs.profile == p
+                val who = if (has) cred.substringBefore(':') else "未登录"
                 OutlinedButton(
                     onClick = { if (has && !cur) { prefs.profile = p; vm.onProfileChanged(prefs) } },
                     enabled = has && !cur,
@@ -1891,18 +1893,14 @@ fun SettingsScreen(
                     shape = RoundedCornerShape(8.dp),
                 ) {
                     Text(
-                        when {
-                            cur -> label + "（当前）"
-                            has -> label
-                            else -> label + "（未登录）"
-                        },
+                        if (cur) who + "（当前）" else who,
                         color = if (cur) c.dim else c.accent, fontSize = 13.sp
                     )
                 }
             }
         }
         Spacer(Modifier.height(4.dp))
-        Text("「未登录」的身份：退出登录后用它的账号密码登录一次即可", color = c.dim, fontSize = 11.sp)
+        Text("「未登录」的那个：退出登录后用它的账号密码登录一次即可", color = c.dim, fontSize = 11.sp)
 
         // ───────── 二、通知与语音 ─────────
         Spacer(Modifier.height(22.dp))
