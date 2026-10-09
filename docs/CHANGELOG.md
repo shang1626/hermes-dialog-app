@@ -1,3 +1,24 @@
+## 2.164 — versionCode 175
+
+按同事智能体 v2.163 深度审计（R01–R21）做第一批：修 8 项，全部用其自带证据包复跑验证。
+
+- **R01 旧发送的异常回包不再结束新任务**：Stop A → 发 B → A 迟到返回 500 时，异常出口缺所有权校验，会把 B 的 busy/runId/active 全清掉。现在异常里先对轮次号，旧轮只更新自己那条回执。证据包：`CONFIRMED` → `FIXED stale HTTP exception keeps B`。
+- **R02 旧状态探测不再清掉新轮**：退避探测回来只查 busy/finished，B 在跑时会被 A 的 Completed/Missing 收尾。现在进入时记下轮次与 runId，结果回来逐字核对。证据包 → `FIXED stale terminal probe keeps B`。
+- **R03 旧检查点不再把 A 的序号提交给 B**：写盘期间切轮后仍按当前会话提交 seq，B 续接会跳过事件。现在检查点带轮次与 runId，过期即不提交。证据包 → `FIXED old checkpoint no longer publishes cursor into B`。
+- **R08 停止失败后可以真的重试**：旧代码失败也清 runId，重入判据把第二次点击挡掉（提示里的「可再点一次停止」是空话）。现在保留未确认的停止意图，再点即对该 run 重试。证据包 → `FIXED failed stop can retry same run`。
+- **R07 重复短句合并改用全局匹配**：旧贪心在恒定时钟偏差下交错贴错轮次（实测 7 段错乱），改为「同正文 + 时间窗内 + 顺序不倒退」的最大匹配、再最小化总时差 → 正确的 4 段。
+- **R11 同身份启动/重连不再清掉通知栏回复**：过去无条件清空暂存，导致「进程被杀 → 通知栏回复 → 重开 App」静默丢一条。现在只有来源身份不一致才作废。
+- **R12 迟到播放线程不再覆盖新句柄**：准备阶段不再释放/发布播放器、不再改「在播」标记，全部移到锁内校验之后；停止后新实例的播放状态不再失控（探针 active 1→0）。
+- **R13 主文件缺失时可回退备份**：加载路径先判 exists 直接返回空，把完好的 .bak 绕过。现在缺失也回退备份（探针 0 → 1 条）。
+- **R15 插话重启后不再负索引崩溃**：`resolveAnchor` 未挡 `prior<0`，确认路径传 -1 时 `userIdx[-1]` 抛 IndexOutOfBoundsException。现在直接返回未命中，并给「不确定」而不是武断宣告「服务端没有这条」。
+- **R19 删除会话清干净归档备份**：除主文件外，旧 `.archive.json` 及其 `.bak/.tmp` 一并清除。
+
+第二批（R04/R05/R09/R10/R14/R16/R17/R18/R20/R21，需连接上下文/发送箱/协议契约等新结构）不在本版。
+
+（改 ChatViewModel.kt / ChatMerge.kt / SessionStore.kt / AtomicStore.kt / VoiceReplayPlayer.kt / RuntimeHub.kt / app/build.gradle.kts；无新增文件）
+
+---
+
 ## 2.163 — versionCode 174
 
 修「重播语音时迟到线程把状态/声音弄乱」（F16）与「切换身份后旧身份的通知栏回复还能发出去」（F18）。

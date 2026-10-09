@@ -72,6 +72,14 @@ internal class SessionRuntime(val id: String) {
      * （两条流抢同一会话，F04）。现在每轮带号，迟到的响应先对号，对不上只补发 stop 收掉自己。
      */
     @Volatile var sendGen: Int = 0
+    /**
+     * 未确认的停止意图（R08）：上一次对哪条 run 发了 stop 但**没得到确认**。
+     * 非空表示「界面已显示停止、服务端可能仍在跑」，用户再点停止时对这条重试。
+     * 旧实现失败后照样把 runId 清空，而重入判据是 `!busy && runId.isEmpty()`，
+     * 第二次点击直接被挡掉——提示里那句「可再点一次停止」是句空话（探针实测 stopCalls 只有一次）。
+     * 起新轮时清空（新轮有自己的停止语义）。
+     */
+    @Volatile var stopIntentRid: String = ""
     /** 这条 run 是重开 App 后从落盘标记恢复的（没有本地发送上下文，拿不到位置锚点）。 */
     @Volatile var resumed: Boolean = false
     @Volatile var startedAt: Long = 0L

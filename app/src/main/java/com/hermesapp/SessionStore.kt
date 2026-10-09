@@ -63,6 +63,19 @@ class SessionStore(ctx: Context, private val profile: String) {
         AppLog.err("store", "读 " + f.name + " 失败，回退备份 字节=" + f.length(), e)
         throw e
     }
+
+    /**
+     * 读主文件，**缺失时也回退 .bak**；两者都没有返回 null（R13）。
+     * 供「先判 exists 再读」的加载路径使用，别再用 `if (!exists) return` 把备份绕过。
+     */
+    private fun readMaybeMissing(f: File): String? {
+        val t = AtomicStore.readTextOrBackupOrNull(f)
+        if (t == null) return null
+        if (!f.exists()) {
+            AppLog.log("store", "主文件缺失，已用备份恢复 " + f.name + " 共 " + t.length + " 字节")
+        }
+        return t
+    }
     private fun msgFile(id: String) = File(dir, "chat_${profile}_$id.json")
     private fun legacyFile() = File(dir, "chat_$profile.json")
 
@@ -94,7 +107,9 @@ class SessionStore(ctx: Context, private val profile: String) {
     fun loadIndex(): MutableList<SessionMeta> {
         val out = mutableListOf<SessionMeta>()
         val f = indexFile()
-        if (!f.exists()) return out
+        // 主文件缺失也要看备份（R13）：旧代码在这里直接 return 空列表，把同目录里
+        // 那份完好的 .bak 白白绕过 —— 用户看到「历史对话全没了」，内容其实可恢复。
+        val raw = readMaybeMissing(f) ?: return out
         try {
             // 兼容两种外形：老版是裸数组 `[...]`，新版是 `{"schema":N,"sessions":[...]}`。
             // 解析辅助同时接受两者，老文件照常能读。
@@ -111,7 +126,7 @@ class SessionStore(ctx: Context, private val profile: String) {
                 }
             }
             val arr = try {
-                parseArr(readTextOrBackup(f))
+                parseArr(raw)
             } catch (e: Exception) {
                 // 主文件是半截 JSON（写盘被中断）：回退上一次的备份。
                 val bak = File(dir, f.name + ".bak")
@@ -183,9 +198,10 @@ class SessionStore(ctx: Context, private val profile: String) {
         val out = mutableListOf<Msg>()
         runCatching {
             val f = msgFile(id)
-            if (!f.exists()) return@runCatching
+            // 主文件缺失也要看备份（R13），理由同 loadIndex。
+            val raw = readMaybeMissing(f) ?: return@runCatching
             val arr = try {
-                JSONArray(readTextOrBackup(f))
+                JSONArray(raw)
             } catch (e: Exception) {
                 val bak = File(dir, f.name + ".bak")
                 if (bak.exists()) JSONArray(bak.readText()) else throw e
@@ -454,7 +470,14 @@ class SessionStore(ctx: Context, private val profile: String) {
         }
         // 清理旧版遗留的归档文件（v2.151 起不再产生归档，但老版本可能已经写过，
         // 删除会话时顺手把 `chat_<profile>_<id>.archive.json` 一并清掉，避免留孤儿文件）。
-        runCatching { File(dir, "chat_${profile}_$id.archive.json").delete() }
+        // R19：主文件清了、它的 .bak/.tmp 也要一起清，否则「删掉的会话」在目录里
+        // 仍留着可被读回的副本（探针实测 deleted-legacy-archive-backup=true）。
+        runCatching {
+            val arc = File(dir, "chat_${profile}_$id.archive.json")
+            arc.delete()
+            File(dir, arc.name + ".bak").delete()
+            File(dir, arc.name + ".tmp").delete()
+        }
         AppLog.log("store", "删消息文件 id=" + id.take(8) + " 删除=" + ok)
     }
 

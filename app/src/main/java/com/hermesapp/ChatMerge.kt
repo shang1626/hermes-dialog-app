@@ -11,6 +11,12 @@ package com.hermesapp
  */
 internal const val REWRITTEN_ROW_WINDOW_MS = 120_000L
 
+/**
+ * 匹配分数里的「配上一对」奖励（R07）。取值远大于任何时间差（窗口 120s = 120000ms），
+ * 保证「多配上一对」永远优先于「总时间差更小」——贪心错配的根因正是把后者放到了前面。
+ */
+private const val MATCH_BONUS = 1_000_000_000L
+
 /** 被引正文压缩成一行片段（最多 80 字），服务端与气泡共用。 */
 internal fun quoteSnippet(m: Msg): String {
     val one = m.text.replace(Regex("\\s+"), " ").trim()
@@ -34,6 +40,10 @@ internal fun toolLine(ev: com.hermesapp.net.SseEvent, failed: Boolean): String {
 }
 /** 位置锚点：第 prior+1 条用户消息的下标；对不上返回 -1（不硬认）。 */
 internal fun resolveAnchor(rows: List<HistRow>, pendingText: String, prior: Int): Int {
+    // prior < 0 必须挡在最前（R15）：插话在途重启后，回执没有 prior（读回 -1），
+    // 确认路径会把这 -1 传进来；旧代码只查 size <= prior，于是 userIdx[-1]
+    // 直接抛 IndexOutOfBoundsException（本机探针已复现）。
+    if (prior < 0) return -1
     val userIdx = rows.indices.filter { rows[it].role == "user" }
     if (userIdx.size <= prior) return -1
     val pos = userIdx[prior]
@@ -84,29 +94,53 @@ internal fun mergeByUserAnchor(local: List<Msg>, srv: List<Msg>): List<Msg> {
     // 「继续 | 第二轮回答 | 第一轮回答 | 继续 | 第二轮回答」）。
     // 裁决规则：若**后面还有**同文本、且与该服务端行时间更接近的本地消息，就把这一行让给它；
     // 没有时间戳的老数据（<=0）维持原来的先到先得。
-    fun closerLaterExists(li: Int, k: Int): Boolean {
-        val b = sUsers[k]
-        if (b.ts <= 0 || lUsers[li].ts <= 0) return false
-        val d0 = kotlin.math.abs(lUsers[li].ts - b.ts)
-        for (lj in li + 1 until lUsers.size) {
-            val c = lUsers[lj]
-            if (c.ts <= 0 || norm(c.text) != norm(b.text)) continue
-            if (kotlin.math.abs(c.ts - b.ts) < d0) return true
-        }
-        return false
-    }
+    // 用户消息顺序匹配（R07 重写）：旧实现是「后来者时间更近就把这一行让给它」的贪心，
+    // 对**恒定时钟偏差**会错配——两句「继续」与两行服务端记录（本地 1000/2000、后台 1800/2800）
+    // 被发现会交错贴错轮次（实测输出 继续/第一轮/继续/第一轮/第二轮/继续/第二轮）。
+    // 改为在「同正文 + 时间在窗口内 + 顺序不倒退」的约束下做一次全局最优匹配：
+    // 先最大化配上的条数，再最小化总时间差。这样「服务端压缩只剩后一条」（F11）
+    // 与「两边都在、只差一个固定钟差」（R07）都能配对正确。
+    // 时间与正文仅作保守候选；无时间戳的老数据不参与差值裁决（按顺序配对）。
     val l2s = IntArray(lUsers.size) { -1 }
-    var sj = 0
-    for (li in lUsers.indices) {
-        val a = lUsers[li]
-        val na = norm(a.text)
-        var k = sj
-        while (k < sUsers.size) {
-            val b = sUsers[k]
-            val sameText = na.isNotEmpty() && na == norm(b.text)
-            val tsOk = a.ts <= 0 || b.ts <= 0 || kotlin.math.abs(a.ts - b.ts) <= REWRITTEN_ROW_WINDOW_MS
-            if (sameText && tsOk && !closerLaterExists(li, k)) { l2s[li] = k; sj = k + 1; break }
-            k++
+    run {
+        val n = lUsers.size
+        val m = sUsers.size
+        val normSrv = Array(m) { norm(sUsers[it].text) }
+        val normLoc = Array(n) { norm(lUsers[it].text) }
+        fun tsDiff(li: Int, sj: Int): Long {
+            val a = lUsers[li]; val b = sUsers[sj]
+            if (a.ts <= 0 || b.ts <= 0) return 0L
+            return kotlin.math.abs(a.ts - b.ts)
+        }
+        fun matchable(li: Int, sj: Int): Boolean {
+            val na = normLoc[li]
+            if (na.isEmpty() || na != normSrv[sj]) return false
+            val a = lUsers[li]; val b = sUsers[sj]
+            if (a.ts <= 0 || b.ts <= 0) return true
+            return kotlin.math.abs(a.ts - b.ts) <= REWRITTEN_ROW_WINDOW_MS
+        }
+        val dp = Array(n + 1) { LongArray(m + 1) }
+        for (i in 1..n) {
+            for (j in 1..m) {
+                var best = maxOf(dp[i - 1][j], dp[i][j - 1])
+                if (matchable(i - 1, j - 1)) {
+                    val cand = dp[i - 1][j - 1] + MATCH_BONUS - tsDiff(i - 1, j - 1)
+                    if (cand > best) best = cand
+                }
+                dp[i][j] = best
+            }
+        }
+        var i = n
+        var j = m
+        while (i > 0 && j > 0) {
+            val cur = dp[i][j]
+            if (matchable(i - 1, j - 1) && cur == dp[i - 1][j - 1] + MATCH_BONUS - tsDiff(i - 1, j - 1)) {
+                l2s[i - 1] = j - 1
+                i--; j--
+                continue
+            }
+            if (cur == dp[i - 1][j]) { i--; continue }
+            j--
         }
     }
     val srvMatched = BooleanArray(sUsers.size)
