@@ -16,6 +16,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
@@ -730,26 +732,40 @@ fun DrawerPanel(
         modifier = Modifier.width(300.dp)
     ) {
         Column(Modifier.fillMaxSize().padding(12.dp)) {
+            // ── 顶部区（2026-10-10 按「重构侧边栏顶部」重排）──
+            // 原来三样挤一行：22sp 的「Hermes」+ 12sp 的身份 + 右侧一个小描边按钮——
+            // 基线不齐、按钮只占一小条、手机上不好点，而 2.178 那轮还留了个重复 Spacer。
+            // 现在拆两行：第一行只放品牌与身份标签；第二行把「新对话」（最高频动作）
+            // 做成整行宽描边按钮，拇指一点即中。
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "Hermes", color = c.accent, fontSize = T.display, fontWeight = FontWeight.Bold,
                     modifier = Modifier.clickable { onTab(0) }
                 )
                 // 身份标识从对话窗口顶栏挪到这里（顶栏留给标题与状态）。
-                Spacer(Modifier.width(6.dp))
-                Text(prefs.profile, color = c.dim, fontSize = T.cap)
-                Spacer(Modifier.weight(1f))
-                OutlinedButton(
-                    onClick = { vm.newConversation(); onClose() },
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                    shape = RoundedCornerShape(Rad.pill),
-                ) { Text("+ 新对话", fontSize = T.sub, color = c.accent) }
+                // 显示**账号名**（凭据里 @ 前的部分），与「界面只认账号、不出现本人/朋友字样」
+                // 的既有口径一致；没凭据时回落身份 id。做成描边小标签，与标题拉开层次。
+                val who = prefs.credential(prefs.profile).substringBefore(':').ifEmpty { prefs.profile }
+                Spacer(Modifier.width(G.x2))
+                Box(
+                    Modifier
+                        .border(BorderStroke(1.dp, c.card), RoundedCornerShape(Rad.pill))
+                        .padding(horizontal = G.x2, vertical = 1.dp)
+                ) {
+                    Text(who, color = c.dim, fontSize = T.cap)
+                }
             }
-            Spacer(Modifier.height(10.dp))
-
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(G.x2))
+            OutlinedButton(
+                onClick = { vm.newConversation(); onClose() },
+                shape = RoundedCornerShape(Rad.pill),
+                border = BorderStroke(1.dp, c.accent.copy(alpha = 0.55f)),
+                contentPadding = PaddingValues(vertical = 6.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("＋ 新对话", fontSize = T.sub, color = c.accent) }
+            Spacer(Modifier.height(G.x3))
             HorizontalDivider(color = c.card)
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(G.x2))
 
             // 会话列表标题行
             Row(verticalAlignment = Alignment.CenterVertically) {
