@@ -1,3 +1,45 @@
+## 2.177 — versionCode 188
+
+定时任务页的中文名与备注补齐（服务端新增了「FreeLLMAPI密钥用途守卫」任务，同时把峰谷切换的口径改成两把 opencode-go）。
+
+- 新增 `FreeLLMAPI密钥用途守卫` 的中文名与备注：「每 30 分钟核对 FreeLLMAPI 的密钥用途：两把 opencode-go 都只准 deepseek-flash、硅基流动只做 bge-m3 嵌入，发现越权启用或作用域被放宽就立刻收回并通知你；正常时静默。」
+- `峰谷密钥自动切换` 的备注更新为两把 key 的口径（工作日高峰关掉两把 opencode-go，其余时段开启）。
+- 纯字符串表改动（`JobFormat.kt`），无逻辑改动、不碰构建配置。
+
+（改 app/src/main/java/com/hermesapp/JobFormat.kt / app/build.gradle.kts / docs/CHANGELOG.md）
+
+---
+
+## 2.176 — versionCode 187
+
+兜底收尾也挂 usage/runId（修「偶尔任务完成后没有使用量信息与语音按钮」）——补记。
+
+---
+
+## 2.175 — versionCode 186
+
+补修自动语音播报没法立即停止（认对流式播放器）——补记。
+
+---
+
+## 2.174 — versionCode 185
+
+通知结果落日志 + 兜底直响（震动/提示音）——补记。
+
+---
+
+## 2.173 — versionCode 184
+
+任务完成通知方案 B（前台当前会话也弹 + 震动 + 响铃）——补记。
+
+---
+
+## 2.172 — versionCode 183
+
+任务完成后的自动语音播报可立即停止——补记。
+
+---
+
 ## 2.171 — versionCode 182
 
 后台保活与完成提醒一批（起因：真机日志实测这台机型一天把 App 进程回收 8 次，且 App 侧没有任何兜底）。
