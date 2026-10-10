@@ -153,6 +153,13 @@ class MainActivity : ComponentActivity() {
         if ((prefs.keepAlive || prefs.notifySessionCompletions) && android.os.Build.VERSION.SDK_INT >= 33) {
             runCatching { notifPerm.launch(android.Manifest.permission.POST_NOTIFICATIONS) }
         }
+        // 把通知授权状态写进运行日志（用户报「任务跑完没通知/没响」时要一眼看出是不是权限没给）
+        runCatching {
+            val granted = checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+            AppLog.log("notif", "启动检查 通知权限=" + granted + " 通知总开关=" +
+                androidx.core.app.NotificationManagerCompat.from(this).areNotificationsEnabled())
+        }
         Notifier.ensureChannel(this)
         setContent { HermesApp(vm, prefs) }
     }
