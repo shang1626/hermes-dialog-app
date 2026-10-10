@@ -21,8 +21,8 @@ android {
         applicationId = "com.hermesapp"
         minSdk = 26
         targetSdk = 34
-        versionCode = 194
-        versionName = "2.183"
+        versionCode = 195
+        versionName = "2.184"
 
         // 敏感值由 local.properties 注入，源码零真值。
         // R20 起：口令与 API 密钥**不再编进包里**（旧版这三样明文字符串躺在 classes.dex 里，

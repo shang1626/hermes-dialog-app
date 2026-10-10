@@ -74,6 +74,18 @@ private const val TRUNCATED_NOTICE = "\n[提示] 断线期间有内容未收到�
 private const val HISTORY_RECOVERY_WINDOW_MS = 30L * 60_000L
 
 /**
+ * 状态轮询等结果（流已接不上、但服务端说这一轮还在跑）的参数。
+ *
+ * 为什么必须单独有这条路：服务端的 SSE 缓冲有自己的存活期，过期后 /events 永远 404，
+ * 而 GET /v1/runs/{id} 仍回 running —— 这时反复重起流只会每次都秒 404（实测一条 run
+ * 连撞 24 次），翻历史又需要本地发送锚点（重开 App 恢复的轮次没有）。长任务实测能跑
+ * 24 分钟以上，窗口给到 2 小时。
+ */
+private const val LIVE_STATUS_POLL_INTERVAL_MS = 20_000L
+private const val LIVE_STATUS_POLL_WINDOW_MS = 120L * 60_000L
+private const val LIVE_STATUS_POLL_MAX_MISSES = 5
+
+/**
  * 落盘检查点（R03）：把「这一份属于哪一轮」一起带出来。
  * 旧实现只带 seq 与正文，提交时不认轮次——写盘期间用户停掉 A 并起了 B，放行后
  * 仍按当前会话把 A 的 seq 提交进 prefs（探针实测 persistedSeq={s:100} 落在 run-B 上），
@@ -1405,12 +1417,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val c = r.call
                 if (c != null && !c.isCanceled()) {
                     if (r.retryNote.value.isEmpty()) r.retryNote.value = "回到前台，正在重连…"
-                    // 主动掐掉假死连接：onError 回调会走一次退避续接，这里不重复调，
-                    // 避免同一次断流把重试计数加两回。
+                    // 主动掐掉假死连接：它的 onError 回调自己会走一次退避续接。
                     c.cancel()
-                } else {
-                    maybeContinue(r.id)
                 }
+                // 掐完立刻自驱一次退避链，不再依赖 c.cancel() 引发的 onError：流其实早就
+                // 死了（call 对象还在、onError 不会再响）时，只 cancel 而不重探就得再等一次
+                // 回前台才会动 —— 真机实测「21:14:26 掐掉、21:17:39 才探到结果」，中间几分钟
+                // 界面上什么都没有，用户看到的就是「一直提示、没动静」。
+                // 单飞位（probing）保证不会双开退避链、也不会把重试计数加两回。
+                maybeContinue(r.id)
             }
         }
         // 回前台补齐前台服务：后台期间被 Android 12+ 限制挡下的启动在这里补上，
@@ -3337,14 +3352,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // 正文只保留任务真实产出，避免一次抖动就在会话里留一条错行。
                 r.coalescer?.flushNow()
                 if (r.busy.value && !r.finished) {
-                    // 2026-10-08：404 不是网络抖动，是服务端已经没有这条 run 的 SSE 缓冲了。
-                    // 再按退避重起流只会每次都秒 404（实测一条 run 连撞 24 次，用户得手动点停止），
-                    // 所以这里不走 maybeContinue 的「探测→重起流」，直接转翻历史等答案落盘。
+                    // 404 不是网络抖动，是服务端已经没有这条 run 的 SSE 缓冲了（服务端的清扫
+                    // 会把过期缓冲回收掉）。再按退避重起流只会每次都秒 404（实测一条 run 连撞
+                    // 24 次，用户得手动点停止），所以直接转状态轮询等这一轮跑完。
                     if (e is com.hermesapp.net.RunStreamGoneException) {
-                        AppLog.log("retry", "流 404（服务端缓冲已回收），转翻历史 run=" + rid.take(12))
-                        r.retryNote.value = "事件流已断开，正在从服务端取回结果…"
-                        r.autoContinue = MAX_RECONNECT_ATTEMPTS   // 跳过退避重起流
-                        startHistoryRecovery(sid, rid)
+                        AppLog.log("retry", "流 404（服务端缓冲已回收），转状态轮询 run=" + rid.take(12))
+                        // 跳过退避重起流（再起也是秒 404）；404 不等于「这一轮结束了」，
+                        // 状态轮询会先确认它是否还在服务端跑着。
+                        r.autoContinue = MAX_RECONNECT_ATTEMPTS
+                        waitLiveRunByStatus(sid, rid)
                     } else {
                         if (r.retryNote.value.isEmpty()) r.retryNote.value = "连接中断：" + (e.message ?: "未知")
                         maybeContinue(sid)
@@ -3427,40 +3443,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         restorePendingCard(r, st.payload)
                         streamRun(a, sid)
                     } else {
-                        // 服务端明确回答「已结束」：收尾并拉回产出。
-                        r.retryNote.value = ""
-                        r.finished = true
-                        clearStaleCards(r)
-                        finishPending(r)
-                        // 兜底收尾也要挂收尾元数据：使用量行与语音按钮都靠它（见 attachUsageJson）。
-                        tagLastAssistantRunId(r, rid)
-                        attachUsageJson(r, st.payload?.optJSONObject("usage"))
-                        notifyRecoveredCompletion(sid, st.payload?.optString("output", "").orEmpty())
-                        r.busy.value = false
-                        prefs.removeActiveRun(sid)
-                        updateRunService()
-                        if (sid == _currentId.value) refreshFromServer()
-                        // 本轮已确认结束 → 把排队中的下一条接着发（原来这条路径漏了 drainQueue，
-                        // 表现是「断流被判结束后，排队的消息一直卡着不走」，F06）。
-                        // 用户点过「停止」而按住的队列不受影响——drainQueue 会看 queuePaused。
-                        drainQueue(sid)
+                        // 服务端明确回答「已结束」：收尾并拉回产出（含放行排队；用户点过
+                        //「停止」而按住的队列不受影响——drainQueue 会看 queuePaused）。
+                        finishRecoveredTurn(sid, rid, st.payload)
                     }
                 }
                 // 服务端明确说没这个 run：判结束（极少见，run 记录被清）。
                 HermesApi.RunStatus.Missing -> {
-                    r.retryNote.value = ""
-                    r.finished = true
-                    clearStaleCards(r)
-                    finishPending(r)
-                    // run 记录都没了，拿不到 usage；runId 仍补挂，语音按钮（按 runId 取留档）还能用。
-                    tagLastAssistantRunId(r, rid)
-                    notifyRecoveredCompletion(sid, "")
-                    r.busy.value = false
-                    prefs.removeActiveRun(sid)
-                    updateRunService()
-                    if (sid == _currentId.value) refreshFromServer()
-                    // 同「已完成」分支：本轮结束就把队列放行（F06）。
-                    drainQueue(sid)
+                    // run 记录都没了，拿不到 usage 与产出；runId 仍补挂，语音按钮
+                    //（按 runId 取留档）还能用。
+                    finishRecoveredTurn(sid, rid, null)
                 }
                 // 探不出来（网还没通）：不知道 ≠ 已结束，继续退避重试。
                 // 这是原实现最大的坑——把「不知道」当成了「已结束」，第一次探测
@@ -3474,6 +3466,112 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * 服务端明确说这一轮已结束，或那条 run 记录已经不在了：收尾并把产出接回来。
+     *
+     * 抽成一处共用：退避探测、流 404 之后的状态轮询、服务端记录消失三条路要走同样的收尾
+     * （清过期待办卡、挂 usage 与 runId、完成提醒、放行排队），分头写必有一处漏
+     * ——原来「翻历史取回」那条就漏挂收尾元数据（用户报过「偶尔完成后没有使用量与语音按钮」）。
+     */
+    private fun finishRecoveredTurn(sid: String, rid: String, payload: org.json.JSONObject?) {
+        val r = rt(sid)
+        r.retryNote.value = ""
+        r.finished = true
+        clearStaleCards(r)
+        finishPending(r)
+        // 兜底收尾也要挂收尾元数据：使用量行与语音按钮都靠它（见 attachUsageJson）。
+        tagLastAssistantRunId(r, rid)
+        attachUsageJson(r, payload?.optJSONObject("usage"))
+        notifyRecoveredCompletion(sid, payload?.optString("output", "").orEmpty())
+        r.busy.value = false
+        prefs.removeActiveRun(sid)
+        updateRunService()
+        if (sid == _currentId.value) refreshFromServer()
+        // 本轮已确认结束 → 把排队中的下一条接着发（原来这条路径漏了 drainQueue，
+        // 表现是「断流被判结束后，排队的消息一直卡着不走」，F06）。
+        drainQueue(sid)
+    }
+
+    /**
+     * 流接不上了（服务端 SSE 缓冲已回收，/events 永久 404），但这一轮在服务端还在跑：
+     * 不判死、也不再反复重起流，改成按固定间隔问状态，跑完自动把产出接回来。
+     *
+     * 为什么不能沿用翻历史：翻历史靠「本地发送锚点」认哪条是本次答案，而重开 App 恢复出来
+     * 的轮次没有这个锚点（pendingSendText 不落盘），旧代码于是只在界面上留一句
+     * 「连接不稳，仍在尝试接回本轮…」干等到下次回前台。真机现场（2026-10-10）：任务
+     * 21:13:37 就跑完了，App 21:17:41 才接回（等了 4 分 04 秒），那句误导提示挂了 9 分 38 秒。
+     *
+     * 复用 r.recoveryJob 这个槽位：所有「停止/换轮/删除会话」路径都已经在取消它，
+     * 另开一个字段就会有人忘了取消。
+     */
+    private fun waitLiveRunByStatus(sid: String, rid: String) {
+        val a = api ?: return
+        val r = rt(sid)
+        if (r.finished) return
+        if (r.recoveryJob?.isActive == true) return
+        val startedAt = r.startedAt
+        fun note() {
+            val mins = if (startedAt > 0) (System.currentTimeMillis() - startedAt) / 60_000L else 0L
+            r.retryNote.value = if (mins > 0) "这一轮还在服务器上跑（已 $mins 分钟），跑完自动取回"
+            else "这一轮还在服务器上跑，跑完自动取回"
+        }
+        note()
+        r.recoveryJob = RuntimeHub.scope.launch(Dispatchers.IO) {
+            var elapsed = 0L
+            var misses = 0
+            while (elapsed < LIVE_STATUS_POLL_WINDOW_MS) {
+                delay(LIVE_STATUS_POLL_INTERVAL_MS)
+                elapsed += LIVE_STATUS_POLL_INTERVAL_MS
+                if (!r.busy.value || r.finished) return@launch
+                val gen = r.sendGen
+                val st = try {
+                    a.probeRun(rid)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
+                }
+                // 探测期间（阻塞网络调用）用户可能已经停轮/换轮：这份结果属于旧轮（R02），
+                // 不许拿它改当前会话。
+                if (gen != r.sendGen || r.runId != rid || !r.busy.value || r.finished) {
+                    AppLog.log("retry", "状态轮询结果属于旧轮，忽略 run=" + rid.take(12))
+                    return@launch
+                }
+                when (st) {
+                    null, HermesApi.RunStatus.Unknown -> {
+                        misses++
+                        AppLog.log("retry", "状态轮询探不出来（" + misses + "/" + LIVE_STATUS_POLL_MAX_MISSES + "）run=" + rid.take(12))
+                        if (misses >= LIVE_STATUS_POLL_MAX_MISSES) {
+                            r.recoveryJob = null
+                            startHistoryRecovery(sid, rid)
+                            return@launch
+                        }
+                    }
+                    is HermesApi.RunStatus.Known -> {
+                        misses = 0
+                        if (st.status in RUNNING_STATES) {
+                            note()
+                        } else {
+                            AppLog.log("retry", "状态轮询：这一轮已结束（" + st.status + "），接回产出 run=" + rid.take(12))
+                            finishRecoveredTurn(sid, rid, st.payload)
+                            return@launch
+                        }
+                    }
+                    HermesApi.RunStatus.Missing -> {
+                        // 服务端连 run 记录都没了：交给翻历史（有锚点时才认得出来），
+                        // 认不出来会给出「可重发」这类明确提示。
+                        AppLog.log("retry", "状态轮询：服务端没有这条 run 了，转翻历史 run=" + rid.take(12))
+                        r.recoveryJob = null
+                        startHistoryRecovery(sid, rid)
+                        return@launch
+                    }
+                }
+            }
+            r.recoveryJob = null
+            giveUpRecovery(sid, "等 2 小时仍未取回结果，可稍后再看")
         }
     }
 
@@ -3503,7 +3601,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             // 重开 App 恢复出来的任务没有本地发送上下文，拿不到位置锚点，不能据此判死：
             // 保留活跃标记与气泡，等下次进前台（onAppForeground 会把退避计数归零）再续接。
             if (r.resumed) {
-                r.retryNote.value = "连接不稳，仍在尝试接回本轮…"
+                // 这句原来写「连接不稳，仍在尝试接回本轮…」，但它既不是网络问题、也没在重试
+                // ——实测那条误导管了用户 9 分 38 秒。回前台现在会立刻重新探测（见
+                // onAppForeground），所以提示说实话。
+                r.retryNote.value = "这一轮还没取回结果，切回前台会自动再试"
                 r.autoContinue = 0
                 return
             }

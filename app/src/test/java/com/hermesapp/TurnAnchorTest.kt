@@ -88,4 +88,38 @@ class TurnAnchorTest {
         assertEquals(0L, TurnAnchor.serverCreatedAtMs(Double.NaN))
         assertEquals(0L, TurnAnchor.serverCreatedAtMs(true))
     }
+
+    /**
+     * [复现] 重开 App 恢复本轮时，进行中的空气泡会被落盘空壳过滤丢掉 →「最后一条助手气泡」
+     *        落到了**上一轮**，旧规则（气泡优先）于是把上一轮的起点当成本轮起点。
+     * [修复] 气泡/运行时起点早于服务端 run 的 created_at 时，改用服务端真值。
+     *
+     * 数字取自 2026-10-10 真机上报（session 85cd6256 / run_7d2ddb27）：
+     *   上一轮起点 20:28:02.98 = 1791635282980
+     *   run created_at 20:49:06.06 = 1791636546.06（秒级浮点）
+     *   那一刻 21:08:01.51 = 1791637681509 → 旧规则报「已跑 2398 秒」，真值 1135 秒。
+     */
+    @Test
+    fun reproduce_previous_turn_bubble_overstates_elapsed() {
+        val prevTurnStart = 1791635282980L
+        val runCreatedAt = 1791636546.06
+        val at = 1791637681509L
+        val oldElapsed = (at - prevTurnStart) / 1000
+        assertEquals(2398L, oldElapsed)
+        println("[复现] 旧规则（气泡优先）已跑=${oldElapsed}秒 —— 多算了 ${oldElapsed - 1135} 秒")
+
+        val fixed = TurnAnchor.resolveTurnStartMs(prevTurnStart, 0L, runCreatedAt, at)
+        val newElapsed = (at - fixed) / 1000
+        println("[修复] 新规则起点=$fixed（服务端 created_at）→ 已跑=${newElapsed}秒")
+        assertEquals(1791636546060L, fixed)
+        assertEquals(1135L, newElapsed)
+    }
+
+    @Test
+    fun slightly_early_local_bubble_is_still_this_turn() {
+        // 本机 send 到服务端建 run 有往返：气泡比 created_at 早 1.5 秒仍属本轮，不许被判成上一轮。
+        val bubble = 1791597459870L - 1_500L
+        assertEquals(bubble, TurnAnchor.resolveTurnStartMs(bubble, 0L, serverCreatedAt, now))
+        assertEquals("本地气泡", TurnAnchor.source(bubble, 0L, serverCreatedAt))
+    }
 }
