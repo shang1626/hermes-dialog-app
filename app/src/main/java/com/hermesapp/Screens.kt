@@ -23,6 +23,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -441,9 +442,9 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
         }
         LazyColumn(
             state = listState,
-            modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            contentPadding = PaddingValues(vertical = 10.dp)
+            modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = G.page),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            contentPadding = PaddingValues(vertical = G.x3)
         ) {
             items(msgs, key = { it.id }) { m ->
                 val hl = hits.getOrNull(hitIdx) == m.id
@@ -492,7 +493,7 @@ fun ChatInputBar(
     }
     val input = inputState.value
     Row(
-        Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 8.dp, vertical = 6.dp),
+        Modifier.fillMaxWidth().background(c.panel).padding(horizontal = G.x3, vertical = G.x2),
         verticalAlignment = Alignment.Bottom
     ) {
         Box(Modifier.weight(1f)) {
@@ -505,7 +506,7 @@ fun ChatInputBar(
             )
             // 全屏 + 图片：并排的小无边框图标，压在输入框右下角
             Row(
-                Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = 4.dp),
+                Modifier.align(Alignment.BottomEnd).padding(end = 10.dp, bottom = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // 无彩色 emoji，用单色描边图标（跟随主题前景色）
@@ -513,69 +514,74 @@ fun ChatInputBar(
                     Icons.Outlined.Photo,
                     contentDescription = "发送图片",
                     tint = c.dim,
-                    modifier = Modifier.size(20.dp).clickable { onPickImages() }.padding(horizontal = 2.dp)
+                    modifier = Modifier.size(24.dp).clickable { onPickImages() }.padding(horizontal = 3.dp)
                 )
-                Spacer(Modifier.width(6.dp))
+                Spacer(Modifier.width(G.x1))
                 Icon(
                     Icons.Outlined.AttachFile,
                     contentDescription = "发送文件",
                     tint = c.dim,
-                    modifier = Modifier.size(20.dp).clickable { onPickFiles() }.padding(horizontal = 2.dp)
+                    modifier = Modifier.size(24.dp).clickable { onPickFiles() }.padding(horizontal = 3.dp)
                 )
-                Spacer(Modifier.width(6.dp))
+                Spacer(Modifier.width(G.x1))
                 Icon(
                     Icons.Outlined.Fullscreen,
                     contentDescription = "全屏编辑",
                     tint = c.dim,
-                    modifier = Modifier.size(20.dp).clickable { onFullscreen() }.padding(horizontal = 2.dp)
+                    modifier = Modifier.size(24.dp).clickable { onFullscreen() }.padding(horizontal = 3.dp)
                 )
             }
         }
-        Spacer(Modifier.width(6.dp))
+        Spacer(Modifier.width(G.x2))
         // 忙时也能发：本会话在跑就排队，等这轮结束自动发出去（不再把输入框锁死）。
         if (queued > 0) {
-            Text(if (paused) "待发 " + queued else "排队 " + queued, color = c.warn, fontSize = 11.sp)
-            Spacer(Modifier.width(6.dp))
+            Text(if (paused) "待发 " + queued else "排队 " + queued, color = c.warn, fontSize = T.micro)
+            Spacer(Modifier.width(G.x2))
         }
-        OutlinedButton(
+        // 主操作：实心强调色胶囊，一眼看得到「发送」
+        Button(
             onClick = {
                 val t = input.trim()
                 if (t.isNotEmpty() || vm.pendingImages.value.isNotEmpty()) {
                     vm.send(t); onInput("")
                 }
             },
-            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-            shape = RoundedCornerShape(8.dp),
+            shape = RoundedCornerShape(Rad.pill),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (busy) c.cardAlt else c.accent,
+                contentColor = if (busy) c.warn else c.onAccent,
+            ),
+            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 9.dp),
         ) {
-            Text(
-                if (busy) "排队" else "发送",
-                color = if (busy) c.warn else c.accent, fontSize = 13.sp
-            )
+            Text(if (busy) "排队" else "发送", fontSize = T.sub, fontWeight = T.bold)
         }
         if (busy) {
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(G.x2))
             // 插话：把这句注入本轮（与「排队」不同——排队是下一轮才发）。
             OutlinedButton(
                 onClick = {
                     val t = input.trim()
                     if (t.isNotEmpty()) { vm.steerCurrent(t); onInput("") }
                 },
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                shape = RoundedCornerShape(8.dp),
-            ) { Text("插话", color = c.accent, fontSize = 13.sp) }
-            Spacer(Modifier.width(6.dp))
+                shape = RoundedCornerShape(Rad.pill),
+                border = BorderStroke(1.dp, c.border),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+            ) { Text("插话", color = c.accent, fontSize = T.sub) }
+            Spacer(Modifier.width(G.x2))
             OutlinedButton(
                 onClick = { vm.stop() },
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                shape = RoundedCornerShape(8.dp),
-            ) { Text("停止", color = c.bad, fontSize = 13.sp) }
+                shape = RoundedCornerShape(Rad.pill),
+                border = BorderStroke(1.dp, c.border),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+            ) { Text("停止", color = c.bad, fontSize = T.sub) }
         } else if (paused && queued > 0) {
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(G.x2))
             OutlinedButton(
                 onClick = { vm.resumeQueue() },
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                shape = RoundedCornerShape(8.dp),
-            ) { Text("继续", color = c.ok, fontSize = 13.sp) }
+                shape = RoundedCornerShape(Rad.pill),
+                border = BorderStroke(1.dp, c.border),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+            ) { Text("继续", color = c.ok, fontSize = T.sub) }
         }
     }
 }
@@ -922,6 +928,9 @@ fun Bubble(
 ) {
     val c = LocalAppColors.current
     val isUser = m.role == "user"
+    // 气泡形状按「发送者」分档：靠发送者那一侧圆角小、另一侧大 —— 一眼分得清谁说的。
+    val shape = if (isUser) RoundedCornerShape(Rad.bubble, Rad.bubble, Rad.bubbleTight, Rad.bubble)
+    else RoundedCornerShape(Rad.bubble, Rad.bubble, Rad.bubble, Rad.bubbleTight)
     var traceOpen by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
     Row(
@@ -929,34 +938,35 @@ fun Bubble(
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
     ) {
         Surface(
-            color = if (isUser) c.userBubble else c.panel,
-            shape = RoundedCornerShape(10.dp),
+            color = if (isUser) c.userBubble else c.bubble,
+            shape = shape,
+            border = BorderStroke(1.dp, if (isUser) c.userBorder else c.bubbleBorder),
             modifier = Modifier
-                .widthIn(max = 320.dp)
+                .widthIn(max = 340.dp)
                 .combinedClickable(
                     onClick = { onClearSelection() },
                     onLongClick = { menuOpen = true },
                 )
                 .then(
-                    if (highlight) Modifier.border(1.5.dp, c.accent, RoundedCornerShape(10.dp))
+                    if (highlight) Modifier.border(1.5.dp, c.accent, shape)
                     else Modifier
                 )
         ) {
-            Column(Modifier.padding(10.dp)) {
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
                 // 引用片段：这条消息是引用发送时，先显示被引的一行（左侧竖条 + 灰字）
                 if (m.quote.isNotEmpty()) {
                     Row(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))
-                            .background(c.card).padding(6.dp)
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(Rad.chip))
+                            .background(c.cardAlt).padding(horizontal = 8.dp, vertical = 6.dp)
                     ) {
-                        Box(Modifier.width(3.dp).height(26.dp).background(c.accent, RoundedCornerShape(2.dp)))
-                        Spacer(Modifier.width(6.dp))
+                        Box(Modifier.width(3.dp).height(28.dp).background(c.accent, RoundedCornerShape(Rad.pill)))
+                        Spacer(Modifier.width(8.dp))
                         Text(
-                            m.quote, color = c.dim, fontSize = 11.sp,
+                            m.quote, color = c.dim, fontSize = T.cap, lineHeight = 17.sp,
                             maxLines = 2, overflow = TextOverflow.Ellipsis
                         )
                     }
-                    Spacer(Modifier.height(6.dp))
+                    Spacer(Modifier.height(G.x2))
                 }
                 // 用户发的图：气泡内缩略图回显
                 if (m.images.isNotEmpty()) {
@@ -975,13 +985,13 @@ fun Bubble(
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         for (fn in m.files) {
                             Row(
-                                Modifier.clip(RoundedCornerShape(6.dp)).background(c.panel)
-                                    .padding(horizontal = 8.dp, vertical = 5.dp),
+                                Modifier.clip(RoundedCornerShape(Rad.chip)).background(c.cardAlt)
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("📎", fontSize = 13.sp)
-                                Spacer(Modifier.width(5.dp))
-                                Text(fn, color = c.dim, fontSize = 13.sp)
+                                Text("📎", fontSize = T.sub)
+                                Spacer(Modifier.width(6.dp))
+                                Text(fn, color = c.dim, fontSize = T.sub)
                             }
                         }
                     }
@@ -991,18 +1001,18 @@ fun Bubble(
                 val ap = m.approval
                 if (ap != null) {
                     Column(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
-                            .background(c.card).padding(10.dp)
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(Rad.card))
+                            .background(c.cardAlt).padding(G.x3)
                     ) {
-                        Text("需要你确认", color = c.warn, fontSize = 13.sp)
+                        Text("需要你确认", color = c.warn, fontSize = T.sub, fontWeight = T.bold)
                         if (ap.description.isNotEmpty()) {
-                            Spacer(Modifier.height(4.dp))
-                            Text(ap.description, color = c.text, fontSize = 12.sp)
+                            Spacer(Modifier.height(G.x1))
+                            Text(ap.description, color = c.text, fontSize = T.sub, lineHeight = T.lineSub)
                         }
                         if (ap.command.isNotEmpty()) {
-                            Spacer(Modifier.height(4.dp))
+                            Spacer(Modifier.height(G.x1))
                             Text(
-                                ap.command, color = c.dim, fontSize = 11.sp,
+                                ap.command, color = c.dim, fontSize = T.cap,
                                 fontFamily = FontFamily.Monospace, maxLines = 6,
                                 overflow = TextOverflow.Ellipsis
                             )
@@ -1074,10 +1084,10 @@ fun Bubble(
                 }
                 // 过程轨迹（工具调用等）：默认折叠一行，点开才展开，不占屏幕
                 if (m.trace.isNotEmpty()) {
-                    Spacer(Modifier.height(6.dp))
+                    Spacer(Modifier.height(G.x2))
                     Text(
                         if (traceOpen) "▾ 过程" else "▸ 过程（" + m.trace.count { it == '\n' } + " 步）",
-                        color = c.dim, fontSize = 11.sp,
+                        color = c.dim, fontSize = T.cap,
                         modifier = Modifier.clickable { traceOpen = !traceOpen }
                     )
                     if (traceOpen) {
@@ -1085,7 +1095,8 @@ fun Bubble(
                             SelectionContainer {
                                 Text(
                                     m.trace.trim(),
-                                    color = c.dim, fontSize = 11.sp, fontFamily = FontFamily.Monospace
+                                    color = c.dim, fontSize = T.cap, lineHeight = 17.sp,
+                                    fontFamily = FontFamily.Monospace
                                 )
                             }
                         }
@@ -1107,7 +1118,7 @@ fun Bubble(
                         parts.add("耗时 " + fmtDuration(u.durationMs))
                     }
                     if (speed.isNotEmpty()) parts.add(speed + " tok/s")
-                    Text(parts.joinToString(" · "), color = c.dim, fontSize = 10.sp)
+                    Text(parts.joinToString(" · "), color = c.faint, fontSize = T.micro, lineHeight = 15.sp)
                 }
                 // 用户消息投递状态：转圈 / 单勾 / 黄问号 / 红叹号。点黄问号或红叹号展开处置。
                 // 状态标记与发送时间并排同一行（不再各自独占一行）；告警说明接在时间后面。
@@ -1146,17 +1157,17 @@ fun Bubble(
                         // 插话小标：跟发送时间并排一行（原来它独占气泡顶部一行，白占高度）。
                         if (m.steer) {
                             Row(
-                                Modifier.clip(RoundedCornerShape(5.dp))
+                                Modifier.clip(RoundedCornerShape(Rad.pill))
                                     .background(c.accent.copy(alpha = 0.16f))
-                                    .padding(horizontal = 5.dp, vertical = 1.dp)
-                            ) { Text("插话", color = c.accent, fontSize = 9.sp) }
-                            Spacer(Modifier.width(5.dp))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) { Text("插话", color = c.accent, fontSize = T.micro) }
+                            Spacer(Modifier.width(6.dp))
                         }
                         if (rc != null) {
-                            Text(mark, color = markCol, fontSize = 11.sp)
+                            Text(mark, color = markCol, fontSize = T.cap)
                             Spacer(Modifier.width(5.dp))
                         }
-                        if (m.ts > 0) Text(TimeFmt.hm(m.ts), color = c.dim, fontSize = 10.sp)
+                        if (m.ts > 0) Text(TimeFmt.hm(m.ts), color = c.faint, fontSize = T.micro)
                         // 进行中：从气泡创建起实时跳动显示耗时（回复到达后由用量行显示最终值）。
                         if (m.pending && m.startedAt > 0) {
                             Spacer(Modifier.width(6.dp))
@@ -1192,7 +1203,7 @@ fun Bubble(
                                     tip,
                                     color = if (rc.status == Receipt.FAILED ||
                                         rc.status == Receipt.STEER_FAILED) c.bad else c.warn,
-                                    fontSize = 10.sp,
+                                    fontSize = T.micro,
                                     maxLines = 1, overflow = TextOverflow.Ellipsis
                                 )
                             }
@@ -1847,10 +1858,13 @@ private fun exportLogFile(ctx: Context) {
 @Composable
 private fun SectionTitle(text: String) {
     val c = LocalAppColors.current
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.width(3.dp).height(13.dp).background(c.accent, RoundedCornerShape(2.dp)))
-        Spacer(Modifier.width(6.dp))
-        Text(text, color = c.text, fontSize = 13.sp)
+    Row(
+        Modifier.fillMaxWidth().padding(top = G.x1, bottom = G.x1),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(Modifier.width(4.dp).height(16.dp).background(c.accent, RoundedCornerShape(Rad.pill)))
+        Spacer(Modifier.width(G.x2))
+        Text(text, color = c.text, fontSize = T.sub, fontWeight = T.bold)
     }
 }
 
@@ -1890,7 +1904,7 @@ fun SettingsScreen(
         }.getOrDefault("")
     }
 
-    Column(Modifier.fillMaxSize().padding(14.dp).verticalScroll(rememberScrollState())) {
+    Column(Modifier.fillMaxSize().padding(G.page).verticalScroll(rememberScrollState())) {
         // ───────── 一、服务器 ─────────
         SectionTitle("服务器")
         Spacer(Modifier.height(8.dp))
