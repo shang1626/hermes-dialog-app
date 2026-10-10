@@ -1781,7 +1781,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     val newestUnread = out.firstOrNull { it.unread }
                     if (newestUnread != null && newestUnread.id !in prefs.notifiedReportIds()) {
                         prefs.markReportNotified(newestUnread.id)
-                        Notifier.notifyMessage(
+                        Notifier.notifyDone(
                             getApplication(),
                             (if (newestUnread.failed) "定时任务失败：" else "定时任务完成：") +
                                 jobDisplayName(newestUnread.jobName, newestUnread.jobId),
@@ -3690,6 +3690,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 进主界面时调一次：开关开着但还没发过消息，也要把常驻通知挂上。 */
     fun ensureRunService() {
         updateRunService()
+        // 兜底闹钟（15 分钟粒度）：进程被系统回收后仍能补提醒，见 KeepAlive.kt。
+        KeepAlive.arm(getApplication())
     }
 
     /**
@@ -3793,7 +3795,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val body = output.replace(Regex("\\s+"), " ").trim().let {
             if (it.isEmpty()) "任务已完成" else if (it.length > 120) it.take(120) + "…" else it
         }
-        Notifier.notifyMessage(app, "Hermes 回复", body, sid)
+        Notifier.notifyDone(app, "任务完成", body, sid)
     }
 
     /** 缓存占用文案（待发图片 + 安装包 + 图片缓存），供设置页显示。 */

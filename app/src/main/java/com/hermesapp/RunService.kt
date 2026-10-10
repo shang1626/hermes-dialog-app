@@ -49,7 +49,14 @@ class RunService : Service() {
         try {
             // Android 10+ 必须声明前台服务类型，且要与清单里 android:foregroundServiceType
             // 保持一致（清单写的是 dataSync）。不传类型在部分机型上会被拒。
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            if (Build.VERSION.SDK_INT >= 34) {
+                // Android 15+（API 35+）对 dataSync 类型有「每 24 小时最多 6 小时」的配额，
+                // 烧完就再也起不来（除非用户把 App 切到前台重置）。我们这条服务是「维持与
+                // 自托管网关的长连接、把已完成任务的结果取回来」，属 specialUse 的用途，
+                // 不受该配额限制 —— 2026-10-10 改（真机日志实测一天被回收 8 次，配额是一个
+                // 迟早会踩的坑）。清单里同时声明 specialUse|dataSync，老机型仍走 dataSync。
+                startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
             } else {
                 startForeground(NOTIF_ID, notif)
@@ -68,6 +75,8 @@ class RunService : Service() {
         // intent 为 null 时拿不到 EXTRA_ACTIVE（系统重建/异常路径），按「无任务」处理并留痕。
         val active = intent?.getBooleanExtra(EXTRA_ACTIVE, false) ?: false
         AppLog.log("service", "onStartCommand active=" + active + " intentNull=" + (intent == null))
+        // 保活心跳：一行一个时间点，用来客观判断「进程活了多久、白名单有没有生效」。
+        AppLog.log("keepalive", "服务在线 " + KeepAlive.ts() + " active=" + active)
         if (active) acquireLocks() else releaseLocks()
         // 不用 START_STICKY：进程被杀后系统在后台把它拉回来，正好会撞上
         // 「后台不许起前台服务」的限制，反而制造崩溃。任务本身在服务端跑，
@@ -131,7 +140,7 @@ class RunService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             // 频道等级创建后不可再改，降噪只能换新 id；顺手删掉旧频道清掉遗留通知。
             runCatching { mgr.deleteNotificationChannel(LEGACY_CHANNEL_ID) }
-            val ch = NotificationChannel(CHANNEL_ID, "后台运行", NotificationManager.IMPORTANCE_MIN)
+            val ch = NotificationChannel(CHANNEL_ID, "后台运行", NotificationManager.IMPORTANCE_LOW)
             ch.setShowBadge(false)
             ch.setSound(null, null)
             ch.enableVibration(false)
@@ -159,8 +168,10 @@ class RunService : Service() {
     }
 
     companion object {
-        const val CHANNEL_ID = "hermes_run2"
-        const val LEGACY_CHANNEL_ID = "hermes_run"
+        // 常驻通知渠道换 id：渠道重要性创建后不可改，而这条要从 MIN（用户看不到）升到 LOW
+        // （状态栏可见但仍静默）—— 部分机型会因「前台通知不可见」而更倾向杀掉进程。
+        const val CHANNEL_ID = "hermes_run3"
+        const val LEGACY_CHANNEL_ID = "hermes_run2"
         const val NOTIF_ID = 1001
         const val EXTRA_ACTIVE = "hermes_run_active"
 

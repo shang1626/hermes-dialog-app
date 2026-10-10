@@ -1986,6 +1986,32 @@ fun SettingsScreen(
                 vm.setPlayCompletionVoice(it)
             })
         }
+        // ── 保活：这台机型（realme/ColorOS）会把后台 App 直接杀掉（真机日志实测一天 8 次）。
+        //    任务是跑在服务端的、不会丢，但后台进度与完成提醒会断；下面几步点一次即可显著改善。
+        Spacer(Modifier.height(16.dp))
+        Text("保活（防被系统回收）", color = c.text, fontSize = 13.sp)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "① 点「电池优化白名单」，在弹窗里选「允许」；\n" +
+            "② 点「自启动 / 省电设置」进应用详情，把「自启动」打开、省电策略选「允许后台运行」或「无限制」；\n" +
+            "③ 最近任务里把本应用的卡片下拉「锁定」（各机型菜单名略有差别）。\n" +
+            "做一次长期有效。没做的直接后果：后台任务跑完不提醒、切回来才看到结果。",
+            color = c.dim, fontSize = 11.sp
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            OutlinedButton(
+                onClick = { openBatteryWhitelist(ctx) },
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                shape = RoundedCornerShape(8.dp),
+            ) { Text("电池优化白名单", color = c.accent, fontSize = 13.sp) }
+            OutlinedButton(
+                onClick = { openAppDetails(ctx) },
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                shape = RoundedCornerShape(8.dp),
+            ) { Text("自启动 / 省电设置", color = c.accent, fontSize = 13.sp) }
+        }
+
         Spacer(Modifier.height(12.dp))
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -2443,4 +2469,37 @@ private fun applyNativeInputColors(et: EditText, c: AppColors) {
     }
     et.setHintTextColor(c.dim.toArgb())
     et.setTextColor(c.text.toArgb())
+}
+
+/**
+ * 跳到「忽略电池优化」请求页；机型不支持该直连 action 时退到电池优化设置列表。
+ * 为什么需要：realme/ColorOS 等会主动回收后台进程，加入白名单是最有效的自救手段，
+ * 但入口在各机型设置里藏得深，这里给一键跳转（2026-10-10）。
+ */
+private fun openBatteryWhitelist(ctx: android.content.Context) {
+    runCatching {
+        ctx.startActivity(
+            android.content.Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                .setData(android.net.Uri.parse("package:" + ctx.packageName))
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    }.onFailure {
+        runCatching {
+            ctx.startActivity(
+                android.content.Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }
+    }
+}
+
+/** 打开系统里本应用的详情页（自启动、省电策略、通知权限都在那一页）。 */
+private fun openAppDetails(ctx: android.content.Context) {
+    runCatching {
+        ctx.startActivity(
+            android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                .setData(android.net.Uri.parse("package:" + ctx.packageName))
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    }
 }
