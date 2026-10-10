@@ -3786,11 +3786,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * 前台：只在「别的会话跑完」且用户开了「其它会话完成也提醒」时弹；
      *       当前会话的内容就在屏幕上，再弹是骚扰。
      */
+    /** 任务完成提醒（2026-10-10 方案 B：前台/后台、当前/其他会话一律通知 + 震动 + 响铃）。 */
     private fun notifyCompletion(sid: String, output: String) {
-        val isCurrent = sid == _currentId.value
-        val should = if (!AppForeground.isForeground) prefs.keepAlive
-                     else !isCurrent && prefs.notifySessionCompletions
-        if (!should) return
+        if (output.isEmpty()) return
+        AppLog.log("notif", "notifyCompletion sid=" + sid.take(8) + " len=" + output.length)
         val app = getApplication<Application>()
         val body = output.replace(Regex("\\s+"), " ").trim().let {
             if (it.isEmpty()) "任务已完成" else if (it.length > 120) it.take(120) + "…" else it
