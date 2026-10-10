@@ -34,6 +34,14 @@ object TurnAnchor {
     }
 
     /**
+     * 服务端 run 的创建时间之前多久以内的本地起点仍算「本轮」。
+     *
+     * 本机 send 到服务端建 run 有一段往返，本地气泡起点因此可能略早于 created_at；
+     * 5 秒足够吸收这段往返与两端时钟差，又远小于「上一轮的起点」这种真错位（实测差 21 分钟）。
+     */
+    private const val ANCHOR_SLACK_MS = 5_000L
+
+    /**
      * 选本轮计时起点（毫秒），优先级：
      *   ① 本地气泡已记的起点 —— 同一进程内最准，也是唯一「用户看见的那个起点」；
      *   ② 会话运行时的起点 —— 本进程发起这一轮时记下的；
@@ -47,19 +55,30 @@ object TurnAnchor {
         serverCreatedAt: Any?,
         nowMs: Long,
     ): Long {
+        val server = serverCreatedAtMs(serverCreatedAt)
         val picked = when {
             bubbleStartedAt > 0 -> bubbleStartedAt
             runtimeStartedAt > 0 -> runtimeStartedAt
-            else -> serverCreatedAtMs(serverCreatedAt)
+            else -> server
         }
-        return if (picked > 0) minOf(picked, nowMs) else nowMs
+        // 起点比服务端这条 run 的创建时间还早 —— 它不可能是本轮的起点，换成服务端真值。
+        // 实测（2026-10-10 真机日志）：重开 App 恢复时进行中的空气泡会被落盘空壳过滤掉，
+        // 于是「最后一条助手气泡」落到了**上一轮**，界面显示「已跑 2398 秒」而真值是
+        // 1135 秒，多算了 21 分钟；而正确的 created_at 就在这次探活的 payload 里。
+        val start = if (server > 0 && picked > 0 && picked < server - ANCHOR_SLACK_MS) server else picked
+        return if (start > 0) minOf(start, nowMs) else nowMs
     }
 
     /** 起点来自哪里（日志与排查用）。 */
-    fun source(bubbleStartedAt: Long, runtimeStartedAt: Long, serverCreatedAt: Any?): String = when {
-        bubbleStartedAt > 0 -> "本地气泡"
-        runtimeStartedAt > 0 -> "运行时"
-        serverCreatedAtMs(serverCreatedAt) > 0 -> "服务端created_at"
-        else -> "现在(无锚点)"
+    fun source(bubbleStartedAt: Long, runtimeStartedAt: Long, serverCreatedAt: Any?): String {
+        val server = serverCreatedAtMs(serverCreatedAt)
+        fun stale(v: Long) = v > 0 && server > 0 && v < server - ANCHOR_SLACK_MS
+        return when {
+            bubbleStartedAt > 0 && !stale(bubbleStartedAt) -> "本地气泡"
+            runtimeStartedAt > 0 && !stale(runtimeStartedAt) -> "运行时"
+            server > 0 -> if (stale(bubbleStartedAt) || stale(runtimeStartedAt))
+                "服务端created_at(本地起点早于本轮)" else "服务端created_at"
+            else -> "现在(无锚点)"
+        }
     }
 }
