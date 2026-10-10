@@ -577,6 +577,28 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 本轮计时起点：优先会话级的（整轮唯一、不会被气泡重建冲掉），没有才取当下。 */
     private fun turnStart(r: SessionRuntime): Long = if (r.startedAt > 0) r.startedAt else stamp()
 
+    /** 本地最后一条助手气泡记下的计时起点（没有则 0）。 */
+    private fun localBubbleStart(r: SessionRuntime): Long =
+        r.messages.value.lastOrNull { it.role == "assistant" }?.startedAt ?: 0L
+
+    /**
+     * 恢复/接管一条**已在跑**的轮次时，把「本轮计时起点」补回来（2026-10-10）。
+     *
+     * 为什么必须补：起点的两个本地来源都会丢 —— 进行中的空气泡会被落盘的空壳过滤丢掉、
+     * 运行时的 startedAt 只在内存（进程被回收即 0）。旧代码此时直接拿「现在」当起点，
+     * 表现就是「切一下后台、耗时从 0 重算」（真机日志实测：App 一天被系统回收 8 次）。
+     * 服务端 run 记录一直带 created_at，而且探活时本来就拿到了这个 payload，这里把它接上
+     * （起点选择规则见 TurnAnchor，纯函数 + 单测）。
+     */
+    private fun restoreTurnStart(r: SessionRuntime, payload: org.json.JSONObject?, tag: String) {
+        val bubble = localBubbleStart(r)
+        val before = r.startedAt
+        val now = System.currentTimeMillis()
+        r.startedAt = TurnAnchor.resolveTurnStartMs(bubble, before, payload?.opt("created_at"), now)
+        AppLog.log("resume", tag + " 耗时锚点=" + TurnAnchor.source(bubble, before, payload?.opt("created_at")) +
+            " 已跑=" + ((now - r.startedAt) / 1000) + "秒")
+    }
+
     private fun setMsgs(r: SessionRuntime, list: List<Msg>) {
         r.messages.value = capHistory(list)
         scheduleSave(r)
@@ -1168,6 +1190,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             ensureLoaded(sid)
                             r.runId = rid
                             r.finished = false
+                            restoreTurnStart(r, last.payload, "恢复探测")
                             // 冷启动恢复：本地没有这轮的发送上下文（pendingSendText 不落盘），
                             // 翻历史兜底拿不到位置锚点，靠 resumed 标记走「保留气泡继续重连」。
                             r.resumed = true
@@ -1238,6 +1261,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                                 Msg("assistant", "", pending = true, ts = System.currentTimeMillis(), startedAt = turnStart(r)))
                         }
                         r.busy.value = true
+                        restoreTurnStart(r, null, "恢复探测(未知态)")
                         r.lastEventAt = System.currentTimeMillis()
                         updateRunService()
                         maybeContinue(sid)
@@ -1330,6 +1354,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.resumed = true
         r.lastSeq = prefs.lastSeq(sid)
         prefs.putActiveRun(sid, rid)
+        restoreTurnStart(r, payload, "接管轮次")
         if (payload != null) restorePendingCard(r, payload)
         val lastAssistant = r.messages.value.indexOfLast { it.role == "assistant" }
         val hasLocalTurnBubble = lastAssistant >= 0 &&
