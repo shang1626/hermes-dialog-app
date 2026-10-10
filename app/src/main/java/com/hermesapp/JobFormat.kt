@@ -75,7 +75,9 @@ internal fun jobZhNote(name: String): String {
         "vision-restart-verify" ->
             return "重启后自动体检：确认网关已起来、视觉补丁已加载、平台连接与三路记忆信号正常；有异常才出报告。"
         "峰谷密钥自动切换" ->
-            return "按时间自动切换 FreeLLMAPI 的密钥：工作日 9-12 点、14-18 点（高峰）关掉 opencode-go、启用 ds.example.com；其余时段含周末反过来。每 5 分钟核对一次。"
+            return "按时间自动切换 FreeLLMAPI 的密钥：工作日 9-12 点、14-18 点（高峰）关掉两把 opencode-go（key47、key48）、启用 ds.example.com；其余时段含周末反过来。每 5 分钟核对一次。"
+        "FreeLLMAPI密钥用途守卫" ->
+            return "每 30 分钟核对 FreeLLMAPI 的密钥用途：两把 opencode-go 都只准 deepseek-flash、硅基流动只做 bge-m3 嵌入，发现越权启用或作用域被放宽就立刻收回并通知你；正常时静默。"
     }
     val n = name.lowercase()
     return when {
