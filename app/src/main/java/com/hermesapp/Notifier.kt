@@ -6,7 +6,11 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 
@@ -108,7 +112,7 @@ object Notifier {
     fun notifyMessage(
         ctx: Context, title: String, text: String, sessionId: String = "", openTab: Int = -1,
         channel: String = CHANNEL_ID,
-    ) {
+    ): Boolean {
         ensureChannel(ctx)
         val tap = PendingIntent.getActivity(
             ctx, 0,
@@ -157,8 +161,16 @@ object Notifier {
             .addAction(action)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
-        // 无授权时静默失败，绝不因通知崩溃
-        runCatching { NotificationManagerCompat.from(ctx).notify(NOTIF_ID, n) }
+        // 无授权时静默失败，绝不因通知崩溃。但**把结果与失败原因写进日志** ——
+        // 原来这行 runCatching 什么都不留，用户报「没通知/没响」时日志里一片空白，
+        // 分不清是没触发、被系统拒了、还是渠道被静音（2026-10-10 排查吃过这个亏）。
+        return try {
+            NotificationManagerCompat.from(ctx).notify(NOTIF_ID, n)
+            true
+        } catch (e: Throwable) {
+            AppLog.err("notif", "通知发送失败 channel=$channel", e)
+            false
+        }
     }
 
     /**
@@ -194,7 +206,69 @@ object Notifier {
      */
     fun notifyDone(ctx: Context, title: String, text: String, sessionId: String = "", openTab: Int = -1) {
         ensureDoneChannel(ctx)
-        notifyMessage(ctx, title, text, sessionId, openTab, channel = DONE_CHANNEL_ID)
+        // 先探明「这条通知到底能不能响」：权限、渠道是否存在、渠道的声音/震动是否被关。
+        // 探不明就直响兜底 —— 用户报「任务跑完没铃响」时，日志能一眼看出断在哪一环。
+        val nm = NotificationManagerCompat.from(ctx)
+        val allowed = runCatching { nm.areNotificationsEnabled() }.getOrDefault(false)
+        val ch = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+                .getNotificationChannel(DONE_CHANNEL_ID)
+        } else null
+        val chDesc = if (ch == null) "渠道=无" else
+            "渠道=importance${ch.importance} 声音=${ch.sound != null} 震动=${ch.shouldVibrate()}"
+        val audible = allowed && ch != null &&
+            ch.importance >= NotificationManager.IMPORTANCE_DEFAULT &&
+            (ch.sound != null || ch.shouldVibrate())
+        AppLog.log("notif", "发完成通知 权限=$allowed $chDesc 可响=$audible " +
+            (if (AppForeground.isForeground) "前台" else "后台"))
+        val ok = notifyMessage(ctx, title, text, sessionId, openTab, channel = DONE_CHANNEL_ID)
+        if (!ok || !audible) {
+            AppLog.log("notif", "通知不会响（发送ok=$ok 可响=$audible）→ 走兜底直响")
+            directAlert(ctx)
+        }
+    }
+
+    /**
+     * 兜底直响：不走通知渠道，App 自己震动 + 播放系统提示音。
+     *
+     * 为什么需要：渠道的「重要性/声音」是**创建后不可改**的，用户或系统一旦把它关掉
+     * （或被厂商省电策略静音），再发通知也是哑的；此时唯一能保证「响一下」的办法
+     * 就是绕开通知，直接用 Vibrator / Ringtone 出声。只在通知不会响时才走这条路，
+     * 避免与渠道提示音双响。
+     */
+    private fun directAlert(ctx: Context) {
+        runCatching {
+            val vib = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                (ctx.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager).defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                (ctx.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator)
+            }
+            if (vib.hasVibrator()) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    vib.vibrate(VibrationEffect.createWaveform(DONE_VIBRATE, -1))
+                } else {
+                    @Suppress("DEPRECATION")
+                    vib.vibrate(DONE_VIBRATE, -1)
+                }
+                AppLog.log("notif", "兜底震动已触发")
+            } else {
+                AppLog.log("notif", "兜底震动跳过：无振动器")
+            }
+        }.onFailure { AppLog.err("notif", "兜底震动失败", it) }
+        runCatching {
+            val uri = android.provider.Settings.System.DEFAULT_NOTIFICATION_URI
+            val rt = uri?.let { RingtoneManager.getRingtone(ctx, it) }
+            if (rt == null) {
+                AppLog.log("notif", "兜底提示音跳过：系统未设默认铃声")
+            } else {
+                rt.audioAttributes = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                    .build()
+                rt.play()
+                AppLog.log("notif", "兜底提示音已播放")
+            }
+        }.onFailure { AppLog.err("notif", "兜底提示音失败", it) }
     }
 
     /** 给「任务完成」类通知显式挂上震动与提示音（渠道已开，这里再显式来一层，防机型差异）。 */
