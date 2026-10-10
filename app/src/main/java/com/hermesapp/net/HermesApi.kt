@@ -532,6 +532,24 @@ class HermesApi(
     fun runJob(jobId: String) = postJob("/api/jobs/" + jobId + "/run")
 
     /**
+     * 删除一个定时任务（服务端路由 DELETE /api/jobs/{job_id}）。
+     *
+     * 这是不可恢复的写操作，调用方**必须**先二次确认再调。返回 4xx/5xx 直接抛，
+     * 由 ViewModel 的 jobAction 统一显示成「操作失败：…」，不静默吞掉。
+     */
+    fun deleteJob(jobId: String) {
+        val req = base("/api/jobs/" + jobId).delete().build()
+        client.newCall(req).execute().use { resp ->
+            val text = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) {
+                AppLog.err("job", "DELETE /api/jobs/" + jobId + " -> " + resp.code + " " + text.take(120))
+                throw IOException("HTTP " + resp.code + ": " + text.take(200))
+            }
+            AppLog.log("job", "DELETE /api/jobs/" + jobId + " -> " + resp.code)
+        }
+    }
+
+    /**
      * App 收件箱：定时任务的产出。
      * 为什么要它：App 走 api_server 通道，而那条通道不支持推送（服务端
      * supports_async_delivery=False），定时任务结果没法主动推过来。服务端投递时把产出留档

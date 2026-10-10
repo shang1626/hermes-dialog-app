@@ -1773,6 +1773,10 @@ fun JobCard(j: JobItem, onAction: (String) -> Unit) {
         else -> c.warn
     }
     val title = j.zhName.ifEmpty { j.name }
+    // 详情默认收起：卡片默认只占三行（标题 / 一行摘要 / 按钮），要点开才展开细节。
+    // 删除不可恢复，必须先过一道二次确认对话框。
+    var open by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
     Surface(
         color = c.panel,
         shape = RoundedCornerShape(Rad.card),
@@ -1799,49 +1803,21 @@ fun JobCard(j: JobItem, onAction: (String) -> Unit) {
                     )
                 }
             }
-            if (j.note.isNotEmpty()) {
-                Spacer(Modifier.height(G.x1))
-                Text(j.note, color = c.dim, fontSize = T.cap, lineHeight = 18.sp)
-            }
-            Spacer(Modifier.height(G.x3))
-            if (j.schedule.isNotEmpty()) JobMeta("排期", j.schedule)
-            if (j.lastRun.isNotEmpty()) {
-                JobMeta("上次", j.lastRun + (if (j.lastStatus.isNotEmpty()) " · " + j.lastStatus else ""))
-            }
-            if (j.nextRun.isNotEmpty()) JobMeta("下次", j.nextRun)
-            // 最近一次执行明细：状态 + 耗时 / 失败原因。
-            // 这一段回答的是「刚才点『立即执行』到底跑了哪条、跑成没成」——
-            // 以前 App 把服务端返回的 latest_execution 整个丢掉，界面上只剩一句
-            // 不带任务名的「已触发执行」，看不出任何结果。
-            if (j.execStatus.isNotEmpty()) {
-                Spacer(Modifier.height(G.x1))
-                val execCol = when (j.execStatus) {
-                    "completed" -> c.ok
-                    "failed", "unknown" -> c.bad
-                    "running", "claimed" -> c.accent
-                    else -> c.dim
+            // ── 压缩（2026-10-10 用户要求「任务卡片行数缩小」）──
+            // 原来「排期 / 上次 / 下次」各占一行，加上说明与最近执行，一张卡片七八行。
+            // 现在默认只留一行摘要，其余全部收进下面的「详情」。
+            val summary = buildList {
+                if (j.nextRun.isNotEmpty()) add("下次 " + j.nextRun)
+                if (j.lastRun.isNotEmpty()) {
+                    add("上次 " + j.lastRun + (if (j.lastStatus.isNotEmpty()) " " + j.lastStatus else ""))
                 }
-                val line = StringBuilder("最近执行  ")
-                line.append(jobZhExecStatusLocal(j.execStatus))
-                if (j.execDuration.isNotEmpty()) line.append(" · 耗时 ").append(j.execDuration)
-                Text(line.toString(), color = execCol, fontSize = T.cap)
-                if (j.execError.isNotEmpty()) {
-                    Text(
-                        "原因  " + j.execError.replace(Regex("\\s+"), " ").trim().take(160),
-                        color = c.bad, fontSize = T.cap, lineHeight = 17.sp,
-                        maxLines = 2, overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-            // 投递失败：任务跑成功了，但结果没送到（如微信会话没准备好）。
-            // 以前这条原因只在服务端 last_delivery_error 里，App 完全不显示——
-            // 「任务正常」和「结果没到手」是两件事，必须分开说。
-            if (j.deliveryError.isNotEmpty()) {
+                if (j.schedule.isNotEmpty()) add("排期 " + j.schedule)
+            }.joinToString("   ·   ")
+            if (summary.isNotEmpty()) {
                 Spacer(Modifier.height(G.x1))
                 Text(
-                    "投递失败  " + j.deliveryError.replace(Regex("\\s+"), " ").trim().take(160),
-                    color = c.bad, fontSize = T.cap, lineHeight = 17.sp,
-                    maxLines = 2, overflow = TextOverflow.Ellipsis
+                    summary, color = c.dim, fontSize = T.micro,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
             }
             Spacer(Modifier.height(G.x3))
@@ -1858,8 +1834,110 @@ fun JobCard(j: JobItem, onAction: (String) -> Unit) {
                     shape = RoundedCornerShape(Rad.pill),
                     border = BorderStroke(1.dp, c.border),
                 ) { Text("立即执行", color = c.accent, fontSize = T.sub) }
+                OutlinedButton(
+                    onClick = { open = !open },
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                    shape = RoundedCornerShape(Rad.pill),
+                    border = BorderStroke(1.dp, c.border),
+                ) { Text(if (open) "收起 ˄" else "详情 ˅", color = c.accent, fontSize = T.sub) }
+            }
+
+            // ── 详情（2026-10-10 新增「任务描述详情」）──
+            // 任务到底让 agent 干什么（服务端 prompt 原文）、投递方式、模型、创建时间、
+            // 已跑次数、最近执行明细、投递失败原因，最后是删除入口。
+            if (open) {
+                Spacer(Modifier.height(G.x2))
+                HorizontalDivider(color = c.card)
+                Spacer(Modifier.height(G.x2))
+                if (j.note.isNotEmpty()) {
+                    Text(j.note, color = c.dim, fontSize = T.cap, lineHeight = 18.sp)
+                    Spacer(Modifier.height(G.x1))
+                }
+                if (j.schedule.isNotEmpty()) JobMeta("排期", j.schedule)
+                if (j.deliver.isNotEmpty()) JobMeta("投递", j.deliver)
+                if (j.model.isNotEmpty()) JobMeta("模型", j.model)
+                if (j.createdAt.isNotEmpty()) JobMeta("创建", j.createdAt)
+                if (j.repeatDone > 0) JobMeta("已跑", j.repeatDone.toString() + " 次")
+                // 最近一次执行明细：状态 + 耗时 / 失败原因。
+                // 这一段回答的是「刚才点『立即执行』到底跑了哪条、跑成没成」。
+                if (j.execStatus.isNotEmpty()) {
+                    Spacer(Modifier.height(G.x1))
+                    val execCol = when (j.execStatus) {
+                        "completed" -> c.ok
+                        "failed", "unknown" -> c.bad
+                        "running", "claimed" -> c.accent
+                        else -> c.dim
+                    }
+                    val line = StringBuilder("最近执行  ")
+                    line.append(jobZhExecStatusLocal(j.execStatus))
+                    if (j.execDuration.isNotEmpty()) line.append(" · 耗时 ").append(j.execDuration)
+                    Text(line.toString(), color = execCol, fontSize = T.cap)
+                    if (j.execError.isNotEmpty()) {
+                        Text(
+                            "原因  " + j.execError.replace(Regex("\\s+"), " ").trim().take(160),
+                            color = c.bad, fontSize = T.cap, lineHeight = 17.sp,
+                            maxLines = 2, overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                // 投递失败：任务跑成功了，但结果没送到（如微信会话没准备好）。
+                if (j.deliveryError.isNotEmpty()) {
+                    Spacer(Modifier.height(G.x1))
+                    Text(
+                        "投递失败  " + j.deliveryError.replace(Regex("\\s+"), " ").trim().take(160),
+                        color = c.bad, fontSize = T.cap, lineHeight = 17.sp,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis
+                    )
+                }
+                if (j.desc.isNotEmpty()) {
+                    Spacer(Modifier.height(G.x2))
+                    Text("任务描述", color = c.faint, fontSize = T.cap, fontWeight = T.bold)
+                    Spacer(Modifier.height(G.x1))
+                    // 描述原文可能几千字：限高 + 卡片内滚动，别把卡片撑成一面墙。
+                    Text(
+                        j.desc.replace(Regex("\\s+"), " ").trim(),
+                        color = c.text, fontSize = T.cap, lineHeight = 18.sp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 240.dp)
+                            .verticalScroll(rememberScrollState()),
+                    )
+                }
+                Spacer(Modifier.height(G.x3))
+                // 删除任务：不可恢复，描边红字 + 二次确认（用户 2026-10-10 要求新增）。
+                OutlinedButton(
+                    onClick = { confirmDelete = true },
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                    shape = RoundedCornerShape(Rad.pill),
+                    border = BorderStroke(1.dp, c.bad.copy(alpha = 0.55f)),
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("删除任务", color = c.bad, fontSize = T.sub) }
             }
         }
+    }
+
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("删除这个定时任务？", color = c.text, fontSize = T.body, fontWeight = T.bold) },
+            text = {
+                Text(
+                    title + " 会被彻底删除，删了找不回来；想留着不跑就先「暂停」。",
+                    color = c.dim, fontSize = T.cap, lineHeight = 18.sp,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { confirmDelete = false; onAction("delete") }) {
+                    Text("删除", color = c.bad, fontSize = T.sub)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) {
+                    Text("取消", color = c.dim, fontSize = T.sub)
+                }
+            },
+            containerColor = c.panel,
+        )
     }
 }
 

@@ -271,6 +271,17 @@ data class JobItem(
      * 服务端字段 last_delivery_error，此前 App 完全没读，真故障被藏在日志里。
      */
     val deliveryError: String = "",
+    // ---- 任务详情（展开「详情」时才显示；服务端 /api/jobs 本来就有这些字段）----
+    /** 任务描述原文（服务端 prompt）：这条定时任务到底让 agent 干什么，全文可能几千字。 */
+    val desc: String = "",
+    /** 投递方式（api / bot-chat / local 等）。 */
+    val deliver: String = "",
+    /** 该任务使用的模型。 */
+    val model: String = "",
+    /** 创建时间（已格式化为本地时区）。 */
+    val createdAt: String = "",
+    /** 已执行次数（服务端 repeat.completed）。 */
+    val repeatDone: Int = 0,
 )
 
 /**
