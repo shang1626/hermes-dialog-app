@@ -1936,6 +1936,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     execDuration = execDurationText(ex),
                     execError = jsonStr(ex, "error"),
                     deliveryError = jsonStr(o, "last_delivery_error"),
+                    // 任务详情（展开时才展示）：描述原文 / 投递方式 / 模型 / 创建时间 / 已跑次数。
+                    desc = jsonStr(o, "prompt"),
+                    deliver = jsonStr(o, "deliver"),
+                    model = jsonStr(o, "model"),
+                    createdAt = TimeFmt.isoToBj(jsonStr(o, "created_at")),
+                    repeatDone = o.optJSONObject("repeat")?.optInt("completed", 0) ?: 0,
                 )
             )
         }
@@ -1953,6 +1959,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 when (action) {
                     "pause" -> { a.pauseJob(jobId); _jobsNote.value = "已暂停：" + who }
                     "resume" -> { a.resumeJob(jobId); _jobsNote.value = "已恢复：" + who }
+                    "delete" -> { a.deleteJob(jobId); _jobsNote.value = "已删除：" + who }
                     "run" -> {
                         // 立即执行：POST 只是「排上队」，服务端返回 {"ok":true} 没有 run_id。
                         // 先记下当前这次执行记录 id，触发后轮询等它变成一次新的执行，
