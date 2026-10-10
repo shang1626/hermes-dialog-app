@@ -2909,7 +2909,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 轮末 token 用量：挂到该会话最后一条助手消息上。 */
     private fun attachUsage(r: SessionRuntime, ev: com.hermesapp.net.SseEvent) {
-        val u = ev.data.optJSONObject("usage") ?: return
+        attachUsageJson(r, ev.data.optJSONObject("usage"))
+    }
+
+    /**
+     * 把一份 usage JSON 挂到该会话最后一条助手消息上。
+     *
+     * 为什么单独抽一个入口：「使用量行」和「语音播报按钮」都由收尾时挂到气泡上的元数据驱动
+     * （usage / runId），而**兜底收尾**（SSE 流被掐断、靠 `GET /v1/runs/{id}` 判结束）原来只
+     * 发通知与播报，两样都没挂 → 用户报「偶尔任务完成后不出现这些信息、也没有语音按钮」
+     * （2026-10-10）。那条路径拿到的 run 状态 payload 里带的就是同一份 usage，补挂即可。
+     */
+    private fun attachUsageJson(r: SessionRuntime, u: JSONObject?) {
+        if (u == null) return
         // 耗时起点与界面实时计时同源：优先用会话级的本轮起点 r.startedAt
         // （整轮唯一、不会被气泡重建冲掉），它没有才回落气泡自己的。
         val bubbleStart = r.messages.value.lastOrNull { it.role == "assistant" }?.startedAt ?: 0L
@@ -3366,6 +3378,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         r.finished = true
                         clearStaleCards(r)
                         finishPending(r)
+                        // 兜底收尾也要挂收尾元数据：使用量行与语音按钮都靠它（见 attachUsageJson）。
+                        tagLastAssistantRunId(r, rid)
+                        attachUsageJson(r, st.payload?.optJSONObject("usage"))
                         notifyRecoveredCompletion(sid, st.payload?.optString("output", "").orEmpty())
                         r.busy.value = false
                         prefs.removeActiveRun(sid)
@@ -3383,6 +3398,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     r.finished = true
                     clearStaleCards(r)
                     finishPending(r)
+                    // run 记录都没了，拿不到 usage；runId 仍补挂，语音按钮（按 runId 取留档）还能用。
+                    tagLastAssistantRunId(r, rid)
                     notifyRecoveredCompletion(sid, "")
                     r.busy.value = false
                     prefs.removeActiveRun(sid)
@@ -3478,7 +3495,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 unanchored = 0
                 val sig = answerSignature(rows, anchor)
                 if (sig != null && sig == lastSig) {
-                    adoptRecovered(sid)
+                    adoptRecovered(sid, rid)
                     return@launch
                 }
                 lastSig = sig
@@ -3490,7 +3507,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 服务端会话记录解析成位置锚点所需的最小行。 */
 
     /** 答案已落盘：结束本轮并按服务端记录合并回来。 */
-    private fun adoptRecovered(sid: String) {
+    private fun adoptRecovered(sid: String, rid: String) {
         val r = rt(sid)
         if (r.confirmingMsgId > 0L) {
             advanceReceipt(sid, r.confirmingMsgId, Receipt.ACCEPTED, note = "")
@@ -3504,6 +3521,24 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         updateRunService()
         refreshFromServerFor(sid)
         drainQueue(sid)   // 翻历史取回结果后，队列接着走
+        // 翻历史取回结果这条路径原来不挂收尾元数据 → 使用量行与语音按钮都会缺
+        //（用户报「偶尔任务完成后不出现这些信息」）。补一次 run 状态查询把 usage 与 runId
+        // 挂上；纯尽力而为，取不到就算了（不影响已取回的正文）。
+        if (rid.isEmpty()) return
+        RuntimeHub.scope.launch(Dispatchers.IO) {
+            val a = api ?: return@launch
+            try {
+                val st = a.probeRun(rid)
+                // 期间若又开了新一轮就别乱挂（挂错气泡比不挂更糟）。
+                if (r.busy.value) return@launch
+                if (st is HermesApi.RunStatus.Known && st.payload != null) {
+                    tagLastAssistantRunId(r, rid)
+                    attachUsageJson(r, st.payload.optJSONObject("usage"))
+                }
+            } catch (e: Exception) {
+                AppLog.log("retry", "补挂收尾元数据失败 run=" + rid.take(12) + " " + diagText(e))
+            }
+        }
     }
 
     /** 翻历史也没捞到：明确收尾，不留一个永远转圈的空气泡。 */
