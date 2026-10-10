@@ -408,11 +408,11 @@ fun LoginScreen(prefs: Prefs, onDone: () -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Text("Hermes", color = c.accent, fontSize = 34.sp, fontWeight = FontWeight.Bold)
+        Text("Hermes", color = c.accent, fontSize = T.hero, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(6.dp))
         Text(
             if (saved.isEmpty()) "首次使用请填写服务器地址" else "用账号密码登录",
-            color = c.dim, fontSize = 13.sp
+            color = c.dim, fontSize = T.body
         )
         // 已登录过的账号：直接按账号名一键进入，不用重新输（切换身份也走这里）
         if (saved.isNotEmpty()) {
@@ -428,12 +428,12 @@ fun LoginScreen(prefs: Prefs, onDone: () -> Unit) {
                         },
                         modifier = Modifier.weight(1f),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                        shape = RoundedCornerShape(8.dp),
-                    ) { Text(acct, color = c.accent, fontSize = 13.sp) }
+                        shape = RoundedCornerShape(Rad.pill),
+                    ) { Text(acct, color = c.accent, fontSize = T.body) }
                 }
             }
             Spacer(Modifier.height(6.dp))
-            Text("已登录的账号，点一下直接进入；或用另一个账号登录：", color = c.dim, fontSize = 11.sp)
+            Text("已登录的账号，点一下直接进入；或用另一个账号登录：", color = c.dim, fontSize = T.cap)
         }
         Spacer(Modifier.height(16.dp))
         OutlinedTextField(
@@ -466,7 +466,7 @@ fun LoginScreen(prefs: Prefs, onDone: () -> Unit) {
         )
         if (err.isNotEmpty()) {
             Spacer(Modifier.height(8.dp))
-            Text(err, color = c.bad, fontSize = 13.sp)
+            Text(err, color = c.bad, fontSize = T.body)
         }
         Spacer(Modifier.height(18.dp))
         OutlinedButton(
@@ -517,7 +517,7 @@ fun LoginScreen(prefs: Prefs, onDone: () -> Unit) {
         ) { Text(if (busy) "登录中…" else "登录", color = c.accent) }
 
         Spacer(Modifier.height(10.dp))
-        Text("身份由账号决定：用哪个账号登录就是哪个身份，界面不另设身份选项", color = c.dim, fontSize = 11.sp)
+        Text("身份由账号决定：用哪个账号登录就是哪个身份，界面不另设身份选项", color = c.dim, fontSize = T.cap)
     }
 }
 
@@ -732,18 +732,18 @@ fun DrawerPanel(
         Column(Modifier.fillMaxSize().padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "Hermes", color = c.accent, fontSize = 20.sp, fontWeight = FontWeight.Bold,
+                    "Hermes", color = c.accent, fontSize = T.display, fontWeight = FontWeight.Bold,
                     modifier = Modifier.clickable { onTab(0) }
                 )
                 // 身份标识从对话窗口顶栏挪到这里（顶栏留给标题与状态）。
                 Spacer(Modifier.width(6.dp))
-                Text(prefs.profile, color = c.dim, fontSize = 11.sp)
+                Text(prefs.profile, color = c.dim, fontSize = T.cap)
                 Spacer(Modifier.weight(1f))
                 OutlinedButton(
                     onClick = { vm.newConversation(); onClose() },
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                    shape = RoundedCornerShape(8.dp),
-                ) { Text("+ 新对话", fontSize = 12.sp, color = c.accent) }
+                    shape = RoundedCornerShape(Rad.pill),
+                ) { Text("+ 新对话", fontSize = T.sub, color = c.accent) }
             }
             Spacer(Modifier.height(10.dp))
 
@@ -755,18 +755,18 @@ fun DrawerPanel(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     if (showArchived) "已归档" else "历史对话",
-                    color = c.dim, fontSize = 12.sp
+                    color = c.dim, fontSize = T.sub
                 )
                 Spacer(Modifier.weight(1f))
                 if (sortMode) {
                     // 排序模式：只剩一个「完成」出口，收起箭头回到常规视图。
                     Text(
-                        "完成", color = c.accent, fontSize = 12.sp,
+                        "完成", color = c.accent, fontSize = T.sub,
                         modifier = Modifier.clickable { sortMode = false }
                     )
                 } else {
                     Text(
-                        "排序", color = c.accent, fontSize = 12.sp,
+                        "排序", color = c.accent, fontSize = T.sub,
                         modifier = Modifier.clickable {
                             if (showArchived) showArchived = false
                             sortMode = true
@@ -774,13 +774,13 @@ fun DrawerPanel(
                     )
                     Spacer(Modifier.width(10.dp))
                     Text(
-                        "搜索", color = c.accent, fontSize = 12.sp,
+                        "搜索", color = c.accent, fontSize = T.sub,
                         modifier = Modifier.clickable { vm.toggleGlobalSearch() }
                     )
                     Spacer(Modifier.width(10.dp))
                     Text(
                         if (showArchived) "返回" else "已归档",
-                        color = c.accent, fontSize = 12.sp,
+                        color = c.accent, fontSize = T.sub,
                         modifier = Modifier.clickable { showArchived = !showArchived }
                     )
                 }
@@ -797,7 +797,7 @@ fun DrawerPanel(
                     value = gQuery,
                     onValueChange = { vm.setGlobalQuery(it) },
                     singleLine = true,
-                    placeholder = { Text("搜索全部会话", fontSize = 13.sp) },
+                    placeholder = { Text("搜索全部会话", fontSize = T.body) },
                     colors = fieldColors(c),
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -808,7 +808,7 @@ fun DrawerPanel(
                         gHits.isEmpty() -> "无结果"
                         else -> "共 " + gHits.size + " 条"
                     },
-                    color = c.dim, fontSize = 11.sp
+                    color = c.dim, fontSize = T.cap
                 )
                 Spacer(Modifier.height(6.dp))
                 // LazyColumn：原来整个结果列表一次性铺出来，条目多时每次重组都要全量测量。
@@ -824,16 +824,16 @@ fun DrawerPanel(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
                                     (if (h.role == "user") "我" else "助手") + " · " + h.sessionTitle,
-                                    color = c.accent, fontSize = 11.sp,
+                                    color = c.accent, fontSize = T.cap,
                                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.weight(1f, fill = false)
                                 )
                                 Spacer(Modifier.weight(1f))
-                                Text(TimeFmt.mdhm(h.ts), color = c.dim, fontSize = 10.sp)
+                                Text(TimeFmt.mdhm(h.ts), color = c.dim, fontSize = T.micro)
                             }
                             Spacer(Modifier.height(2.dp))
                             Text(
-                                h.snippet, color = c.text, fontSize = 12.sp,
+                                h.snippet, color = c.text, fontSize = T.sub,
                                 maxLines = 3, overflow = TextOverflow.Ellipsis
                             )
                         }
@@ -845,7 +845,7 @@ fun DrawerPanel(
                 if (list.isEmpty()) {
                     Text(
                         if (showArchived) "（无归档）" else "（无历史对话）",
-                        color = c.dim, fontSize = 12.sp, modifier = Modifier.padding(vertical = 8.dp)
+                        color = c.dim, fontSize = T.sub, modifier = Modifier.padding(vertical = 8.dp)
                     )
                 } else {
                     // LazyColumn + 稳定 key：原来整个会话列表一次性铺出来，切会话会整体
@@ -889,7 +889,7 @@ fun DrawerPanel(
             Spacer(Modifier.height(8.dp))
 
             // 主题切换（三选）
-            Text("外观", color = c.dim, fontSize = 12.sp)
+            Text("外观", color = c.dim, fontSize = T.sub)
             Spacer(Modifier.height(6.dp))
             // 四档平铺（无下拉）：跟随系统 / 白天 / 夜间 / 护眼
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -918,10 +918,10 @@ fun NavChip(
         colors = ButtonDefaults.outlinedButtonColors(
             containerColor = if (selected) c.card else Color.Transparent
         ),
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(Rad.pill),
     ) {
         Box {
-            Text(label, color = if (selected) c.accent else c.dim, fontSize = 13.sp)
+            Text(label, color = if (selected) c.accent else c.dim, fontSize = T.body)
             // 有新版本时：按钮右上角（边框内）一个小绿点
             if (badge) {
                 Box(
@@ -973,11 +973,11 @@ fun SessionRow(
                 // 亮点不只代表「本轮在跑」：子任务是后台子代理，可能比父轮次活得久
                 // （父 run 结束了它还在干），这种情况也要让用户在列表上看得见。
                 if (running || sub > 0 || queued > 0) {
-                    Text("●", color = if (running) c.warn else c.accent, fontSize = 9.sp)
+                    Text("●", color = if (running) c.warn else c.accent, fontSize = T.micro)
                     Spacer(Modifier.width(4.dp))
                 }
                 Text(
-                    meta.title, color = if (selected) c.accent else c.text, fontSize = 13.sp,
+                    meta.title, color = if (selected) c.accent else c.text, fontSize = T.body,
                     maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false)
                 )
                 val marks = mutableListOf<String>()
@@ -988,13 +988,13 @@ fun SessionRow(
                     Spacer(Modifier.width(6.dp))
                     Text(
                         marks.joinToString(" · "),
-                        color = if (running) c.warn else c.accent, fontSize = 10.sp,
+                        color = if (running) c.warn else c.accent, fontSize = T.micro,
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
             Text(
-                TimeFmt.mdhm(meta.updatedAt), color = c.dim, fontSize = 10.sp
+                TimeFmt.mdhm(meta.updatedAt), color = c.dim, fontSize = T.micro
             )
         }
         // 手动排序：仅在排序模式下露出一对迷你箭头（上移/下移）。
@@ -1015,20 +1015,20 @@ fun SessionRow(
         }
         Box {
             Text(
-                "⋯", color = c.dim, fontSize = 18.sp,
+                "⋯", color = c.dim, fontSize = T.title,
                 modifier = Modifier.clickable { menu = true }.padding(horizontal = 6.dp)
             )
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                 DropdownMenuItem(
-                    text = { Text("导出为 Markdown", fontSize = 13.sp) },
+                    text = { Text("导出为 Markdown", fontSize = T.body) },
                     onClick = { menu = false; onExport() }
                 )
                 DropdownMenuItem(
-                    text = { Text(if (archived) "恢复" else "归档", fontSize = 13.sp) },
+                    text = { Text(if (archived) "恢复" else "归档", fontSize = T.body) },
                     onClick = { menu = false; onArchive() }
                 )
                 DropdownMenuItem(
-                    text = { Text("删除", color = c.bad, fontSize = 13.sp) },
+                    text = { Text("删除", color = c.bad, fontSize = T.body) },
                     onClick = { menu = false; confirmDelete = true; AppLog.log("ui", "点删除(待确认) sid=" + meta.id.take(8)) }
                 )
             }
@@ -1038,18 +1038,18 @@ fun SessionRow(
     if (confirmDelete) {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
-            title = { Text("删除这个对话？", color = c.text, fontSize = 15.sp) },
-            text = { Text("本地记录会一并清掉，删了就找不回来了。", color = c.dim, fontSize = 12.sp) },
+            title = { Text("删除这个对话？", color = c.text, fontSize = T.body) },
+            text = { Text("本地记录会一并清掉，删了就找不回来了。", color = c.dim, fontSize = T.sub) },
             confirmButton = {
                 Text(
-                    "删除", color = c.bad, fontSize = 14.sp,
+                    "删除", color = c.bad, fontSize = T.body,
                     modifier = Modifier.clickable { confirmDelete = false; onDelete() }
                         .padding(horizontal = 10.dp, vertical = 6.dp)
                 )
             },
             dismissButton = {
                 Text(
-                    "取消", color = c.dim, fontSize = 14.sp,
+                    "取消", color = c.dim, fontSize = T.body,
                     modifier = Modifier.clickable { confirmDelete = false }
                         .padding(horizontal = 10.dp, vertical = 6.dp)
                 )
@@ -1069,7 +1069,7 @@ fun ModeBtn(label: String, selected: Boolean, m: Modifier, onClick: () -> Unit) 
         colors = ButtonDefaults.outlinedButtonColors(
             containerColor = if (selected) c.card else Color.Transparent
         ),
-    ) { Text(label, color = if (selected) c.accent else c.dim, fontSize = 12.sp) }
+    ) { Text(label, color = if (selected) c.accent else c.dim, fontSize = T.sub) }
 }
 
 /** 语速档位小按钮：描边、选中填充，风格同 ModeBtn，但不吃 Modifier（设置页平铺一排）。 */
@@ -1079,11 +1079,11 @@ fun SpeedBtn(label: String, selected: Boolean, onClick: () -> Unit) {
     OutlinedButton(
         onClick = onClick,
         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(Rad.pill),
         colors = ButtonDefaults.outlinedButtonColors(
             containerColor = if (selected) c.card else Color.Transparent
         ),
-    ) { Text(label, color = if (selected) c.accent else c.dim, fontSize = 12.sp) }
+    ) { Text(label, color = if (selected) c.accent else c.dim, fontSize = T.sub) }
 }
 
 /**

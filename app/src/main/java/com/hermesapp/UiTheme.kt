@@ -22,6 +22,9 @@ import androidx.compose.ui.unit.sp
  * - 间距只从 [G] 里取（4dp 网格）。
  */
 object T {
+    /** 品牌字（登录页/抽屉里的 Hermes 字样）。 */
+    val hero = 30.sp
+
     /** 大标题（登录页、空态主标题）。 */
     val display = 22.sp
 
@@ -39,6 +42,9 @@ object T {
 
     /** 最小：时间戳、角标、状态标记。 */
     val micro = 11.sp
+
+    /** 聊天气泡正文（比设置页正文大一号，长段落更好读）。 */
+    val chat = 16.sp
 
     /** 正文行高（约 1.47 倍，中文长段落更透气）。 */
     val lineBody = 22.sp

@@ -126,17 +126,17 @@ fun ChatScreen(
                 Spacer(Modifier.width(7.dp))
                 Text(
                     "正在播放：" + pOwner.second + " 的语音",
-                    color = c.text, fontSize = 12.sp, maxLines = 1,
+                    color = c.text, fontSize = T.sub, maxLines = 1,
                     overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
                 )
                 Text(
-                    "进入", color = c.accent, fontSize = 12.sp,
+                    "进入", color = c.accent, fontSize = T.sub,
                     modifier = Modifier
                         .clickable { vm.switchSession(pOwner.first) }
                         .padding(horizontal = 6.dp, vertical = 2.dp)
                 )
                 Text(
-                    "跳过", color = c.dim, fontSize = 12.sp,
+                    "跳过", color = c.dim, fontSize = T.sub,
                     modifier = Modifier
                         .clickable { vm.skipVoice() }
                         .padding(horizontal = 6.dp, vertical = 2.dp)
@@ -158,21 +158,21 @@ fun ChatScreen(
                     .padding(horizontal = 10.dp, vertical = 7.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("●", color = c.warn, fontSize = 11.sp)
+                Text("●", color = c.warn, fontSize = T.cap)
                 Spacer(Modifier.width(7.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(pa.title, color = c.warn, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text(pa.title, color = c.warn, fontSize = T.sub, fontWeight = FontWeight.Bold)
                     if (pa.summary.isNotEmpty()) {
                         Text(
                             pa.summary.replace(Regex("\\s+"), " ").trim().let {
                                 if (it.length > 50) it.take(50) + "…" else it
                             },
-                            color = c.text, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis
+                            color = c.text, fontSize = T.cap, maxLines = 1, overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
                 Spacer(Modifier.width(6.dp))
-                Text("查看 ›", color = c.accent, fontSize = 12.sp)
+                Text("查看 ›", color = c.accent, fontSize = T.sub)
             }
         }
         MessageList(vm, Modifier.weight(1f))
@@ -192,17 +192,17 @@ fun ChatScreen(
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
                     Text("引用" + (if (quoteBar.role == "user") "我的消息" else "助手消息"),
-                        color = c.accent, fontSize = 11.sp)
+                        color = c.accent, fontSize = T.cap)
                     Text(
                         quoteBar.text.replace(Regex("\\s+"), " ").trim().let {
                             if (it.isEmpty()) "[图片或附件]" else if (it.length > 60) it.take(60) + "…" else it
                         },
-                        color = c.dim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis
+                        color = c.dim, fontSize = T.sub, maxLines = 1, overflow = TextOverflow.Ellipsis
                     )
                 }
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    "×", color = c.dim, fontSize = 18.sp,
+                    "×", color = c.dim, fontSize = T.title,
                     modifier = Modifier.clickable { vm.clearQuote() }.padding(horizontal = 4.dp)
                 )
             }
@@ -211,7 +211,7 @@ fun ChatScreen(
         if (pend.isNotEmpty() || note.isNotEmpty()) {
             Column(Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 10.dp, vertical = 6.dp)) {
                 if (note.isNotEmpty()) {
-                    Text(note, color = c.warn, fontSize = 12.sp)
+                    Text(note, color = c.warn, fontSize = T.sub)
                     Spacer(Modifier.height(4.dp))
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -222,23 +222,23 @@ fun ChatScreen(
                                     model = p.uri,
                                     contentDescription = null,
                                     contentScale = ContentScale.Crop,
-                                    modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(8.dp))
+                                    modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(Rad.chip))
                                 )
                             } else {
                                 // 非图片：显示文件名 + 类型角标的卡片
                                 Box(
-                                    Modifier.fillMaxSize().clip(RoundedCornerShape(8.dp))
+                                    Modifier.fillMaxSize().clip(RoundedCornerShape(Rad.chip))
                                         .background(c.panel)
                                 ) {
                                     Text(
                                         p.file.name.takeLast(14),
-                                        color = c.dim, fontSize = 10.sp,
+                                        color = c.dim, fontSize = T.micro,
                                         modifier = Modifier.align(Alignment.Center).padding(horizontal = 3.dp)
                                     )
                                 }
                             }
                             Text(
-                                "×", color = Color.White, fontSize = 12.sp,
+                                "×", color = Color.White, fontSize = T.sub,
                                 modifier = Modifier
                                     .align(Alignment.TopEnd)
                                     .background(Color.Black.copy(alpha = 0.55f), CircleShape)
@@ -265,7 +265,7 @@ fun ChatScreen(
         AlertDialog(
             onDismissRequest = { askVision = false },
             title = { Text("当前模型不支持图片") },
-            text = { Text("要把这几张图自动转成文字描述发过去吗？转文字后模型能读懂图里内容，但原始图片不会保留。", fontSize = 13.sp) },
+            text = { Text("要把这几张图自动转成文字描述发过去吗？转文字后模型能读懂图里内容，但原始图片不会保留。", fontSize = T.body) },
             confirmButton = {
                 TextButton(onClick = {
                     askVision = false
@@ -398,7 +398,7 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
         }
     ) {
         if (note.isNotEmpty()) {
-            Text(note, color = c.warn, fontSize = 12.sp,
+            Text(note, color = c.warn, fontSize = T.sub,
                 modifier = Modifier.fillMaxWidth().background(c.panel).padding(8.dp))
         }
         // 归档入口已移到侧边栏（DrawerPanel）——本会话的超 300 条老消息入口不再占对话窗口顶部。
@@ -413,7 +413,7 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
                     value = q,
                     onValueChange = { vm.setSearchQuery(it) },
                     singleLine = true,
-                    placeholder = { Text("搜索本会话", fontSize = 13.sp) },
+                    placeholder = { Text("搜索本会话", fontSize = T.body) },
                     modifier = Modifier.weight(1f),
                 )
                 Spacer(Modifier.width(6.dp))
@@ -427,15 +427,15 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
                 )
                 Spacer(Modifier.width(4.dp))
                 Text(
-                    "↑", color = c.accent, fontSize = 18.sp,
+                    "↑", color = c.accent, fontSize = T.title,
                     modifier = Modifier.clickable { vm.searchNavigate(-1) }.padding(horizontal = 4.dp, vertical = 2.dp)
                 )
                 Text(
-                    "↓", color = c.accent, fontSize = 18.sp,
+                    "↓", color = c.accent, fontSize = T.title,
                     modifier = Modifier.clickable { vm.searchNavigate(1) }.padding(horizontal = 4.dp, vertical = 2.dp)
                 )
                 Text(
-                    "×", color = c.dim, fontSize = 18.sp,
+                    "×", color = c.dim, fontSize = T.title,
                     modifier = Modifier.clickable { vm.clearSearch() }.padding(horizontal = 4.dp, vertical = 2.dp)
                 )
             }
@@ -604,16 +604,16 @@ fun FullScreenInput(
                 OutlinedButton(
                     onClick = { onCancel() },
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                    shape = RoundedCornerShape(8.dp),
-                ) { Text("取消", fontSize = 12.sp, color = c.dim) }
+                    shape = RoundedCornerShape(Rad.pill),
+                ) { Text("取消", fontSize = T.sub, color = c.dim) }
                 Spacer(Modifier.width(6.dp))
                 OutlinedButton(
                     onClick = { onDone(v) },
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                    shape = RoundedCornerShape(8.dp),
-                ) { Text("完成", fontSize = 12.sp, color = c.accent) }
+                    shape = RoundedCornerShape(Rad.pill),
+                ) { Text("完成", fontSize = T.sub, color = c.accent) }
             }
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(G.x3))
             NativeChatInput(
                 value = v,
                 onValueChange = { v = it },
@@ -672,7 +672,7 @@ private fun LiveElapsed(startedAt: Long, color: Color) {
         }
     }
     val ms = (now - startedAt).coerceAtLeast(0L)
-    Text("耗时 " + fmtDuration(ms), color = color, fontSize = 10.sp)
+    Text("耗时 " + fmtDuration(ms), color = color, fontSize = T.micro)
 }
 
 /** 子任务进度里「多久以前」的文案。 */
@@ -725,7 +725,7 @@ fun SubagentChip(vm: ChatViewModel, open: Boolean, onToggle: () -> Unit) {
         "子任务 " + subs.size + (if (running > 0) " · " + running + " 跑" else "") +
             (if (open) " ▴" else " ▾"),
         color = if (running > 0) c.accent else c.dim,
-        fontSize = 12.sp,
+        fontSize = T.sub,
         modifier = Modifier.clip(RoundedCornerShape(6.dp))
             .clickable { onToggle() }
             .padding(horizontal = 6.dp, vertical = 2.dp),
@@ -764,7 +764,7 @@ fun SubagentList(vm: ChatViewModel) {
                 // 收起靠顶栏那个小标（再点一下），这里只放「看全部」切换。
                 Text(
                     if (showAll) "只显示最近" else "看全部（" + subs.size + "）",
-                    color = c.accent, fontSize = 11.sp,
+                    color = c.accent, fontSize = T.cap,
                     modifier = Modifier.clickable { showAll = !showAll }.padding(horizontal = 4.dp),
                 )
             }
@@ -779,7 +779,7 @@ fun SubagentList(vm: ChatViewModel) {
         if (!showAll && subs.size > cap) {
             Text(
                 "还有 " + (subs.size - cap) + " 条更早的（点「看全部」）",
-                color = c.dim, fontSize = 10.sp,
+                color = c.dim, fontSize = T.micro,
                 modifier = Modifier.padding(vertical = 2.dp),
             )
         }
@@ -815,19 +815,19 @@ private fun SubagentRow(
     ) {
         Text(
             mark + " " + (if (s.goal.isNotEmpty()) s.goal else s.id),
-            color = col, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis
+            color = col, fontSize = T.sub, maxLines = 2, overflow = TextOverflow.Ellipsis
         )
         val prog = subagentProgressText(s, tick.value)
         if (prog.isNotEmpty()) {
-            Text(prog, color = c.dim, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(prog, color = c.dim, fontSize = T.micro, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("查看进度 ▸", color = c.accent, fontSize = 10.sp)
+            Text("查看进度 ▸", color = c.accent, fontSize = T.micro)
             if (s.status == "running") {
                 Spacer(Modifier.width(12.dp))
                 // 停止是协作式的：子代理到下一个步骤边界才停，不是立即杀进程。
                 Text(
-                    "停止", color = c.bad, fontSize = 10.sp,
+                    "停止", color = c.bad, fontSize = T.micro,
                     modifier = Modifier.clip(RoundedCornerShape(4.dp))
                         .clickable { onStop() }.padding(horizontal = 6.dp, vertical = 2.dp),
                 )
@@ -861,29 +861,29 @@ fun SubagentDetailDialog(vm: ChatViewModel, d: SubagentDetail) {
                 Modifier.fillMaxWidth().heightIn(max = 420.dp)
                     .verticalScroll(rememberScrollState())
             ) {
-                Text(d.goal, color = c.text, fontSize = 12.sp)
+                Text(d.goal, color = c.text, fontSize = T.sub)
                 Spacer(Modifier.height(6.dp))
                 Text(
                     (listOf(st) + bits).joinToString(" · "),
-                    color = if (d.status == "running") c.accent else c.dim, fontSize = 11.sp,
+                    color = if (d.status == "running") c.accent else c.dim, fontSize = T.cap,
                 )
                 if (d.note.isNotEmpty()) {
                     Spacer(Modifier.height(4.dp))
-                    Text(d.note, color = c.warn, fontSize = 11.sp)
+                    Text(d.note, color = c.warn, fontSize = T.cap)
                 }
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(G.x2))
                 if (d.steps.isEmpty()) {
-                    Text("还没有步骤可显示（子代理还没调用工具，或这条会话读不到）", color = c.dim, fontSize = 12.sp)
+                    Text("还没有步骤可显示（子代理还没调用工具，或这条会话读不到）", color = c.dim, fontSize = T.sub)
                 } else {
                     for (stp in d.steps) {
                         Column(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
                             Text(
                                 stp.n.toString() + ". " + stp.tool +
                                     (if (stp.arg.isNotEmpty()) "  " + stp.arg else ""),
-                                color = c.accent, fontSize = 12.sp,
+                                color = c.accent, fontSize = T.sub,
                             )
                             if (stp.result.isNotEmpty()) {
-                                Text("    ↳ " + stp.result, color = c.dim, fontSize = 11.sp)
+                                Text("    ↳ " + stp.result, color = c.dim, fontSize = T.cap)
                             }
                         }
                     }
@@ -892,7 +892,7 @@ fun SubagentDetailDialog(vm: ChatViewModel, d: SubagentDetail) {
         },
         confirmButton = {
             TextButton(onClick = { vm.closeSubagentDetail() }) {
-                Text("关闭", color = c.accent, fontSize = 13.sp)
+                Text("关闭", color = c.accent, fontSize = T.body)
             }
         },
     )
@@ -974,7 +974,7 @@ fun Bubble(
                         for (u in m.images) {
                             LocalImageView(
                                 uri = u,
-                                modifier = Modifier.size(72.dp).clip(RoundedCornerShape(8.dp))
+                                modifier = Modifier.size(72.dp).clip(RoundedCornerShape(Rad.chip))
                             )
                         }
                     }
@@ -1017,17 +1017,17 @@ fun Bubble(
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
-                        Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(G.x2))
                         if (ap.resolved.isNotEmpty()) {
-                            Text("已选择：" + choiceLabel(ap.resolved), color = c.dim, fontSize = 12.sp)
+                            Text("已选择：" + choiceLabel(ap.resolved), color = c.dim, fontSize = T.sub)
                         } else {
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 for (ch in ap.choices) {
                                     OutlinedButton(
                                         onClick = { onApproval(m.id, ch) },
                                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                        shape = RoundedCornerShape(8.dp),
-                                    ) { Text(choiceLabel(ch), color = c.accent, fontSize = 12.sp) }
+                                        shape = RoundedCornerShape(Rad.pill),
+                                    ) { Text(choiceLabel(ch), color = c.accent, fontSize = T.sub) }
                                 }
                             }
                         }
@@ -1040,27 +1040,27 @@ fun Bubble(
                 val cl = m.clarify
                 if (cl != null) {
                     Column(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(Rad.chip))
                             .background(c.card).padding(10.dp)
                     ) {
-                        Text("需要你选一下", color = c.warn, fontSize = 13.sp)
+                        Text("需要你选一下", color = c.warn, fontSize = T.body)
                         Spacer(Modifier.height(4.dp))
-                        Text(cl.question, color = c.text, fontSize = 12.sp)
-                        Spacer(Modifier.height(8.dp))
+                        Text(cl.question, color = c.text, fontSize = T.sub)
+                        Spacer(Modifier.height(G.x2))
                         if (cl.resolved.isNotEmpty()) {
-                            Text("已选择：" + cl.resolved, color = c.dim, fontSize = 12.sp)
+                            Text("已选择：" + cl.resolved, color = c.dim, fontSize = T.sub)
                         } else if (cl.choices.isNotEmpty()) {
                             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 for (ch in cl.choices) {
                                     OutlinedButton(
                                         onClick = { onClarify(m.id, ch) },
                                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                        shape = RoundedCornerShape(8.dp),
-                                    ) { Text(ch, color = c.accent, fontSize = 12.sp) }
+                                        shape = RoundedCornerShape(Rad.pill),
+                                    ) { Text(ch, color = c.accent, fontSize = T.sub) }
                                 }
                             }
                         } else {
-                            Text("请在下方输入框回复", color = c.dim, fontSize = 12.sp)
+                            Text("请在下方输入框回复", color = c.dim, fontSize = T.sub)
                         }
                     }
                     if (m.text.isNotBlank() || m.subagents.isNotEmpty() || m.usage != null) {
@@ -1074,7 +1074,7 @@ fun Bubble(
                     RichText(
                         text = if (m.pending && m.text.isEmpty()) "…" else m.text,
                         color = if (m.pending) c.dim else if (isUser) c.userText else c.text,
-                        fontSize = 16.sp,
+                        fontSize = T.chat,
                         modifier = Modifier.fillMaxWidth(),
                         hitQuery = hitQuery,
                         selectionReset = selectionReset,
@@ -1217,43 +1217,43 @@ fun Bubble(
                                 OutlinedButton(
                                     onClick = { onCancelQueued(m.id) },
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                    shape = RoundedCornerShape(8.dp),
-                                ) { Text("撤回", color = c.bad, fontSize = 12.sp) }
+                                    shape = RoundedCornerShape(Rad.pill),
+                                ) { Text("撤回", color = c.bad, fontSize = T.sub) }
                                 OutlinedButton(
                                     onClick = { onEditQueued(m.id) },
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                    shape = RoundedCornerShape(8.dp),
-                                ) { Text("编辑", color = c.accent, fontSize = 12.sp) }
+                                    shape = RoundedCornerShape(Rad.pill),
+                                ) { Text("编辑", color = c.accent, fontSize = T.sub) }
                             } else if (rc?.status == Receipt.NOT_SENT) {
                                 // 重启后归位的「未发送」：这条不会再自动发出，交给用户决定。
                                 OutlinedButton(
                                     onClick = { onResendReceipt(m.id) },
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                    shape = RoundedCornerShape(8.dp),
-                                ) { Text("重新发送", color = c.accent, fontSize = 12.sp) }
+                                    shape = RoundedCornerShape(Rad.pill),
+                                ) { Text("重新发送", color = c.accent, fontSize = T.sub) }
                                 OutlinedButton(
                                     onClick = { onAckReceipt(m.id) },
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                    shape = RoundedCornerShape(8.dp),
-                                ) { Text("知道了", color = c.dim, fontSize = 12.sp) }
+                                    shape = RoundedCornerShape(Rad.pill),
+                                ) { Text("知道了", color = c.dim, fontSize = T.sub) }
                             } else {
                                 OutlinedButton(
                                     onClick = { onConfirmReceipt(m.id) },
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                    shape = RoundedCornerShape(8.dp),
-                                ) { Text("确认送达", color = c.accent, fontSize = 12.sp) }
+                                    shape = RoundedCornerShape(Rad.pill),
+                                ) { Text("确认送达", color = c.accent, fontSize = T.sub) }
                                 OutlinedButton(
                                     onClick = { onResendReceipt(m.id) },
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                    shape = RoundedCornerShape(8.dp),
-                                ) { Text("重新发送", color = c.accent, fontSize = 12.sp) }
+                                    shape = RoundedCornerShape(Rad.pill),
+                                ) { Text("重新发送", color = c.accent, fontSize = T.sub) }
                                 // 「不确定」时给一个不重发的出口：看过就算了，不必拿这句话去赌会不会发两遍。
                                 if (rc?.status == Receipt.UNCERTAIN) {
                                     OutlinedButton(
                                         onClick = { onAckReceipt(m.id) },
                                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                        shape = RoundedCornerShape(8.dp),
-                                    ) { Text("知道了", color = c.dim, fontSize = 12.sp) }
+                                        shape = RoundedCornerShape(Rad.pill),
+                                    ) { Text("知道了", color = c.dim, fontSize = T.sub) }
                                 }
                             }
                         }
@@ -1269,13 +1269,13 @@ fun Bubble(
             Surface(color = c.panel, shape = RoundedCornerShape(12.dp)) {
                 Column(Modifier.padding(vertical = 6.dp)) {
                     Text(
-                        "引用回复", color = c.text, fontSize = 14.sp,
+                        "引用回复", color = c.text, fontSize = T.body,
                         modifier = Modifier.fillMaxWidth()
                             .clickable { menuOpen = false; onQuote(m) }
                             .padding(horizontal = 18.dp, vertical = 12.dp)
                     )
                     Text(
-                        "复制正文", color = c.text, fontSize = 14.sp,
+                        "复制正文", color = c.text, fontSize = T.body,
                         modifier = Modifier.fillMaxWidth()
                             .clickable {
                                 menuOpen = false
@@ -1322,46 +1322,52 @@ fun StatusScreen(vm: ChatViewModel, prefs: Prefs) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(if (online) "● 在线" else "● 离线",
-                color = if (online) c.ok else c.bad, fontSize = 13.sp)
+                color = if (online) c.ok else c.bad, fontSize = T.body)
             Spacer(Modifier.width(10.dp))
-            Text(prefs.profile + " · " + prefs.serverUrl, color = c.dim, fontSize = 11.sp,
+            Text(prefs.profile + " · " + prefs.serverUrl, color = c.dim, fontSize = T.cap,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             Spacer(Modifier.width(8.dp))
             OutlinedButton(
                 onClick = { vm.refreshStatus() },
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                shape = RoundedCornerShape(8.dp),
-            ) { Text("刷新", fontSize = 12.sp, color = c.accent) }
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                shape = RoundedCornerShape(Rad.pill),
+                border = BorderStroke(1.dp, c.border),
+            ) { Text("刷新", fontSize = T.sub, color = c.accent) }
         }
 
         if (err.isNotEmpty()) {
-            Text(err, color = c.bad, fontSize = 12.sp,
-                modifier = Modifier.fillMaxWidth().padding(14.dp))
+            Text(err, color = c.bad, fontSize = T.sub,
+                modifier = Modifier.fillMaxWidth().padding(G.page))
         }
 
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(12.dp)) {
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(G.page)) {
             // ① 顶部概览卡：状态徽章 + 模型 + 运行时长 + 在跑任务数，全部行内标签。
             hero?.let { StatusHeroCard(it) }
 
             // ② 动态进度条：CPU / 内存 / Swap / 磁盘 / 负载，数值到条会平滑推进。
             if (metrics.isNotEmpty()) {
-                Surface(color = c.panel, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(12.dp)) {
-                        Text("资源使用", color = c.accent, fontSize = 13.sp)
-                        Spacer(Modifier.height(10.dp))
+                Surface(
+                    color = c.panel,
+                    shape = RoundedCornerShape(Rad.card),
+                    border = BorderStroke(1.dp, c.borderSoft),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(G.x4)) {
+                        Text("资源使用", color = c.accent, fontSize = T.sub, fontWeight = T.bold)
+                        Spacer(Modifier.height(G.x3))
                         for (m in metrics) {
                             StatusMetricBar(m)
-                            Spacer(Modifier.height(10.dp))
+                            Spacer(Modifier.height(G.x3))
                         }
                     }
                 }
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(G.x3))
             }
 
             // ③ 原有明细分组（网关、CPU、内存、磁盘、运行…）。
             for (s in sections) {
                 StatusCard(s)
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(G.x3))
             }
             // 心跳指示：点每 5 秒闪一下，说明自动刷新真的在跑。
             RefreshHeartbeat(refreshedAt)
@@ -1390,11 +1396,11 @@ private fun RefreshHeartbeat(refreshedAt: Long) {
         animationSpec = tween(400), label = "dot"
     )
     Row(Modifier.fillMaxWidth().padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(6.dp).clip(CircleShape).background(c.ok.copy(alpha = dot)))
-        Spacer(Modifier.width(6.dp))
+        Box(Modifier.size(7.dp).clip(CircleShape).background(c.ok.copy(alpha = dot)))
+        Spacer(Modifier.width(G.x2))
         Text(
             "每 5 秒自动刷新" + if (refreshedAt > 0) " · 上次 " + TimeFmt.hhmmss(refreshedAt) else "",
-            color = c.dim, fontSize = 10.sp
+            color = c.faint, fontSize = T.micro
         )
     }
 }
@@ -1403,28 +1409,33 @@ private fun RefreshHeartbeat(refreshedAt: Long) {
 @Composable
 fun StatusHeroCard(h: StatusHero) {
     val c = LocalAppColors.current
-    Surface(color = c.panel, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp)) {
+    Surface(
+        color = c.panel,
+        shape = RoundedCornerShape(Rad.card),
+        border = BorderStroke(1.dp, c.borderSoft),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.padding(G.x4)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(8.dp).clip(CircleShape).background(if (h.ok) c.ok else c.bad))
-                Spacer(Modifier.width(7.dp))
-                Text(h.statusText, color = if (h.ok) c.ok else c.bad, fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold)
+                Box(Modifier.size(9.dp).clip(CircleShape).background(if (h.ok) c.ok else c.bad))
+                Spacer(Modifier.width(G.x2))
+                Text(h.statusText, color = if (h.ok) c.ok else c.bad, fontSize = T.body,
+                    fontWeight = T.heavy)
                 Spacer(Modifier.weight(1f))
-                Text("PID " + h.pid, color = c.dim, fontSize = 11.sp)
+                Text("PID " + h.pid, color = c.faint, fontSize = T.micro)
             }
-            Spacer(Modifier.height(8.dp))
-            Text("版本：" + h.version, color = c.text, fontSize = 12.sp,
+            Spacer(Modifier.height(G.x3))
+            Text("版本：" + h.version, color = c.text, fontSize = T.sub,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (h.uptimeText.isNotEmpty()) {
-                Spacer(Modifier.height(3.dp))
-                Text("已运行：" + h.uptimeText, color = c.dim, fontSize = 12.sp)
+                Spacer(Modifier.height(G.x1))
+                Text("已运行：" + h.uptimeText, color = c.dim, fontSize = T.sub)
             }
-            Spacer(Modifier.height(3.dp))
+            Spacer(Modifier.height(G.x1))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("活跃任务：" + h.activeRuns, color = if (h.activeRuns > 0) c.accent else c.dim, fontSize = 12.sp)
-                Spacer(Modifier.width(14.dp))
-                Text("子任务：" + h.delegations, color = if (h.delegations > 0) c.accent else c.dim, fontSize = 12.sp)
+                Text("活跃任务：" + h.activeRuns, color = if (h.activeRuns > 0) c.accent else c.dim, fontSize = T.sub)
+                Spacer(Modifier.width(G.x4))
+                Text("子任务：" + h.delegations, color = if (h.delegations > 0) c.accent else c.dim, fontSize = T.sub)
             }
         }
     }
@@ -1449,24 +1460,24 @@ fun StatusMetricBar(m: StatusMetric) {
     }
     Column(Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(m.label, color = c.text, fontSize = 12.sp)
+            Text(m.label, color = c.text, fontSize = T.sub)
             Spacer(Modifier.weight(1f))
-            Text(m.valueText, color = color, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Text(m.valueText, color = color, fontSize = T.sub, fontWeight = T.bold)
         }
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(G.x2))
         // 轨道 + 填充；填充宽度按百分比动画推进。
         Box(
-            Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp))
-                .background(c.card)
+            Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(Rad.pill))
+                .background(c.cardAlt)
         ) {
             Box(
                 Modifier.fillMaxWidth(frac).fillMaxHeight()
-                    .clip(RoundedCornerShape(3.dp)).background(color)
+                    .clip(RoundedCornerShape(Rad.pill)).background(color)
             )
         }
         if (m.subText.isNotEmpty()) {
-            Spacer(Modifier.height(3.dp))
-            Text(m.subText, color = c.dim, fontSize = 10.sp,
+            Spacer(Modifier.height(G.x1))
+            Text(m.subText, color = c.faint, fontSize = T.cap,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
@@ -1476,14 +1487,19 @@ fun StatusMetricBar(m: StatusMetric) {
 @Composable
 fun StatusCard(s: StatusSection) {
     val c = LocalAppColors.current
-    Surface(color = c.panel, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp)) {
-            Text(s.title, color = c.accent, fontSize = 13.sp)
-            Spacer(Modifier.height(8.dp))
+    Surface(
+        color = c.panel,
+        shape = RoundedCornerShape(Rad.card),
+        border = BorderStroke(1.dp, c.borderSoft),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.padding(G.x4)) {
+            Text(s.title, color = c.accent, fontSize = T.sub, fontWeight = T.bold)
+            Spacer(Modifier.height(G.x3))
             for (item in s.items) {
-                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-                    Text(item.label, color = c.dim, fontSize = 12.sp, modifier = Modifier.width(78.dp))
-                    Text(item.value, color = c.text, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+                    Text(item.label, color = c.dim, fontSize = T.cap, modifier = Modifier.width(82.dp))
+                    Text(item.value, color = c.text, fontSize = T.sub, modifier = Modifier.weight(1f))
                 }
             }
         }
@@ -1514,57 +1530,60 @@ fun JobsScreen(vm: ChatViewModel, prefs: Prefs) {
 
     Column(Modifier.fillMaxSize()) {
         Row(
-            Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 14.dp, vertical = 10.dp),
+            Modifier.fillMaxWidth().background(c.panel).padding(horizontal = G.page, vertical = G.x3),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("定时任务", color = c.text, fontSize = 13.sp)
+            Text("定时任务", color = c.text, fontSize = T.body, fontWeight = T.bold)
             Spacer(Modifier.weight(1f))
             Text(
                 if (showDisabled) "隐藏已停用" else "显示已停用",
-                color = c.accent, fontSize = 11.sp,
+                color = c.accent, fontSize = T.sub,
                 modifier = Modifier.clickable {
                     showDisabled = !showDisabled
                     vm.refreshJobs(showDisabled)
                 }
             )
-            Spacer(Modifier.width(10.dp))
+            Spacer(Modifier.width(G.x3))
             OutlinedButton(
                 onClick = { vm.refreshJobs(showDisabled) },
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                shape = RoundedCornerShape(8.dp),
-            ) { Text("刷新", fontSize = 12.sp, color = c.accent) }
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                shape = RoundedCornerShape(Rad.pill),
+                border = BorderStroke(1.dp, c.border),
+            ) { Text("刷新", fontSize = T.sub, color = c.accent) }
         }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(c.borderSoft))
         if (note.isNotEmpty()) {
-            Text(note, color = c.ok, fontSize = 11.sp,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp))
+            Text(note, color = c.ok, fontSize = T.sub,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = G.page, vertical = G.x2))
         }
         if (err.isNotEmpty()) {
-            Text(err, color = c.bad, fontSize = 12.sp,
-                modifier = Modifier.fillMaxWidth().padding(14.dp))
+            Text(err, color = c.bad, fontSize = T.sub,
+                modifier = Modifier.fillMaxWidth().padding(G.page))
         }
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(12.dp)) {
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(G.page)) {
             // 收件箱：定时任务的产出。App 走 api_server 通道，服务端推不过来
             // （supports_async_delivery=False），产出在服务端留档、这里拉出来看。
             if (reports.isNotEmpty()) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         "收件箱" + (if (unread > 0) "（" + unread + " 条未读）" else "（" + reports.size + " 条）"),
-                        color = if (unread > 0) c.accent else c.dim, fontSize = 12.sp,
+                        color = if (unread > 0) c.accent else c.text,
+                        fontSize = T.sub, fontWeight = T.bold,
                     )
                     Spacer(Modifier.weight(1f))
                     if (unread > 0) {
                         Text(
-                            "全部已读", color = c.accent, fontSize = 11.sp,
+                            "全部已读", color = c.accent, fontSize = T.sub,
                             modifier = Modifier.clickable { vm.ackInbox(all = true) },
                         )
-                        Spacer(Modifier.width(12.dp))
+                        Spacer(Modifier.width(G.x3))
                     }
                     Text(
-                        "清空", color = c.bad, fontSize = 11.sp,
+                        "清空", color = c.bad, fontSize = T.sub,
                         modifier = Modifier.clickable { clearConfirm = true },
                     )
                 }
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(G.x2))
                 for (r in reports) {
                     CronReportRow(
                         r,
@@ -1572,24 +1591,24 @@ fun JobsScreen(vm: ChatViewModel, prefs: Prefs) {
                         onLongPress = { pendingDelete = r },
                         onDelete = { pendingDelete = r },
                     )
-                    Spacer(Modifier.height(6.dp))
+                    Spacer(Modifier.height(G.x2))
                 }
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(G.x3))
             }
             if (inboxErr.isNotEmpty()) {
-                Text(inboxErr, color = c.bad, fontSize = 11.sp, modifier = Modifier.padding(vertical = 6.dp))
+                Text(inboxErr, color = c.bad, fontSize = T.sub, modifier = Modifier.padding(vertical = G.x2))
             }
             if (jobs.isEmpty() && err.isEmpty()) {
-                Text("（没有定时任务）", color = c.dim, fontSize = 12.sp,
-                    modifier = Modifier.padding(vertical = 8.dp))
+                Text("（没有定时任务）", color = c.dim, fontSize = T.sub,
+                    modifier = Modifier.padding(vertical = G.x3))
             }
             for (j in jobs) {
                 JobCard(j) { action -> vm.jobAction(j.id, action, j.zhName.ifEmpty { j.name }) }
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(G.x3))
             }
             Text("数据来自服务端 /api/jobs，只列出本机器人的任务",
-                color = c.dim, fontSize = 10.sp,
-                modifier = Modifier.fillMaxWidth().padding(top = 2.dp))
+                color = c.faint, fontSize = T.micro,
+                modifier = Modifier.fillMaxWidth().padding(top = G.x1))
         }
     }
 
@@ -1602,15 +1621,15 @@ fun JobsScreen(vm: ChatViewModel, prefs: Prefs) {
     if (clearConfirm) {
         AlertDialog(
             onDismissRequest = { clearConfirm = false },
-            title = { Text("清空收件箱？", color = c.text, fontSize = 15.sp) },
-            text = { Text("所有定时任务产出都会被删除，删了找不回来。", color = c.dim, fontSize = 12.sp) },
+            title = { Text("清空收件箱？", color = c.text, fontSize = T.body, fontWeight = T.bold) },
+            text = { Text("所有定时任务产出都会被删除，删了找不回来。", color = c.dim, fontSize = T.sub) },
             confirmButton = {
                 TextButton(onClick = { clearConfirm = false; vm.deleteInbox(all = true) }) {
-                    Text("清空", color = c.bad, fontSize = 14.sp)
+                    Text("清空", color = c.bad, fontSize = T.body, fontWeight = T.bold)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { clearConfirm = false }) { Text("取消", color = c.dim, fontSize = 14.sp) }
+                TextButton(onClick = { clearConfirm = false }) { Text("取消", color = c.dim, fontSize = T.body) }
             },
             containerColor = c.panel,
         )
@@ -1620,15 +1639,15 @@ fun JobsScreen(vm: ChatViewModel, prefs: Prefs) {
     if (pd != null) {
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
-            title = { Text("删除这条产出？", color = c.text, fontSize = 15.sp) },
-            text = { Text(jobDisplayName(pd.jobName, pd.jobId) + " 的这条产出会被删除，删了找不回来。", color = c.dim, fontSize = 12.sp) },
+            title = { Text("删除这条产出？", color = c.text, fontSize = T.body, fontWeight = T.bold) },
+            text = { Text(jobDisplayName(pd.jobName, pd.jobId) + " 的这条产出会被删除，删了找不回来。", color = c.dim, fontSize = T.sub) },
             confirmButton = {
                 TextButton(onClick = { pendingDelete = null; vm.deleteInbox(listOf(pd.id)) }) {
-                    Text("删除", color = c.bad, fontSize = 14.sp)
+                    Text("删除", color = c.bad, fontSize = T.body, fontWeight = T.bold)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { pendingDelete = null }) { Text("取消", color = c.dim, fontSize = 14.sp) }
+                TextButton(onClick = { pendingDelete = null }) { Text("取消", color = c.dim, fontSize = T.body) }
             },
             containerColor = c.panel,
         )
@@ -1654,38 +1673,40 @@ private fun CronReportRow(
 ) {
     val c = LocalAppColors.current
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(c.card),
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(Rad.card)).background(c.card),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(
             Modifier.weight(1f)
                 .combinedClickable(onClick = { onOpen() }, onLongClick = { onLongPress() })
-                .padding(10.dp)
+                .padding(G.x3)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (r.unread) {
-                    Box(Modifier.size(7.dp).background(c.bad, CircleShape))
-                    Spacer(Modifier.width(5.dp))
+                    Box(Modifier.size(8.dp).background(c.bad, CircleShape))
+                    Spacer(Modifier.width(G.x2))
                 }
                 Text(
                     (if (r.failed) "✗ " else "✓ ") + jobDisplayName(r.jobName, r.jobId),
-                    color = if (r.failed) c.bad else c.text, fontSize = 12.sp,
+                    color = if (r.failed) c.bad else c.text, fontSize = T.sub,
+                    fontWeight = T.bold,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.weight(1f))
-                Text(TimeFmt.isoToBj(r.at), color = c.dim, fontSize = 10.sp)
+                Text(TimeFmt.isoToBj(r.at), color = c.faint, fontSize = T.micro)
             }
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(G.x1))
             Text(
                 r.body.replace(Regex("\\s+"), " ").trim().take(90),
-                color = c.dim, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                color = c.dim, fontSize = T.cap, lineHeight = 17.sp,
+                maxLines = 2, overflow = TextOverflow.Ellipsis,
             )
         }
         // 行内删除：描边小字，点击弹二次确认（与长按同一条路径）。
         Text(
-            "删除", color = c.bad, fontSize = 11.sp,
+            "删除", color = c.bad, fontSize = T.sub,
             modifier = Modifier
-                .padding(horizontal = 12.dp, vertical = 14.dp)
+                .padding(horizontal = G.x3, vertical = G.x4)
                 .clickable { onDelete() },
         )
     }
@@ -1700,7 +1721,7 @@ fun CronReportDialog(vm: ChatViewModel, r: CronReport) {
         title = {
             Text(
                 (if (r.failed) "定时任务失败 · " else "定时任务产出 · ") + jobDisplayName(r.jobName, r.jobId),
-                color = if (r.failed) c.bad else c.text, fontSize = 14.sp,
+                color = if (r.failed) c.bad else c.text, fontSize = T.body, fontWeight = T.bold,
                 maxLines = 2, overflow = TextOverflow.Ellipsis,
             )
         },
@@ -1709,23 +1730,23 @@ fun CronReportDialog(vm: ChatViewModel, r: CronReport) {
                 Modifier.fillMaxWidth().heightIn(max = 430.dp)
                     .verticalScroll(rememberScrollState())
             ) {
-                Text(TimeFmt.isoToBj(r.at) + "  ·  " + r.jobId, color = c.dim, fontSize = 11.sp)
-                Spacer(Modifier.height(8.dp))
+                Text(TimeFmt.isoToBj(r.at) + "  ·  " + r.jobId, color = c.dim, fontSize = T.cap)
+                Spacer(Modifier.height(G.x2))
                 if (r.body.isBlank()) {
-                    Text("（这条没有正文）", color = c.dim, fontSize = 12.sp)
+                    Text("（这条没有正文）", color = c.dim, fontSize = T.sub)
                 } else {
-                    RichText(r.body, color = c.text, fontSize = 12.sp)
+                    RichText(r.body, color = c.text, fontSize = T.sub)
                 }
             }
         },
         confirmButton = {
             TextButton(onClick = { vm.closeCronReport() }) {
-                Text("关闭", color = c.accent, fontSize = 13.sp)
+                Text("关闭", color = c.accent, fontSize = T.body)
             }
         },
         dismissButton = {
             TextButton(onClick = { vm.deleteInbox(listOf(r.id)) }) {
-                Text("删除", color = c.bad, fontSize = 13.sp)
+                Text("删除", color = c.bad, fontSize = T.body)
             }
         },
     )
@@ -1752,39 +1773,48 @@ fun JobCard(j: JobItem, onAction: (String) -> Unit) {
         else -> c.warn
     }
     val title = j.zhName.ifEmpty { j.name }
-    Surface(color = c.panel, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp)) {
+    Surface(
+        color = c.panel,
+        shape = RoundedCornerShape(Rad.card),
+        border = BorderStroke(1.dp, c.borderSoft),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.padding(G.x4)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    title, color = c.text, fontSize = 13.sp,
+                    title, color = c.text, fontSize = T.body, fontWeight = T.bold,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false)
                 )
-                Spacer(Modifier.weight(1f))
-                Text(
-                    if (!j.enabled) "已停用" else j.state,
-                    color = stateColor, fontSize = 11.sp
-                )
+                Spacer(Modifier.width(G.x2))
+                // 状态做成小胶囊：一眼分清「在跑 / 已停用 / 上次失败」，不再是一枚裸字。
+                Row(
+                    Modifier.clip(RoundedCornerShape(Rad.pill))
+                        .background(stateColor.copy(alpha = 0.15f))
+                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        if (!j.enabled) "已停用" else j.state,
+                        color = stateColor, fontSize = T.micro, fontWeight = T.bold
+                    )
+                }
             }
             if (j.note.isNotEmpty()) {
-                Spacer(Modifier.height(4.dp))
-                Text(j.note, color = c.dim, fontSize = 11.sp)
+                Spacer(Modifier.height(G.x1))
+                Text(j.note, color = c.dim, fontSize = T.cap, lineHeight = 18.sp)
             }
-            Spacer(Modifier.height(6.dp))
-            if (j.schedule.isNotEmpty()) Text("排期  " + j.schedule, color = c.dim, fontSize = 11.sp)
+            Spacer(Modifier.height(G.x3))
+            if (j.schedule.isNotEmpty()) JobMeta("排期", j.schedule)
             if (j.lastRun.isNotEmpty()) {
-                Text(
-                    "上次  " + j.lastRun + (if (j.lastStatus.isNotEmpty()) " · " + j.lastStatus else ""),
-                    color = c.dim, fontSize = 11.sp
-                )
+                JobMeta("上次", j.lastRun + (if (j.lastStatus.isNotEmpty()) " · " + j.lastStatus else ""))
             }
-            if (j.nextRun.isNotEmpty()) Text("下次  " + j.nextRun, color = c.dim, fontSize = 11.sp)
+            if (j.nextRun.isNotEmpty()) JobMeta("下次", j.nextRun)
             // 最近一次执行明细：状态 + 耗时 / 失败原因。
             // 这一段回答的是「刚才点『立即执行』到底跑了哪条、跑成没成」——
             // 以前 App 把服务端返回的 latest_execution 整个丢掉，界面上只剩一句
             // 不带任务名的「已触发执行」，看不出任何结果。
             if (j.execStatus.isNotEmpty()) {
-                Spacer(Modifier.height(2.dp))
+                Spacer(Modifier.height(G.x1))
                 val execCol = when (j.execStatus) {
                     "completed" -> c.ok
                     "failed", "unknown" -> c.bad
@@ -1794,11 +1824,12 @@ fun JobCard(j: JobItem, onAction: (String) -> Unit) {
                 val line = StringBuilder("最近执行  ")
                 line.append(jobZhExecStatusLocal(j.execStatus))
                 if (j.execDuration.isNotEmpty()) line.append(" · 耗时 ").append(j.execDuration)
-                Text(line.toString(), color = execCol, fontSize = 11.sp)
+                Text(line.toString(), color = execCol, fontSize = T.cap)
                 if (j.execError.isNotEmpty()) {
                     Text(
                         "原因  " + j.execError.replace(Regex("\\s+"), " ").trim().take(160),
-                        color = c.bad, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis
+                        color = c.bad, fontSize = T.cap, lineHeight = 17.sp,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -1806,26 +1837,39 @@ fun JobCard(j: JobItem, onAction: (String) -> Unit) {
             // 以前这条原因只在服务端 last_delivery_error 里，App 完全不显示——
             // 「任务正常」和「结果没到手」是两件事，必须分开说。
             if (j.deliveryError.isNotEmpty()) {
-                Spacer(Modifier.height(2.dp))
+                Spacer(Modifier.height(G.x1))
                 Text(
                     "投递失败  " + j.deliveryError.replace(Regex("\\s+"), " ").trim().take(160),
-                    color = c.bad, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis
+                    color = c.bad, fontSize = T.cap, lineHeight = 17.sp,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis
                 )
             }
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Spacer(Modifier.height(G.x3))
+            Row(horizontalArrangement = Arrangement.spacedBy(G.x2)) {
                 OutlinedButton(
                     onClick = { onAction(if (j.enabled) "pause" else "resume") },
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                    shape = RoundedCornerShape(8.dp),
-                ) { Text(if (j.enabled) "暂停" else "恢复", color = c.accent, fontSize = 12.sp) }
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                    shape = RoundedCornerShape(Rad.pill),
+                    border = BorderStroke(1.dp, c.border),
+                ) { Text(if (j.enabled) "暂停" else "恢复", color = c.accent, fontSize = T.sub) }
                 OutlinedButton(
                     onClick = { onAction("run") },
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                    shape = RoundedCornerShape(8.dp),
-                ) { Text("立即执行", color = c.accent, fontSize = 12.sp) }
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                    shape = RoundedCornerShape(Rad.pill),
+                    border = BorderStroke(1.dp, c.border),
+                ) { Text("立即执行", color = c.accent, fontSize = T.sub) }
             }
         }
+    }
+}
+
+/** 任务卡里的一行元信息：标签固定宽（最弱色）+ 值（次弱色），多行对齐成一列。 */
+@Composable
+private fun JobMeta(label: String, value: String) {
+    val c = LocalAppColors.current
+    Row(Modifier.fillMaxWidth().padding(vertical = 1.dp)) {
+        Text(label, color = c.faint, fontSize = T.cap, modifier = Modifier.width(46.dp))
+        Text(value, color = c.dim, fontSize = T.cap, modifier = Modifier.weight(1f))
     }
 }
 
@@ -1907,19 +1951,19 @@ fun SettingsScreen(
     Column(Modifier.fillMaxSize().padding(G.page).verticalScroll(rememberScrollState())) {
         // ───────── 一、服务器 ─────────
         SectionTitle("服务器")
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(G.x2))
         OutlinedTextField(value = url, onValueChange = { url = it },
             modifier = Modifier.fillMaxWidth(), colors = fieldColors(c),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done))
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(G.x2))
         OutlinedButton(
             onClick = {
                 prefs.serverUrl = url
                 vm.onProfileChanged(prefs)
             },
             contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
-            shape = RoundedCornerShape(8.dp),
-        ) { Text("保存", color = c.accent, fontSize = 13.sp) }
+            shape = RoundedCornerShape(Rad.pill),
+        ) { Text("保存", color = c.accent, fontSize = T.body) }
 
         // ── 已登录账号（R20）：凭据按身份存在手机本地，只列**已登录**的账号名（身份由账号决定）──
         // 没凭据的身份不再出现「未登录」占位（按反馈：设置页不应出现未登录项）。
@@ -1929,8 +1973,8 @@ fun SettingsScreen(
             else Triple(p, cred.substringBefore(':'), prefs.profile == p)
         }
         if (accounts.isNotEmpty()) {
-            Spacer(Modifier.height(12.dp))
-            Text("已登录账号", color = c.text, fontSize = 13.sp)
+            Spacer(Modifier.height(G.x3))
+            Text("已登录账号", color = c.text, fontSize = T.body)
             Spacer(Modifier.height(6.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 accounts.forEach { (p, who, cur) ->
@@ -1938,28 +1982,28 @@ fun SettingsScreen(
                         onClick = { if (!cur) { prefs.profile = p; vm.onProfileChanged(prefs) } },
                         enabled = !cur,
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
-                        shape = RoundedCornerShape(8.dp),
+                        shape = RoundedCornerShape(Rad.pill),
                     ) {
                         Text(
                             if (cur) who + "（当前）" else who,
-                            color = if (cur) c.dim else c.accent, fontSize = 13.sp
+                            color = if (cur) c.dim else c.accent, fontSize = T.sub
                         )
                     }
                 }
             }
             if (accounts.size == 1) {
                 Spacer(Modifier.height(4.dp))
-                Text("要加/换账号：退出登录后用另一个账号登录一次即可", color = c.dim, fontSize = 11.sp)
+                Text("要加/换账号：退出登录后用另一个账号登录一次即可", color = c.dim, fontSize = T.cap)
             }
         }
 
         // ───────── 二、通知与语音 ─────────
         Spacer(Modifier.height(22.dp))
         SectionTitle("通知与语音")
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(G.x3))
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("后台运行", color = c.text, fontSize = 13.sp)
+                Text("后台运行", color = c.text, fontSize = T.body)
                 Text(
                     if (keepAlive) "常驻通知栏保持连接（一条静默条目，安卓强制）；关掉开关通知才消失"
                     else "不起前台服务，无任何常驻通知；任务仍在服务端跑，重开自动拉回结果",
@@ -1969,10 +2013,10 @@ fun SettingsScreen(
             Spacer(Modifier.width(10.dp))
             Switch(checked = keepAlive, onCheckedChange = { keepAlive = it; vm.setKeepAlive(it) })
         }
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(G.x3))
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("其它会话完成也提醒", color = c.text, fontSize = 13.sp)
+                Text("其它会话完成也提醒", color = c.text, fontSize = T.body)
                 Text(
                     if (notifyDone) "别的会话跑完时也弹通知；当前会话的内容就在屏幕上，不重复提醒"
                     else "只在 App 退到后台时提醒；开着 App 看别的会话时那边跑完不响",
@@ -1986,10 +2030,10 @@ fun SettingsScreen(
                 if (it && !keepAlive) { keepAlive = true; vm.setKeepAlive(true) }
             })
         }
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(G.x3))
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("完成语音播报", color = c.text, fontSize = 13.sp)
+                Text("完成语音播报", color = c.text, fontSize = T.body)
                 Text(
                     if (playVoice) "任务跑完时自动把整段回复念给你听（用系统播放器，不额外占内存）"
                     else "任务跑完只弹通知，不念内容",
@@ -2005,7 +2049,7 @@ fun SettingsScreen(
         // ── 保活：这台机型（realme/ColorOS）会把后台 App 直接杀掉（真机日志实测一天 8 次）。
         //    任务是跑在服务端的、不会丢，但后台进度与完成提醒会断；下面几步点一次即可显著改善。
         Spacer(Modifier.height(16.dp))
-        Text("保活（防被系统回收）", color = c.text, fontSize = 13.sp)
+        Text("保活（防被系统回收）", color = c.text, fontSize = T.body)
         Spacer(Modifier.height(4.dp))
         Text(
             "① 点「电池优化白名单」，在弹窗里选「允许」；\n" +
@@ -2014,24 +2058,24 @@ fun SettingsScreen(
             "做一次长期有效。没做的直接后果：后台任务跑完不提醒、切回来才看到结果。",
             color = c.dim, fontSize = 11.sp
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(G.x2))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinedButton(
                 onClick = { openBatteryWhitelist(ctx) },
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                shape = RoundedCornerShape(8.dp),
-            ) { Text("电池优化白名单", color = c.accent, fontSize = 13.sp) }
+                shape = RoundedCornerShape(Rad.pill),
+            ) { Text("电池优化白名单", color = c.accent, fontSize = T.body) }
             OutlinedButton(
                 onClick = { openAppDetails(ctx) },
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                shape = RoundedCornerShape(8.dp),
-            ) { Text("自启动 / 省电设置", color = c.accent, fontSize = 13.sp) }
+                shape = RoundedCornerShape(Rad.pill),
+            ) { Text("自启动 / 省电设置", color = c.accent, fontSize = T.body) }
         }
 
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(G.x3))
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("播报语速", color = c.text, fontSize = 13.sp)
+                Text("播报语速", color = c.text, fontSize = T.body)
                 Text(
                     "播放速度和文件无关，随时可改；下次播报即生效",
                     color = c.dim, fontSize = 11.sp
@@ -2052,7 +2096,7 @@ fun SettingsScreen(
         // ───────── 三、版本更新 ─────────
         Spacer(Modifier.height(22.dp))
         SectionTitle("版本更新")
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(G.x3))
         val hasUpdate by vm.updateBadge.collectAsStateWithLifecycle()
         Box(Modifier.fillMaxWidth()) {
             OutlinedButton(
@@ -2070,17 +2114,17 @@ fun SettingsScreen(
             }
         }
         if (updateNote.isNotEmpty()) {
-            Spacer(Modifier.height(8.dp))
-            Text(updateNote, color = c.dim, fontSize = 12.sp)
+            Spacer(Modifier.height(G.x2))
+            Text(updateNote, color = c.dim, fontSize = T.sub)
         }
         if (pct in 0..99) {
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(G.x3))
             LinearProgressIndicator(
                 progress = { pct / 100f },
                 modifier = Modifier.fillMaxWidth()
             )
             Spacer(Modifier.height(4.dp))
-            Text(dtext, color = c.dim, fontSize = 12.sp)
+            Text(dtext, color = c.dim, fontSize = T.sub)
         }
         Spacer(Modifier.height(6.dp))
         Text(
@@ -2091,10 +2135,10 @@ fun SettingsScreen(
         // ───────── 四、存储 ─────────
         Spacer(Modifier.height(22.dp))
         SectionTitle("存储")
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(G.x3))
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("清理缓存", color = c.text, fontSize = 13.sp)
+                Text("清理缓存", color = c.text, fontSize = T.body)
                 Text(
                     "当前占用 " + cacheText + "（待发图片 / 安装包 / 图片缓存）",
                     color = c.dim, fontSize = 11.sp
@@ -2104,11 +2148,11 @@ fun SettingsScreen(
             OutlinedButton(
                 onClick = { showClear = true },
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                shape = RoundedCornerShape(8.dp),
-            ) { Text("清理", color = c.accent, fontSize = 12.sp) }
+                shape = RoundedCornerShape(Rad.pill),
+            ) { Text("清理", color = c.accent, fontSize = T.sub) }
         }
-        Spacer(Modifier.height(8.dp))
-        Text("只清临时文件，不动聊天记录与设置", color = c.dim, fontSize = 11.sp)
+        Spacer(Modifier.height(G.x2))
+        Text("只清临时文件，不动聊天记录与设置", color = c.dim, fontSize = T.cap)
 
         // ───────── 五、排查诊断（默认折叠） ─────────
         Spacer(Modifier.height(22.dp))
@@ -2117,7 +2161,7 @@ fun SettingsScreen(
         Text(
             if (diagOpen) "▾ 收起（运行日志 / 闪退记录 / 服务故障记录）"
             else "▸ 展开（出问题时才用：运行日志 / 闪退记录 / 服务故障记录）",
-            color = c.accent, fontSize = 12.sp,
+            color = c.accent, fontSize = T.sub,
             modifier = Modifier.clickable { diagOpen = !diagOpen }
         )
         if (diagOpen) {
@@ -2130,26 +2174,26 @@ fun SettingsScreen(
                     logText = AppLog.tail(ctx, 300)
                 }
             }
-            Spacer(Modifier.height(14.dp))
-            Text("运行日志", color = c.text, fontSize = 13.sp)
+            Spacer(Modifier.height(G.x4))
+            Text("运行日志", color = c.text, fontSize = T.body)
             Spacer(Modifier.height(4.dp))
-            Text("连接/重连/发送/收流的每一步都记在这里；出问题时点「复制全文」发给我。", color = c.dim, fontSize = 11.sp)
-            Spacer(Modifier.height(8.dp))
+            Text("连接/重连/发送/收流的每一步都记在这里；出问题时点「复制全文」发给我。", color = c.dim, fontSize = T.cap)
+            Spacer(Modifier.height(G.x2))
             // 最新在最上面（用户 2026-10-09 反馈：原来最新在底部，想看新日志得往下滑半天）。
             val logShown = remember(logText) {
                 if (logText.isEmpty()) "" else logText.split('\n').asReversed().joinToString("\n")
             }
             Text(
                 if (logShown.isEmpty()) "（暂无日志）" else logShown,
-                color = c.text, fontSize = 10.sp,
+                color = c.text, fontSize = T.micro,
                 fontFamily = FontFamily.Monospace,
                 modifier = Modifier.fillMaxWidth()
                     .heightIn(max = 240.dp)
-                    .background(c.panel, RoundedCornerShape(8.dp))
+                    .background(c.panel, RoundedCornerShape(Rad.chip))
                     .verticalScroll(rememberScrollState())
                     .padding(8.dp)
             )
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(G.x2))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = {
@@ -2163,50 +2207,50 @@ fun SettingsScreen(
                         ).show()
                     },
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                    shape = RoundedCornerShape(8.dp),
-                ) { Text("复制全文", color = c.accent, fontSize = 12.sp) }
+                    shape = RoundedCornerShape(Rad.pill),
+                ) { Text("复制全文", color = c.accent, fontSize = T.sub) }
                 OutlinedButton(
                     onClick = { exportLogFile(ctx) },
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                    shape = RoundedCornerShape(8.dp),
-                ) { Text("导出文件", color = c.accent, fontSize = 12.sp) }
+                    shape = RoundedCornerShape(Rad.pill),
+                ) { Text("导出文件", color = c.accent, fontSize = T.sub) }
                 OutlinedButton(
                     onClick = { vm.uploadDiagNow() },
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                    shape = RoundedCornerShape(8.dp),
-                ) { Text("上报诊断", color = c.accent, fontSize = 12.sp) }
+                    shape = RoundedCornerShape(Rad.pill),
+                ) { Text("上报诊断", color = c.accent, fontSize = T.sub) }
                 OutlinedButton(
                     onClick = { AppLog.clear(ctx); logText = "" },
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                    shape = RoundedCornerShape(8.dp),
-                ) { Text("清除", color = c.dim, fontSize = 12.sp) }
+                    shape = RoundedCornerShape(Rad.pill),
+                ) { Text("清除", color = c.dim, fontSize = T.sub) }
             }
             Spacer(Modifier.height(6.dp))
             val diagNote by vm.diagNote.collectAsStateWithLifecycle()
             if (diagNote.isNotEmpty()) {
-                Text(diagNote, color = c.accent, fontSize = 11.sp)
+                Text(diagNote, color = c.accent, fontSize = T.cap)
                 Spacer(Modifier.height(4.dp))
             }
-            Text("「上报诊断」把日志和会话状态直接传给我——只在你点它时才传，不会自动上传、不占流量。", color = c.dim, fontSize = 11.sp)
+            Text("「上报诊断」把日志和会话状态直接传给我——只在你点它时才传，不会自动上传、不占流量。", color = c.dim, fontSize = T.cap)
 
             // 上次闪退记录：崩溃是进程被直接杀掉，只有落到这里才查得动。
             var crashText by remember { mutableStateOf(CrashLog.read(ctx)) }
             if (crashText.isNotEmpty()) {
                 Spacer(Modifier.height(16.dp))
-                Text("上次闪退记录", color = c.bad, fontSize = 13.sp)
+                Text("上次闪退记录", color = c.bad, fontSize = T.body)
                 Spacer(Modifier.height(4.dp))
-                Text("点「复制全文」发给我，就能定位到出错的代码行。", color = c.dim, fontSize = 11.sp)
-                Spacer(Modifier.height(8.dp))
+                Text("点「复制全文」发给我，就能定位到出错的代码行。", color = c.dim, fontSize = T.cap)
+                Spacer(Modifier.height(G.x2))
                 Text(
-                    crashText, color = c.text, fontSize = 10.sp,
+                    crashText, color = c.text, fontSize = T.micro,
                     fontFamily = FontFamily.Monospace,
                     modifier = Modifier.fillMaxWidth()
                         .heightIn(max = 200.dp)
-                        .background(c.panel, RoundedCornerShape(8.dp))
+                        .background(c.panel, RoundedCornerShape(Rad.chip))
                         .verticalScroll(rememberScrollState())
                         .padding(8.dp)
                 )
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(G.x2))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
                         onClick = {
@@ -2220,13 +2264,13 @@ fun SettingsScreen(
                             ).show()
                         },
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                        shape = RoundedCornerShape(8.dp),
-                    ) { Text("复制全文", color = c.accent, fontSize = 12.sp) }
+                        shape = RoundedCornerShape(Rad.pill),
+                    ) { Text("复制全文", color = c.accent, fontSize = T.sub) }
                     OutlinedButton(
                         onClick = { CrashLog.clear(ctx); crashText = "" },
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                        shape = RoundedCornerShape(8.dp),
-                    ) { Text("清除", color = c.dim, fontSize = 12.sp) }
+                        shape = RoundedCornerShape(Rad.pill),
+                    ) { Text("清除", color = c.dim, fontSize = T.sub) }
                 }
             }
 
@@ -2235,20 +2279,20 @@ fun SettingsScreen(
             var faultText by remember { mutableStateOf(CrashLog.readFault(ctx)) }
             if (faultText.isNotEmpty()) {
                 Spacer(Modifier.height(16.dp))
-                Text("服务故障记录", color = c.bad, fontSize = 13.sp)
+                Text("服务故障记录", color = c.bad, fontSize = T.body)
                 Spacer(Modifier.height(4.dp))
-                Text("前台服务启动失败的完整原因，点「复制全文」发给我。", color = c.dim, fontSize = 11.sp)
-                Spacer(Modifier.height(8.dp))
+                Text("前台服务启动失败的完整原因，点「复制全文」发给我。", color = c.dim, fontSize = T.cap)
+                Spacer(Modifier.height(G.x2))
                 Text(
-                    faultText, color = c.text, fontSize = 10.sp,
+                    faultText, color = c.text, fontSize = T.micro,
                     fontFamily = FontFamily.Monospace,
                     modifier = Modifier.fillMaxWidth()
                         .heightIn(max = 200.dp)
-                        .background(c.panel, RoundedCornerShape(8.dp))
+                        .background(c.panel, RoundedCornerShape(Rad.chip))
                         .verticalScroll(rememberScrollState())
                         .padding(8.dp)
                 )
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(G.x2))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
                         onClick = {
@@ -2262,13 +2306,13 @@ fun SettingsScreen(
                             ).show()
                         },
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                        shape = RoundedCornerShape(8.dp),
-                    ) { Text("复制全文", color = c.accent, fontSize = 12.sp) }
+                        shape = RoundedCornerShape(Rad.pill),
+                    ) { Text("复制全文", color = c.accent, fontSize = T.sub) }
                     OutlinedButton(
                         onClick = { CrashLog.clearFault(ctx); faultText = "" },
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                        shape = RoundedCornerShape(8.dp),
-                    ) { Text("清除", color = c.dim, fontSize = 12.sp) }
+                        shape = RoundedCornerShape(Rad.pill),
+                    ) { Text("清除", color = c.dim, fontSize = T.sub) }
                 }
             }
         }
@@ -2276,19 +2320,19 @@ fun SettingsScreen(
         // ───────── 退出登录 ─────────
         Spacer(Modifier.height(26.dp))
         HorizontalDivider(color = c.card)
-        Spacer(Modifier.height(14.dp))
+        Spacer(Modifier.height(G.x4))
         OutlinedButton(
             onClick = { prefs.loggedIn = false; onLogout() }, modifier = Modifier.fillMaxWidth()
         ) { Text("退出登录", color = c.bad) }
-        Spacer(Modifier.height(10.dp))
-        Text("退出后可重新选择身份", color = c.dim, fontSize = 11.sp)
+        Spacer(Modifier.height(G.x3))
+        Text("退出后可重新选择身份", color = c.dim, fontSize = T.cap)
     }
 
     if (showClear) {
         AlertDialog(
             onDismissRequest = { showClear = false },
             title = { Text("清理缓存") },
-            text = { Text("将清空待发图片、已下载安装包、图片缓存，共 " + cacheText + "。\n聊天记录与设置不受影响。", fontSize = 13.sp) },
+            text = { Text("将清空待发图片、已下载安装包、图片缓存，共 " + cacheText + "。\n聊天记录与设置不受影响。", fontSize = T.body) },
             confirmButton = {
                 TextButton(onClick = { vm.clearCache(); showClear = false }) { Text("清理") }
             },
@@ -2305,10 +2349,10 @@ fun SettingsScreen(
             title = { Text("发现新版本 " + info.versionName) },
             text = {
                 Column {
-                    Text("安装包大小：" + sizeText(info.size), fontSize = 13.sp)
+                    Text("安装包大小：" + sizeText(info.size), fontSize = T.body)
                     if (info.notes.isNotEmpty()) {
-                        Spacer(Modifier.height(8.dp))
-                        Text(info.notes, fontSize = 13.sp)
+                        Spacer(Modifier.height(G.x2))
+                        Text(info.notes, fontSize = T.body)
                     }
                 }
             },
