@@ -80,6 +80,19 @@ internal class SessionRuntime(val id: String) {
      * 起新轮时清空（新轮有自己的停止语义）。
      */
     @Volatile var stopIntentRid: String = ""
+    /**
+     * 本轮收尾元数据：usage / runId / 过程轨迹。收尾时记在会话上，**每次与服务端记录合并后**
+     * 由 withTurnMeta 重新挂到「最后一条助手消息」上。
+     *
+     * 为什么需要会话级兜底：合并（mergeByUserAnchor）按服务端顺序重建尾部，本轮最终答复
+     * 可能变成一条**服务端插入行**（实测 `合并补齐助手正文 本地块=1 服务端块=4 补入=3`），
+     * 那条新行天然没有 usage/runId/trace → 使用量行、过程行、语音播报按钮全丢
+     *（用户 2026-10-10 报「偶尔任务完成后不出现这些信息，包括语音播报按钮」）。
+     * 起新轮时清空：旧轮的元数据不许挂到新气泡上。
+     */
+    @Volatile var turnUsage: Usage? = null
+    @Volatile var turnRunId: String = ""
+    @Volatile var turnTrace: String = ""
     /** 这条 run 是重开 App 后从落盘标记恢复的（没有本地发送上下文，拿不到位置锚点）。 */
     @Volatile var resumed: Boolean = false
     @Volatile var startedAt: Long = 0L
