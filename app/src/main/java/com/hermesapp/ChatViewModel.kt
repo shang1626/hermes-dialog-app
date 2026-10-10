@@ -677,8 +677,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val cost = System.currentTimeMillis() - t0
             withContext(Dispatchers.Main.immediate) {
                 if (r.dead) { r.loading = false; return@withContext }
-                r.messages.value = capHistory(if (r.messages.value.isEmpty()) msgs
-                                   else mergeByUserAnchor(r.messages.value, msgs))
+                r.messages.value = capHistory(withTurnMeta(r, if (r.messages.value.isEmpty()) msgs
+                                   else mergeByUserAnchor(r.messages.value, msgs)))
                 r.loaded = true
                 r.loading = false
                 // 落盘里可能还有排队没发出去的消息（R05）：重开 App 接着发，别让它卡在「排队中」。
@@ -1646,9 +1646,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // 改用两边都完整保留、且有序的「用户消息」做锚点，见 mergeByUserAnchor。
                 val local = r.messages.value
                 val merged = mergeByUserAnchor(local, list)
+                // 合并可能把本轮最终答复换成服务端插入行（那条行没有 usage/runId/过程轨迹），
+                // 合并后按会话级收尾元数据补挂一遍：使用量行、过程行、语音按钮都靠它。
+                val merged2 = withTurnMeta(r, merged)
                 // 统一走 setMsgs（唯一写入口 + 去抖落盘）：原来这里直接赋值 + 另开一次写盘，
                 // 与 saveRuntime 并发写同一个消息文件，谁后落盘谁赢，会丢正文。
-                setMsgs(r, merged)
+                setMsgs(r, merged2)
                 r.loaded = true
                 // 本地基线推进到服务端那一份：不回写的话回前台对齐永远判「服务端更新」，
                 // 同一批会话每 30 秒被重拉一次。
@@ -2585,6 +2588,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 本轮轮次号：这次发送的「身份证」。之后任何共享状态的写入都要先对号
         // （见 ownsTurn 与 RuntimeHub.SessionRuntime.sendGen）：迟到的旧轮不得接管会话（F04）。
         val gen = ++r.sendGen
+        // 上一轮的收尾元数据到此为止：不许挂到本轮的新气泡上（见 withTurnMeta）。
+        r.turnUsage = null
+        r.turnRunId = ""
+        r.turnTrace = ""
         // 本轮计时起点先定好：气泡与最终耗时都锚在它上面，中途气泡被重建也不会漂。
         r.startedAt = stamp()
         setMsgs(r, r.messages.value + Msg("assistant", "", pending = true, ts = stamp(), startedAt = r.startedAt))
@@ -2941,10 +2948,41 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         )
         // 只有耗时（token 全 0）的轮次也要挂上：耗时本身就是用户要看的统计。
         if (usage.total <= 0 && usage.input <= 0 && usage.output <= 0 && usage.durationMs <= 0) return
+        // 会话级记一份：合并把最终答复换成服务端插入行后，由 withTurnMeta 重挂（否则那条
+        // 新行没有使用量行）。
+        r.turnUsage = usage
+        r.turnTrace = r.messages.value.lastOrNull { it.role == "assistant" }?.trace.orEmpty()
         val list = r.messages.value.toMutableList()
         val i = list.indexOfLast { it.role == "assistant" }
         if (i >= 0) list[i] = list[i].copy(usage = usage)
         setMsgs(r, list)
+    }
+
+    /**
+     * 把本轮收尾元数据（usage / runId / 过程轨迹）挂到**最后一条助手消息**上。
+     *
+     * 为什么要在「与服务端记录合并」之后再做一遍：合并（`mergeByUserAnchor`）按服务端顺序
+     * 重建尾部，本轮最终答复可能变成一条**服务端插入行**（实测日志 `合并补齐助手正文
+     * 本地块=1 服务端块=4 补入=3`），那条新行天然没有 usage/runId/trace——使用量行、
+     * 「过程(N 步)」、语音播报按钮就全丢了（用户 2026-10-10 报「偶尔任务完成后不出现这些
+     * 信息，包括语音播报按钮」）。收尾时把元数据留在会话上（turnUsage/turnRunId/turnTrace），
+     * 合并后重挂到最后一条助手消息即可；只在对方缺项时补，不覆盖已有值。
+     */
+    private fun withTurnMeta(r: SessionRuntime, list: List<Msg>): List<Msg> {
+        val u = r.turnUsage
+        val rid = r.turnRunId
+        val tr = r.turnTrace
+        if (u == null && rid.isEmpty() && tr.isEmpty()) return list
+        val i = list.indexOfLast { it.role == "assistant" }
+        if (i < 0) return list
+        val cur = list[i]
+        val nu = cur.usage ?: u
+        val nr = if (cur.runId.isEmpty()) rid else cur.runId
+        val nt = if (cur.trace.isEmpty()) tr else cur.trace
+        if (nu === cur.usage && nr == cur.runId && nt == cur.trace) return list
+        val out = list.toMutableList()
+        out[i] = cur.copy(usage = nu, runId = nr, trace = nt)
+        return out
     }
 
     /** 正在发送回执的卡片消息 id：防连点重复 POST，发完（无论成败）都放回。 */
@@ -3628,6 +3666,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun tagLastAssistantRunId(r: SessionRuntime, runId: String) {
         if (runId.isEmpty()) return
+        // 会话级也记一份：合并后重挂用（见 withTurnMeta）。语音播报按钮靠它。
+        r.turnRunId = runId
         val list = r.messages.value.toMutableList()
         val i = list.indexOfLast { it.role == "assistant" }
         if (i < 0 || list[i].runId.isNotEmpty()) return

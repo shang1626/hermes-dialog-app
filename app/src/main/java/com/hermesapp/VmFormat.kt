@@ -20,9 +20,25 @@ internal fun diagText(e: Throwable): String {
     val n = e.javaClass.simpleName
     return if (m.isNullOrBlank()) n else n + ": " + m
 }
-internal fun parseTs(s: String): Long = runCatching {
-    java.time.OffsetDateTime.parse(s).toInstant().toEpochMilli()
-}.getOrDefault(0L)
+/**
+ * 时间戳解析。两处来源格式不同，都得认：
+ *  - 服务端 `/api/sessions/{id}/messages` 的 `timestamp` 是**浮点秒**
+ *    （如 `1791557363.3028529`）——旧实现只 `OffsetDateTime.parse`，解析失败一律回落 0，
+ *    结果**所有服务端来源的消息都没有时间**（用户 2026-10-10 报「这些信息偶尔不出现」里
+ *    就含时间行）。
+ *  - 其他接口（会话列表等）给的是 ISO 字符串。
+ * 纯数字按秒解释（> 1e11 视为已经是毫秒），否则当 ISO。
+ */
+internal fun parseTs(s: String): Long {
+    val t = s.trim()
+    if (t.isEmpty()) return 0L
+    t.toDoubleOrNull()?.let { v ->
+        if (v <= 0.0) return 0L
+        return if (v > 1e11) v.toLong() else (v * 1000.0).toLong()
+    }
+    return runCatching { java.time.OffsetDateTime.parse(t).toInstant().toEpochMilli() }
+        .getOrDefault(0L)
+}
 internal fun fmtMb(mb: Int): String =
     if (mb >= 1024) String.format("%.1f GB", mb / 1024.0) else mb.toString() + " MB"
 internal fun fmtSize(b: Long): String = when {
