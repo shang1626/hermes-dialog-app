@@ -88,6 +88,19 @@ object StreamVoicePlayer {
 
     private val dropped = ConcurrentHashMap.newKeySet<String>()
 
+    /**
+     * 每个 key 被丢弃的音频块数 + 是谁摘掉的。
+     *
+     * 为什么要计数：条目一旦被摘掉（跳过 / 停止 / 让位 / 手动重播），这个 run 后续到达的
+     * 块就全部写不进去。旧代码只对每个 key 打一行日志、还不记数量，真机上报里只能看到
+     * 「块到了但条目没了」，既不知道是谁摘的（五条摘除路径原先一条日志都没有），
+     * 也不知道丢了多少 —— 2026-10-10 那次上报就是因为这个查不出定论。
+     */
+    private val droppedBlocks = ConcurrentHashMap<String, Int>()
+
+    /** 记一条「摘除原因」，随最后一块的收尾日志一起打出去。 */
+    private val removalReason = ConcurrentHashMap<String, String>()
+
     /** 主线程 Handler：所有 ExoPlayer 操作都投到这里执行。 */
     private val main = Handler(Looper.getMainLooper())
 
@@ -133,8 +146,10 @@ object StreamVoicePlayer {
         val it = items[key]
         val r = it?.raf
         if (it == null || r == null) {
+            val n = droppedBlocks.merge(key, 1) { a, b -> a + b } ?: 1
             if (dropped.add(key)) {
-                AppLog.log("voice", "音频块到达但无对应条目 key=" + key + "（begin 未生效或已被取消）")
+                AppLog.log("voice", "音频块到达但无对应条目 key=" + key +
+                    "（begin 未生效或条目已被摘除，第 " + n + " 块）")
             }
             return
         }
@@ -158,6 +173,12 @@ object StreamVoicePlayer {
     /** 收到 audio.end：标记写完；轮到它时 pump 会起播（数据源读到末尾自然收尾）。 */
     fun end(ctx: Context, key: String) {
         items[key]?.ended = true
+        // 收尾时把「丢了多少块、是谁摘的」一次说清：有这条，下次上报就能直接定案。
+        val lost = droppedBlocks.remove(key) ?: 0
+        if (lost > 0) {
+            AppLog.log("voice", "语音流结束但已丢弃 " + lost + " 块 key=" + key +
+                " 摘除原因=" + (removalReason.remove(key) ?: "未知（不在本进程的摘除路径里）"))
+        }
         pump()
     }
 
@@ -181,6 +202,8 @@ object StreamVoicePlayer {
             val len = it.file.length()
             if (len <= 0L) {
                 if (it.ended) {          // 空音频：丢掉，别堵住队列
+                    AppLog.log("voice", "空语音丢弃 key=" + k + "（收尾了但一个字节都没有）")
+                    removalReason[k] = "空音频"
                     order.removeFirst()
                     items.remove(k)
                     closeItem(it)
@@ -214,6 +237,8 @@ object StreamVoicePlayer {
     fun yieldAndDrop() {
         val k = activeKey
         if (k.isEmpty()) return
+        AppLog.log("voice", "语音让位并摘除 key=" + k + "（外部播放器要出声）")
+        removalReason[k] = "让位给外部播放器"
         val it = items.remove(k)
         order.remove(k)
         activeKey = ""
@@ -232,6 +257,8 @@ object StreamVoicePlayer {
     fun skipCurrent() {
         val k = activeKey
         if (k.isEmpty()) return
+        AppLog.log("voice", "语音跳过 key=" + k + "（点了提示条的「跳过」）")
+        removalReason[k] = "用户点了「跳过」"
         val it = items.remove(k)
         order.remove(k)
         activeKey = ""
@@ -253,6 +280,8 @@ object StreamVoicePlayer {
         val keys = items.values.filter { it.runId == runId }.map { it.key }
         for (k in keys) {
             val it = items.remove(k) ?: continue
+            AppLog.log("voice", "语音取消排队 key=" + k + "（用户手动重播了这一轮）")
+            removalReason[k] = "用户手动重播"
             order.remove(k)
             if (activeKey == k) {
                 activeKey = ""
@@ -353,6 +382,10 @@ object StreamVoicePlayer {
     /** 停止全部流式播放并清空队列（用户按停止 / 关掉语音开关）。 */
     @Synchronized
     fun stop() {
+        if (items.isNotEmpty()) {
+            AppLog.log("voice", "语音停止全部 条目=" + items.size + " 在播=" + activeKey.isNotEmpty())
+            items.keys.forEach { removalReason[it] = "停止全部（消息按钮或关掉播报开关）" }
+        }
         val olds = items.values.map { it.player }
         val rafs = items.values.map { it.raf }
         items.values.forEach {

@@ -2716,8 +2716,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 if (!ownsTurn(gen, r.sendGen, r.finished, r.stopRequested)) {
                     AppLog.log("send", "旧轮异常迟到，只更新自己的回执（不碰会话）gen=" + gen +
                         " cur=" + r.sendGen + " 内容=" + msg.take(140))
-                    if (httpReject) advanceReceipt(sid, receiptMsgId, Receipt.FAILED, note = msg)
-                    else advanceReceipt(sid, receiptMsgId, Receipt.UNCERTAIN, note = msg)
+                    if (httpReject) advanceReceipt(sid, receiptMsgId, Receipt.FAILED, note = HttpNote.friendly(msg))
+                    else advanceReceipt(sid, receiptMsgId, Receipt.UNCERTAIN, note = HttpNote.friendly(msg))
                     return@launch
                 }
                 _imageNote.value = ""
@@ -2744,14 +2744,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // 重试用尽仍收不到回执 = 标「不确定」等用户处置（此时仍可手动重发，也安全）。
                 dropEmptyPending(r)
                 if (httpReject) {
-                    advanceReceipt(sid, receiptMsgId, Receipt.FAILED, note = msg)
+                    advanceReceipt(sid, receiptMsgId, Receipt.FAILED, note = HttpNote.friendly(msg))
                 } else {
                     // 5xx / 超时 / 网络中断：服务端可能已收下，一律按「不确定」等用户处置（R09）。
                     r.retryNote.value = if (httpCode != null)
                         "服务端返回 " + httpCode + "，结果不确定：可能已收下，可重发（不会重复）"
                     else
                         "发送结果不确定：网络中断，服务端可能已收下，可重发（不会重复）"
-                    advanceReceipt(sid, receiptMsgId, Receipt.UNCERTAIN, note = msg)
+                    advanceReceipt(sid, receiptMsgId, Receipt.UNCERTAIN, note = HttpNote.friendly(msg))
                 }
                 failPending(sid)
             }
