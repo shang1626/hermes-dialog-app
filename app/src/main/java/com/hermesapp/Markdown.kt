@@ -541,25 +541,32 @@ fun VoiceReplayMiniButton(runId: String, inlineTarget: String = "", modifier: Mo
     val ctx = LocalContext.current
     val c = LocalAppColors.current
     val playing by VoiceReplayPlayer.nowPlaying.collectAsStateWithLifecycle()
-    // 完成语音的**自动播报**走的是 VoicePlayer（按正文里的内联音频附件），不是重播播放器。
-    // 原来这里只看重播状态：自动播报正响着这条时按钮却一直是 ▶，点它走 toggle→重播，
-    // 把同一句从头再放一遍——用户报「任务结束后的首次语音播报没法立即停止」（2026-10-10）。
-    // 现在同时盯两个播放器：内联自动播报在响这条时也亮成 ■，点了停的就是它。
+    // 同一条语音可能由**三个**播放器之一在响，按钮必须全都认得，谁在响这条就亮 ■、
+    // 点了停谁——只盯自己那套就会「正响着这条时按钮一直是 ▶，点它反而从头重播一遍」：
+    // - 流式自动播报（任务跑完在后台自动念的）→ StreamVoicePlayer，key = "stream:<runId>"；
+    //   用户报「任务结束后的首次语音播报没法立即停止」（2026-10-10，2.172 只修了下面
+    //   两种、漏了这种主路径）。点 ■ = 停全部并清队列（与既有「停止」语义一致）。
+    // - 完成语音附件（老消息内联 base64/托管 token）→ VoicePlayer，按 inlineTarget。
+    // - 手动重播 → VoiceReplayPlayer，按 runId。
     val inlineNow by VoicePlayer.nowPlaying.collectAsStateWithLifecycle()
     val inlinePlaying = inlineTarget.isNotEmpty() && inlineNow == inlineTarget
+    val streamNow by StreamVoicePlayer.nowPlaying.collectAsStateWithLifecycle()
+    val streamPlaying = runId.isNotEmpty() && streamNow == "stream:" + runId
     val isThis = runId.isNotEmpty() && playing == runId
+    val active = isThis || inlinePlaying || streamPlaying
     Icon(
-        imageVector = if (isThis || inlinePlaying) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
-        contentDescription = if (isThis || inlinePlaying) "停止播放" else "播放语音",
-        tint = if (isThis || inlinePlaying) c.accent else c.dim,
+        imageVector = if (active) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
+        contentDescription = if (active) "停止播放" else "播放语音",
+        tint = if (active) c.accent else c.dim,
         modifier = modifier
             .size(16.dp)
             .clip(CircleShape)
             .clickable(enabled = runId.isNotEmpty() || inlineTarget.isNotEmpty()) {
                 when {
-                    inlinePlaying -> VoicePlayer.stop()          // 停自动播报
-                    isThis -> VoiceReplayPlayer.stop()           // 停手动重播
-                    else -> VoiceReplayPlayer.toggle(ctx, runId) // 都没在响：重播
+                    streamPlaying -> StreamVoicePlayer.stop()    // 停流式自动播报（停全部清队列）
+                    inlinePlaying -> VoicePlayer.stop()           // 停完成附件播报
+                    isThis -> VoiceReplayPlayer.stop()            // 停手动重播
+                    else -> VoiceReplayPlayer.toggle(ctx, runId)  // 都没在响：重播
                 }
             }
     )
