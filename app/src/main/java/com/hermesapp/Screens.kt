@@ -1803,43 +1803,41 @@ fun JobCard(j: JobItem, onAction: (String) -> Unit) {
                     )
                 }
             }
-            // ── 压缩（2026-10-10 用户要求「任务卡片行数缩小」）──
-            // 原来「排期 / 上次 / 下次」各占一行，加上说明与最近执行，一张卡片七八行。
-            // 现在默认只留一行摘要，其余全部收进下面的「详情」。
-            val summary = buildList {
+            // ── 默认四行（2026-10-10 第二轮反馈：压成一行会被截断）──
+            // 第 1 行标题+状态胶囊；第 2 行「下次 · 上次」；第 3 行「排期 · 已跑」；
+            // 第 4 行按钮（小描边 chip，不再用 Material 大按钮——它带 48dp 触控热区，
+            // 视觉上明显偏大）。细节仍在「详情」里，展开才占空间。
+            val line2 = buildList {
                 if (j.nextRun.isNotEmpty()) add("下次 " + j.nextRun)
                 if (j.lastRun.isNotEmpty()) {
                     add("上次 " + j.lastRun + (if (j.lastStatus.isNotEmpty()) " " + j.lastStatus else ""))
                 }
-                if (j.schedule.isNotEmpty()) add("排期 " + j.schedule)
             }.joinToString("   ·   ")
-            if (summary.isNotEmpty()) {
+            val line3 = buildList {
+                if (j.schedule.isNotEmpty()) add("排期 " + j.schedule)
+                if (j.repeatDone > 0) add("已跑 " + j.repeatDone + " 次")
+            }.joinToString("   ·   ")
+            if (line2.isNotEmpty()) {
                 Spacer(Modifier.height(G.x1))
                 Text(
-                    summary, color = c.dim, fontSize = T.micro,
+                    line2, color = c.dim, fontSize = T.micro,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
             }
-            Spacer(Modifier.height(G.x3))
+            if (line3.isNotEmpty()) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    line3, color = c.dim, fontSize = T.micro,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Spacer(Modifier.height(G.x2))
             Row(horizontalArrangement = Arrangement.spacedBy(G.x2)) {
-                OutlinedButton(
-                    onClick = { onAction(if (j.enabled) "pause" else "resume") },
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                    shape = RoundedCornerShape(Rad.pill),
-                    border = BorderStroke(1.dp, c.border),
-                ) { Text(if (j.enabled) "暂停" else "恢复", color = c.accent, fontSize = T.sub) }
-                OutlinedButton(
-                    onClick = { onAction("run") },
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                    shape = RoundedCornerShape(Rad.pill),
-                    border = BorderStroke(1.dp, c.border),
-                ) { Text("立即执行", color = c.accent, fontSize = T.sub) }
-                OutlinedButton(
-                    onClick = { open = !open },
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                    shape = RoundedCornerShape(Rad.pill),
-                    border = BorderStroke(1.dp, c.border),
-                ) { Text(if (open) "收起 ˄" else "详情 ˅", color = c.accent, fontSize = T.sub) }
+                JobChip(if (j.enabled) "暂停" else "恢复", c.accent) {
+                    onAction(if (j.enabled) "pause" else "resume")
+                }
+                JobChip("立即执行", c.accent) { onAction("run") }
+                JobChip(if (open) "收起 ˄" else "详情 ˅", c.accent) { open = !open }
             }
 
             // ── 详情（2026-10-10 新增「任务描述详情」）──
@@ -1903,15 +1901,10 @@ fun JobCard(j: JobItem, onAction: (String) -> Unit) {
                             .verticalScroll(rememberScrollState()),
                     )
                 }
-                Spacer(Modifier.height(G.x3))
+                Spacer(Modifier.height(G.x2))
                 // 删除任务：不可恢复，描边红字 + 二次确认（用户 2026-10-10 要求新增）。
-                OutlinedButton(
-                    onClick = { confirmDelete = true },
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                    shape = RoundedCornerShape(Rad.pill),
-                    border = BorderStroke(1.dp, c.bad.copy(alpha = 0.55f)),
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("删除任务", color = c.bad, fontSize = T.sub) }
+                // 同样用小 chip —— Material 大按钮带 48dp 热区，视觉上太大。
+                JobChip("删除任务", c.bad) { confirmDelete = true }
             }
         }
     }
@@ -1948,6 +1941,28 @@ private fun JobMeta(label: String, value: String) {
     Row(Modifier.fillMaxWidth().padding(vertical = 1.dp)) {
         Text(label, color = c.faint, fontSize = T.cap, modifier = Modifier.width(46.dp))
         Text(value, color = c.dim, fontSize = T.cap, modifier = Modifier.weight(1f))
+    }
+}
+
+/**
+ * 任务卡上的小操作按钮：描边胶囊 + 最小字号（约 22dp 高）。
+ *
+ * 为什么不用 Material 的 OutlinedButton：它内置 48dp 最小触控热区，任务卡上三个并排时
+ * 视觉上明显偏大（用户 2026-10-10 反馈「按钮太大了」）。这里手工做一个同款描边小 chip，
+ * 视觉小一号、仍然有描边（符合「按钮禁实色大块、要描边小按钮」的既有偏好）。
+ */
+@Composable
+private fun JobChip(label: String, color: Color, onClick: () -> Unit) {
+    val c = LocalAppColors.current
+    val shape = RoundedCornerShape(Rad.pill)
+    Box(
+        Modifier
+            .clip(shape)
+            .border(BorderStroke(1.dp, c.border), shape)
+            .clickable { onClick() }
+            .padding(horizontal = 10.dp, vertical = 3.dp)
+    ) {
+        Text(label, color = color, fontSize = T.micro)
     }
 }
 
