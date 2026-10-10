@@ -27,6 +27,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Menu
+import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.runtime.*
@@ -54,62 +56,107 @@ data class AppColors(
     val bg: Color,
     val panel: Color,
     val card: Color,
+    val cardAlt: Color,
     val accent: Color,
+    val accentSoft: Color,
+    val onAccent: Color,
+    val link: Color,
     val dim: Color,
+    val faint: Color,
+    val border: Color,
+    val borderSoft: Color,
     val ok: Color,
     val warn: Color,
     val bad: Color,
     val text: Color,
     val userBubble: Color,
     val userText: Color,
+    val userBorder: Color,
+    val bubble: Color,
+    val bubbleBorder: Color,
 )
 
-/** 深色：与旧版逐色一致，保证夜间观感零变化 */
+/**
+ * 深色：夜间主用。
+ * 新增角色（cardAlt / border / borderSoft / bubble / bubbleBorder / accentSoft / faint）是为了
+ * 让「面与面之间」有可分辨的层次 —— 旧版助手气泡用 panel、背景用 bg，两者只差一档亮度，
+ * 整屏看起来是一块平的灰。
+ */
 val DarkColors = AppColors(
     bg = Color(0xFF0F1115),
     panel = Color(0xFF171A21),
     card = Color(0xFF1E2530),
+    cardAlt = Color(0xFF232B38),
     accent = Color(0xFF56A5FF),
-    dim = Color(0xFF9BA3B3),
+    accentSoft = Color(0xFF1B2C44),
+    onAccent = Color(0xFFFFFFFF),
+    link = Color(0xFF79BAFF),
+    dim = Color(0xFFA3ABBA),
+    faint = Color(0xFF71798A),
+    border = Color(0xFF33404F),
+    borderSoft = Color(0xFF242C38),
     ok = Color(0xFF3FB950),
     warn = Color(0xFFD29922),
     bad = Color(0xFFFA7D77),
     text = Color(0xFFE6EAF2),
     userBubble = Color(0xFF1E3A5F),
     userText = Color(0xFFE6EAF2),
+    userBorder = Color(0xFF2C527E),
+    bubble = Color(0xFF1A1F28),
+    bubbleBorder = Color(0xFF28313D),
 )
 
-/** 浅色：GitHub Light 系，白天可读 */
+/** 浅色：GitHub Light 系，白天可读。 */
 val LightColors = AppColors(
     bg = Color(0xFFF6F8FA),
     panel = Color(0xFFFFFFFF),
     card = Color(0xFFEAEEF2),
+    cardAlt = Color(0xFFF1F4F8),
     accent = Color(0xFF0966D4),
+    accentSoft = Color(0xFFE7F0FC),
+    onAccent = Color(0xFFFFFFFF),
+    link = Color(0xFF0966D4),
     dim = Color(0xFF5C6670),
+    faint = Color(0xFF8A93A0),
+    border = Color(0xFFD3DAE3),
+    borderSoft = Color(0xFFE6EAF0),
     ok = Color(0xFF197935),
     warn = Color(0xFF906000),
     bad = Color(0xFFCD222E),
     text = Color(0xFF1F2328),
     userBubble = Color(0xFFDDEBFF),
     userText = Color(0xFF1F2328),
+    userBorder = Color(0xFFB9D2F2),
+    bubble = Color(0xFFFFFFFF),
+    bubbleBorder = Color(0xFFDFE5EC),
 )
 
 /**
- * 护眼：暖米黄纸感底色 + 暖灰文字，压低蓝光与对比度，长时间看不刺眼。
+ * 护眼：暖色纸感。
  * 不是纯黑也不是纯白——纯白在暗环境里最累眼，纯黑在大段文字下反差过强。
  */
 val EyeColors = AppColors(
     bg = Color(0xFFF4EFE3),
     panel = Color(0xFFFCF9F1),
     card = Color(0xFFE7E1D2),
+    cardAlt = Color(0xFFEFE9DB),
     accent = Color(0xFF376E61),
+    accentSoft = Color(0xFFE2EAE4),
+    onAccent = Color(0xFFFFFFFF),
+    link = Color(0xFF2F6154),
     dim = Color(0xFF6A6458),
+    faint = Color(0xFF8B8474),
+    border = Color(0xFFD5CDBA),
+    borderSoft = Color(0xFFE4DDCC),
     ok = Color(0xFF3A703A),
     warn = Color(0xFF835E00),
     bad = Color(0xFFAF3F2D),
     text = Color(0xFF3A3730),
     userBubble = Color(0xFFDCE8DF),
     userText = Color(0xFF2E2B26),
+    userBorder = Color(0xFFC6D3C6),
+    bubble = Color(0xFFFCF9F1),
+    bubbleBorder = Color(0xFFE0D8C6),
 )
 
 val LocalAppColors = staticCompositionLocalOf { DarkColors }
@@ -274,29 +321,49 @@ fun HermesApp(vm: ChatViewModel, prefs: Prefs) {
 
     val scheme = if (dark) darkColorScheme(
         primary = c.accent,
-        onPrimary = Color.White,
+        onPrimary = c.onAccent,
+        primaryContainer = c.accentSoft,
+        onPrimaryContainer = c.accent,
+        secondary = c.accent,
+        onSecondary = c.onAccent,
+        secondaryContainer = c.accentSoft,
+        onSecondaryContainer = c.accent,
         background = c.bg,
         onBackground = c.text,
         surface = c.panel,
         onSurface = c.text,
         surfaceVariant = c.card,
         onSurfaceVariant = c.dim,
-        outline = c.dim,
+        outline = c.border,
+        outlineVariant = c.borderSoft,
         error = c.bad,
+        onError = c.onAccent,
+        errorContainer = c.card,
+        onErrorContainer = c.bad,
     ) else lightColorScheme(
         primary = c.accent,
-        onPrimary = Color.White,
+        onPrimary = c.onAccent,
+        primaryContainer = c.accentSoft,
+        onPrimaryContainer = c.accent,
+        secondary = c.accent,
+        onSecondary = c.onAccent,
+        secondaryContainer = c.accentSoft,
+        onSecondaryContainer = c.accent,
         background = c.bg,
         onBackground = c.text,
         surface = c.panel,
         onSurface = c.text,
         surfaceVariant = c.card,
         onSurfaceVariant = c.dim,
-        outline = c.dim,
+        outline = c.border,
+        outlineVariant = c.borderSoft,
         error = c.bad,
+        onError = c.onAccent,
+        errorContainer = c.card,
+        onErrorContainer = c.bad,
     )
 
-    MaterialTheme(colorScheme = scheme) {
+    MaterialTheme(colorScheme = scheme, typography = AppTypography, shapes = AppShapes) {
         CompositionLocalProvider(LocalAppColors provides c) {
             Surface(color = c.bg, modifier = Modifier.fillMaxSize()) {
                 when {
@@ -584,45 +651,53 @@ fun TopBar(vm: ChatViewModel, prefs: Prefs, tab: Int, onMenu: () -> Unit) {
     var subOpen by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().background(c.panel)) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+        Modifier.fillMaxWidth().padding(horizontal = G.x3, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            "☰", fontSize = 20.sp, color = c.accent,
-            modifier = Modifier.clickable { onMenu() }.padding(horizontal = 6.dp, vertical = 2.dp)
+        Icon(
+            Icons.Outlined.Menu,
+            contentDescription = "菜单",
+            tint = c.text,
+            modifier = Modifier.size(24.dp).clickable { onMenu() }.padding(2.dp)
         )
-        Spacer(Modifier.width(10.dp))
-        Text(title, color = c.text, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.width(G.x3))
+        Text(title, color = c.text, fontSize = T.title, fontWeight = T.heavy)
         if (tab == 0) {
             // 「子任务 N」挤进这一行（标题右侧）；右侧 Spacer(weight) 顶住，
             // 搜索与在线原位不动，没有子任务时它不出现、顶栏不变。
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(G.x2))
             SubagentChip(vm, subOpen) { subOpen = !subOpen }
         }
         Spacer(Modifier.weight(1f))
-        // 右侧三项等距：搜索 · 在线圆点 · CPU%。原来各带自己的 padding（6 / 10 / 12dp），
-        // 间隔不均匀、看着不齐；统一按 14dp 一个间隔排（用户 2026-10-09 要求重排）。
+        // 右侧：搜索 · 在线圆点 · CPU%。圆点与 CPU 合成一个淡底小胶囊，
+        // 与标题、搜索拉开层次（原来三样各自裸排，整行显乱）。
         if (tab == 0) {
             Text(
-                "搜索", color = c.accent, fontSize = 13.sp,
-                modifier = Modifier.clickable { vm.toggleSearch() }.padding(horizontal = 4.dp, vertical = 2.dp)
+                "搜索", color = c.accent, fontSize = T.sub,
+                modifier = Modifier.clickable { vm.toggleSearch() }.padding(horizontal = 4.dp, vertical = 4.dp)
             )
+            Spacer(Modifier.width(G.x2))
         }
-        Spacer(Modifier.width(14.dp))
-        Text("●", color = if (online) c.ok else c.bad, fontSize = 12.sp)
-        // 圆点右边：服务器 CPU 使用率，只显百分比、不带文字标签；颜色随负载变
-        //（低绿 / 中黄 / 高红）。值取到 -1（还没拉到）时不占位。
         val cpu by vm.cpuPercent.collectAsStateWithLifecycle()
-        if (cpu >= 0) {
-            Spacer(Modifier.width(14.dp))
-            val cpuColor = when {
-                cpu >= 80 -> c.bad
-                cpu >= 50 -> c.warn
-                else -> c.ok
+        Row(
+            Modifier.clip(RoundedCornerShape(Rad.pill)).background(c.cardAlt)
+                .padding(horizontal = 8.dp, vertical = 3.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("●", color = if (online) c.ok else c.bad, fontSize = T.cap)
+            if (cpu >= 0) {
+                Spacer(Modifier.width(6.dp))
+                val cpuColor = when {
+                    cpu >= 80 -> c.bad
+                    cpu >= 50 -> c.warn
+                    else -> c.ok
+                }
+                Text(cpu.toInt().toString() + "%", color = cpuColor, fontSize = T.micro)
             }
-            Text(cpu.toInt().toString() + "%", color = cpuColor, fontSize = 12.sp)
         }
     }
+    // 顶栏与内容之间一条极淡分隔线：原来靠底色差区分，滚动时看着糊在一起。
+    Box(Modifier.fillMaxWidth().height(1.dp).background(c.borderSoft))
     // 展开的明细挂在那一行下面；收起状态下一行都不渲染。
     if (tab == 0 && subOpen) SubagentList(vm)
     }
