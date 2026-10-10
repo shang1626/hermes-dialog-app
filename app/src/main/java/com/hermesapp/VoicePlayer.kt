@@ -37,6 +37,14 @@ object VoicePlayer {
     @Volatile
     private var gen: Int = 0
 
+    /**
+     * 起播/停止的提交锁（照搬 VoiceReplayPlayer 的 R12/F16 修法）：stop() 与 play() 的
+     * 提交点走同一把锁。没有它，用户在「取字节/准备」期间点的停止会被**迟到的起播**盖掉
+     * ——停止只清了当时的 player（还是 null），随后 fetch 线程过了代际检查、径直 start()，
+     * 音频照样响、界面又亮回 ■，看起来就是「点了停止没用」（2026-10-10 用户报障的另一半）。
+     */
+    private val lock = Any()
+
     /** 音频扩展名：这类附件渲染成播放按钮，不显示成文件卡片。 */
     private val AUDIO_EXT = Regex("\\.(mp3|m4a|aac|wav|ogg|opus)$", RegexOption.IGNORE_CASE)
 
@@ -107,20 +115,17 @@ object VoicePlayer {
                 AppLog.log("voice", "取字节完成但已被停止/切换取代，放弃播放")
                 return@Thread
             }
-            play(ctx, target, bytes)
+            play(ctx, target, bytes, myGen)
         }.start()
     }
 
-    private fun play(ctx: Context, target: String, bytes: ByteArray) {
+    private fun play(ctx: Context, target: String, bytes: ByteArray, myGen: Int) {
         try {
-            // 只本地释放，不走公开 stop()：它会给流式队列发「让位结束」信号，
-            // 可能把刚让位的语音又拉起来从头播。详见 StreamVoicePlayer.yieldAndDrop。
-            releaseCurrent()
-            _nowPlaying.value = target
+            // 准备阶段只碰局部变量（照搬 VoiceReplayPlayer 的 R12 修法）：锁外不许
+            // 释放旧句柄、改 nowPlaying、发布 player——迟到的线程不许动别人的状态。
             val f = File(ctx.cacheDir, "completion_voice.mp3")
             f.writeBytes(bytes)
             val mp = MediaPlayer()
-            player = mp
             mp.setDataSource(f.absolutePath)
             mp.setOnCompletionListener {
                 runCatching { it.release() }
@@ -148,14 +153,28 @@ object VoicePlayer {
             if (r != 1.0f) {
                 runCatching { mp.playbackParams = mp.playbackParams.setSpeed(r.coerceIn(0.5f, 2.0f)) }
             }
-            // 申请音频焦点：不申请的话，播语音不会压低正在放的音乐/视频，两条叠着响。
-            AudioFocus.request(ctx)
-            mp.start()
+            // 提交点：锁内最后一次对号，原子地「释放旧句柄 + 登记播放器 + 请求焦点 + 起播」。
+            // stop() 走同一把锁，所以「检查通过之后用户才点停止，旧线程照样出声」不会再发生
+            //（这正是「任务结束后的首次语音播报没法立即停止」的竞态一半）。
+            synchronized(lock) {
+                if (myGen != gen) {
+                    runCatching { mp.release() }
+                    AppLog.log("voice", "起播放弃（起播前已被停止/切换取代）")
+                    return
+                }
+                // 只本地释放，不走公开 stop()：它会给流式队列发「让位结束」信号，
+                // 可能把刚让位的语音又拉起来从头播。详见 StreamVoicePlayer.yieldAndDrop。
+                releaseCurrent()
+                player = mp
+                _nowPlaying.value = target
+                AudioFocus.request(ctx)   // 不申请的话，播语音不会压低正在放的音乐/视频
+                mp.start()
+            }
             AppLog.log("voice", "语音已开始播放 " + bytes.size + " 字节")
         } catch (e: Exception) {
             AppLog.err("voice", "语音播放失败", e)
-            releaseCurrent()
-            _nowPlaying.value = ""
+            // 只有自己那一代才许动共享状态：迟到线程失败不能清掉新播放器的登记。
+            synchronized(lock) { if (myGen == gen) { releaseCurrent(); _nowPlaying.value = "" } }
             StreamVoicePlayer.resumeQueue()
         }
     }
@@ -172,13 +191,17 @@ object VoicePlayer {
 
     /** 播下一条前先停掉上一条，避免两条叠着响；也用于「停止」按钮。 */
     fun stop() {
-        gen++          // 作废正在取字节的线程
-        val p = player
-        player = null
-        _nowPlaying.value = ""
-        if (p != null) {
-            runCatching { if (p.isPlaying) p.stop() }
-            runCatching { p.release() }
+        // 与 play() 的提交点走同一把锁：停止与迟到的起播互斥，先到者生效
+        //（否则停止只清掉当时的 player，fetch 线程随后照样 start()，音频又响起来）。
+        synchronized(lock) {
+            gen++          // 作废正在取字节/准备的线程
+            val p = player
+            player = null
+            _nowPlaying.value = ""
+            if (p != null) {
+                runCatching { if (p.isPlaying) p.stop() }
+                runCatching { p.release() }
+            }
         }
         AudioFocus.abandon()
         // 让位结束：排队的流式语音接着播（若本次是「停全部」，队列已被清空，这里是空操作）。
