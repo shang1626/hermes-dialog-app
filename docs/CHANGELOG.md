@@ -1,3 +1,18 @@
+## 2.171 — versionCode 182
+
+后台保活与完成提醒一批（起因：真机日志实测这台机型一天把 App 进程回收 8 次，且 App 侧没有任何兜底）。
+
+- **前台服务类型 dataSync → specialUse**：Android 15+ 对 dataSync 类型有「每 24 小时 6 小时」的配额，烧完就再也起不来（常驻保活会天天烧）。现在清单同时声明 `specialUse|dataSync`，API 34+ 走 specialUse（用途：维持与自托管网关的实时连接），老机型仍走 dataSync。
+- **常驻通知 MIN → LOW**（换新渠道 id）：仍然静默不响不震，但在状态栏真正可见——部分机型会因「前台通知不可见」而更倾向杀进程。
+- **任务完成震动 + 响铃**：新增独立「任务完成」渠道（重要度高 + 提示音 + 两短一长震动）。对话任务完成、定时任务产出、待处理（审批/澄清）提醒都走它；不想听时可以只关这一条渠道，不影响常驻通知。
+- **兜底唤醒（15 分钟粒度）**：新增周期闹钟——落一行心跳日志 + 进程被杀后的补提醒（已结束但没通知到的对话任务、新到的定时任务产出），与 App 内共用同一套落盘去重集合，不会重复响；开机自动重装（BOOT_COMPLETED）。无常驻进程、不引新依赖、内存零占用。
+- **设置页新增「保活」区块**：一键跳「电池优化白名单」与「自启动 / 省电设置」（应用详情页），并写明 realme/ColorOS 的三步。
+- 取舍说明：兜底闹钟用 `ELAPSED_REALTIME`（**不唤醒设备**，省电优先），设备深度睡眠期间不唤醒，等你拿起手机时补提醒；想改成息屏也提醒，把 `KeepAlive.arm` 换成 `ELAPSED_REALTIME_WAKEUP` 即可（代价是一天多近百次唤醒）。
+
+（改 RunService.kt / Notifier.kt / KeepAlive.kt（新）/ ChatViewModel.kt / Screens.kt / AndroidManifest.xml / app/build.gradle.kts / docs/CHANGELOG.md）
+
+---
+
 ## 2.170 — versionCode 181
 
 修「切一下后台，耗时从 0 重新算」。

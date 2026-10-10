@@ -8,6 +8,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
     <application
@@ -38,10 +42,37 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+        <!--
+          foregroundServiceType 同时声明两种：API 34+ 走 specialUse（长连接保活，不受
+          Android 15 对 dataSync 的 6 小时/24 小时配额限制），老机型走 dataSync。
+        -->
         <service
             android:name=".RunService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="specialUse|dataSync">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="维持与自托管 Hermes 网关的实时连接，取回正在执行的任务结果" />
+        </service>
+
+        <!-- 15 分钟一次的兜底唤醒：心跳日志 + 进程被杀后补提醒（见 KeepAlive.kt）。 -->
+        <receiver
+            android:name=".KeepAliveReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.hermesapp.KEEPALIVE_TICK" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 开机后把兜底闹钟装回来（闹钟不跨重启存活）。 -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
         <receiver
             android:name=".ReplyReceiver"
             android:exported="false">

@@ -36,6 +36,16 @@ object ChatVisibility {
  */
 object Notifier {
     const val CHANNEL_ID = "hermes_msg"
+
+    /**
+     * 「任务完成」专用渠道（2026-10-10 用户要求：任务跑完要有震动 + 响铃）。
+     *
+     * 为什么另开一条而不是复用「新消息」或常驻那条：
+     * ① 渠道的重要性/声音/震动**创建后不可改**，而「后台运行」那条常驻通知必须是静默的
+     *    （IMPORTANCE_LOW），混在同一条渠道里要么常驻通知吵、要么完成提醒不响；
+     * ② 独立渠道还能让用户单独调：不想听完成提示音时只关这一条，不动「后台运行」。
+     */
+    const val DONE_CHANNEL_ID = "hermes_done"
     const val NOTIF_ID = 2001
 
     /**
@@ -77,7 +87,28 @@ object Notifier {
         mgr.createNotificationChannel(ch)
     }
 
-    fun notifyMessage(ctx: Context, title: String, text: String, sessionId: String = "", openTab: Int = -1) {
+    /** 完成/待处理渠道：HIGH（横幅）+ 提示音 + 震动。 */
+    fun ensureDoneChannel(ctx: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val mgr = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (mgr.getNotificationChannel(DONE_CHANNEL_ID) != null) return
+        val ch = NotificationChannel(DONE_CHANNEL_ID, "任务完成", NotificationManager.IMPORTANCE_HIGH)
+        ch.description = "任务跑完、定时任务有产出、或停下来等你处理时提醒（带提示音与震动）"
+        ch.enableVibration(true)
+        ch.vibrationPattern = DONE_VIBRATE
+        ch.enableLights(true)
+        ch.lightColor = 0xFF4EA1FF.toInt()
+        val attrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+            .build()
+        ch.setSound(android.provider.Settings.System.DEFAULT_NOTIFICATION_URI, attrs)
+        mgr.createNotificationChannel(ch)
+    }
+
+    fun notifyMessage(
+        ctx: Context, title: String, text: String, sessionId: String = "", openTab: Int = -1,
+        channel: String = CHANNEL_ID,
+    ) {
         ensureChannel(ctx)
         val tap = PendingIntent.getActivity(
             ctx, 0,
@@ -115,13 +146,14 @@ object Notifier {
         val action = NotificationCompat.Action.Builder(
             android.R.drawable.ic_menu_send, "回复", replyPi
         ).addRemoteInput(input).build()
-        val n = applyAppIcon(NotificationCompat.Builder(ctx, CHANNEL_ID), ctx)
+        val n = applyAppIcon(NotificationCompat.Builder(ctx, channel), ctx)
             .setContentTitle(title)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setAutoCancel(true)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setContentIntent(tap)
+            .apply { if (channel == DONE_CHANNEL_ID) withDoneAlert(this) }
             .addAction(action)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
@@ -134,7 +166,7 @@ object Notifier {
      * 用独立通知 id（不覆盖「新消息」那条），点开拉 App 并切到对应会话。
      */
     fun notifyAction(ctx: Context, title: String, text: String, sessionId: String) {
-        ensureChannel(ctx)
+        ensureDoneChannel(ctx)
         val tap = PendingIntent.getActivity(
             ctx, 2,
             Intent(ctx, MainActivity::class.java).apply {
@@ -143,7 +175,7 @@ object Notifier {
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val n = applyAppIcon(NotificationCompat.Builder(ctx, CHANNEL_ID), ctx)
+        val n = applyAppIcon(NotificationCompat.Builder(ctx, DONE_CHANNEL_ID), ctx)
             .setContentTitle(title)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
@@ -151,9 +183,28 @@ object Notifier {
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setContentIntent(tap)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .apply { withDoneAlert(this) }
             .build()
         runCatching { NotificationManagerCompat.from(ctx).notify(ACTION_NOTIF_ID, n) }
     }
+
+    /**
+     * 任务完成/定时任务产出的统一出口：走「任务完成」渠道（提示音 + 震动）。
+     * 兜底闹钟（KeepAliveReceiver）补提醒也走这里，保证口径一致。
+     */
+    fun notifyDone(ctx: Context, title: String, text: String, sessionId: String = "", openTab: Int = -1) {
+        ensureDoneChannel(ctx)
+        notifyMessage(ctx, title, text, sessionId, openTab, channel = DONE_CHANNEL_ID)
+    }
+
+    /** 给「任务完成」类通知显式挂上震动与提示音（渠道已开，这里再显式来一层，防机型差异）。 */
+    private fun withDoneAlert(b: NotificationCompat.Builder): NotificationCompat.Builder =
+        b.setVibrate(DONE_VIBRATE)
+            .setSound(android.provider.Settings.System.DEFAULT_NOTIFICATION_URI)
+            .setDefaults(NotificationCompat.DEFAULT_VIBRATE)
+
+    /** 震动花样：两短一长，与「新消息」区分。 */
+    private val DONE_VIBRATE = longArrayOf(0, 200, 120, 200, 120, 400)
 
     /**
      * 清掉业务提醒：新消息/任务完成（2001）与审批/澄清（2002）。
