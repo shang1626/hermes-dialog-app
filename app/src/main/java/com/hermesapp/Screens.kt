@@ -1553,7 +1553,12 @@ fun JobsScreen(vm: ChatViewModel, prefs: Prefs) {
                 }
                 Spacer(Modifier.height(6.dp))
                 for (r in reports) {
-                    CronReportRow(r, onOpen = { vm.openCronReport(r) }, onLongPress = { pendingDelete = r })
+                    CronReportRow(
+                        r,
+                        onOpen = { vm.openCronReport(r) },
+                        onLongPress = { pendingDelete = r },
+                        onDelete = { pendingDelete = r },
+                    )
                     Spacer(Modifier.height(6.dp))
                 }
                 Spacer(Modifier.height(12.dp))
@@ -1617,34 +1622,58 @@ fun JobsScreen(vm: ChatViewModel, prefs: Prefs) {
     }
 }
 
-/** 收件箱一条：任务名 + 时间 + 正文首行；未读带红点。点开看全文。 */
+/**
+ * 收件箱一条：任务名 + 时间 + 正文首行；未读带红点。点开看全文，右侧「删除」可直接删。
+ *
+ * 「删除」为什么必须显式摆出来（2026-10-10 用户报「收件箱消息又没法删除了」）：
+ * 原来只有两个入口——长按整行、或点开全文弹窗底部的「删除」。用户手机上长按不被识别
+ * （press 被当成 tap → 只是打开全文），而弹窗底部的按钮在长正文时又不容易够到，结果
+ * 服务端访问日志里「一条删除请求都没有」：不是删除接口坏，是**入口没被触发**。
+ * 现在把删除做成行内可见控件，点击走同一个二次确认。
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun CronReportRow(r: CronReport, onOpen: () -> Unit, onLongPress: () -> Unit) {
+private fun CronReportRow(
+    r: CronReport,
+    onOpen: () -> Unit,
+    onLongPress: () -> Unit,
+    onDelete: () -> Unit,
+) {
     val c = LocalAppColors.current
-    Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
-            .background(c.card)
-            .combinedClickable(onClick = { onOpen() }, onLongClick = { onLongPress() })
-            .padding(10.dp)
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(c.card),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (r.unread) {
-                Box(Modifier.size(7.dp).background(c.bad, CircleShape))
-                Spacer(Modifier.width(5.dp))
+        Column(
+            Modifier.weight(1f)
+                .combinedClickable(onClick = { onOpen() }, onLongClick = { onLongPress() })
+                .padding(10.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (r.unread) {
+                    Box(Modifier.size(7.dp).background(c.bad, CircleShape))
+                    Spacer(Modifier.width(5.dp))
+                }
+                Text(
+                    (if (r.failed) "✗ " else "✓ ") + jobDisplayName(r.jobName, r.jobId),
+                    color = if (r.failed) c.bad else c.text, fontSize = 12.sp,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.weight(1f))
+                Text(TimeFmt.isoToBj(r.at), color = c.dim, fontSize = 10.sp)
             }
+            Spacer(Modifier.height(4.dp))
             Text(
-                (if (r.failed) "✗ " else "✓ ") + jobDisplayName(r.jobName, r.jobId),
-                color = if (r.failed) c.bad else c.text, fontSize = 12.sp,
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                r.body.replace(Regex("\\s+"), " ").trim().take(90),
+                color = c.dim, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
             )
-            Spacer(Modifier.weight(1f))
-            Text(TimeFmt.isoToBj(r.at), color = c.dim, fontSize = 10.sp)
         }
-        Spacer(Modifier.height(4.dp))
+        // 行内删除：描边小字，点击弹二次确认（与长按同一条路径）。
         Text(
-            r.body.replace(Regex("\\s+"), " ").trim().take(90),
-            color = c.dim, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+            "删除", color = c.bad, fontSize = 11.sp,
+            modifier = Modifier
+                .padding(horizontal = 12.dp, vertical = 14.dp)
+                .clickable { onDelete() },
         )
     }
 }
