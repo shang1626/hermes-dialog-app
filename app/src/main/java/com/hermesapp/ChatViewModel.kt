@@ -1860,12 +1860,23 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 上次列表用的过滤口径：动作完成后按同一口径重拉，避免刚暂停的任务凭空消失。 */
-    private var jobsIncludeDisabled = false
+    /**
+     * 列表当前是否包含「已停用」（=被暂停）的任务。
+     *
+     * 为什么提到 ViewModel 并做成流：界面上的「显示/隐藏已停用」开关与列表口径必须**同源**。
+     * 原来开关是界面本地 state，而暂停某个任务后 jobAction 会把口径强制切到「含已停用」
+     * （否则那条当场从列表里消失，用户报「点暂停后任务就不见了」，2026-10-10）——
+     * 两边一旦不同步，开关文字与实际内容就对不上。
+     *
+     * 唯一口径来源：refreshJobs 的默认参数也从它取（原来另有一个 private var 同名，
+     * 会与该流冲突，已合并成一个）。
+     */
+    private val _jobsIncludeDisabled = MutableStateFlow(false)
+    val jobsIncludeDisabled = _jobsIncludeDisabled.asStateFlow()
 
     /** 已知定时任务的中文名；不认识的返回空串，界面回落显示原始名。 */
-    fun refreshJobs(includeDisabled: Boolean = jobsIncludeDisabled) {
-        jobsIncludeDisabled = includeDisabled
+    fun refreshJobs(includeDisabled: Boolean = _jobsIncludeDisabled.value) {
+        _jobsIncludeDisabled.value = includeDisabled
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val out = fetchJobs(includeDisabled) ?: return@launch
@@ -1949,7 +1960,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 _jobsErr.value = "操作失败：" + (e.message ?: "?")
             }
             delay(400)
-            refreshJobs()
+            // 暂停/恢复后按「含已停用」的口径重拉：暂停会让这条变成「已停用」，而默认口径
+            // 不含已停用——照旧口径刷新它当场从列表里消失，用户以为「一点暂停任务就没了」
+            //（2026-10-10 报障）。现在让它留在原地显示「已停用」，要收起再点标题行的
+            //「隐藏已停用」（开关与口径同源，见 jobsIncludeDisabled）。
+            if (action == "pause" || action == "resume") refreshJobs(includeDisabled = true)
+            else refreshJobs()
         }
     }
 

@@ -1519,7 +1519,10 @@ fun JobsScreen(vm: ChatViewModel, prefs: Prefs) {
     val reports by vm.inbox.collectAsStateWithLifecycle()
     val unread by vm.inboxUnread.collectAsStateWithLifecycle()
     val inboxErr by vm.inboxErr.collectAsStateWithLifecycle()
-    var showDisabled by remember { mutableStateOf(false) }
+    // 口径（是否含已停用）与界面开关同源：ViewModel 持有，界面只读与切换。
+    // 暂停某任务后 ViewModel 会把口径切到「含已停用」，开关文字随之变成「隐藏已停用」，
+    // 不会再出现「开关说没显示、列表里却有」的错位。
+    val showDisabled by vm.jobsIncludeDisabled.collectAsStateWithLifecycle()
     var clearConfirm by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<CronReport?>(null) }
     LaunchedEffect(Unit) {
@@ -1538,10 +1541,7 @@ fun JobsScreen(vm: ChatViewModel, prefs: Prefs) {
             Text(
                 if (showDisabled) "隐藏已停用" else "显示已停用",
                 color = c.accent, fontSize = T.sub,
-                modifier = Modifier.clickable {
-                    showDisabled = !showDisabled
-                    vm.refreshJobs(showDisabled)
-                }
+                modifier = Modifier.clickable { vm.refreshJobs(!showDisabled) }
             )
             Spacer(Modifier.width(G.x3))
             OutlinedButton(
