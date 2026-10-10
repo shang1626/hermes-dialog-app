@@ -1817,6 +1817,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val cur = _cronReport.value
                 if (cur != null && (all || cur.id in set)) _cronReport.value = null
                 AppLog.log("job", "收件箱删除 请求=" + (if (all) "全部" else ids.size.toString()) + " 实际=" + removed)
+                // 服务端一条都没删掉时，别就此静默。原来「点了没反应」很难判断是入口没触发、
+                // 还是服务端没删（用户 2026-10-10 报「收件箱消息没法删除」时，服务端访问日志里
+                // 连一条删除请求都没有）。这里补一条提示，并顺手重拉一次，把过期视图对齐。
+                if (removed == 0) {
+                    _inboxErr.value = "服务端没有删除任何条目（条目可能已被删）。已重新拉取收件箱。"
+                    refreshInbox(notifyNew = false)
+                } else {
+                    _inboxErr.value = ""
+                }
             } catch (e: Exception) {
                 _inboxErr.value = "删除失败：" + diagText(e)
             }
