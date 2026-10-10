@@ -108,6 +108,14 @@ class KeepAliveReceiver : BroadcastReceiver() {
         for ((sid, rid) in pending) {
             val st = runCatching { a.probeRun(rid) }.getOrNull() ?: continue
             if (st is HermesApi.RunStatus.Unknown) continue          // 探不出来 ≠ 结束
+            // ⚠ 还在跑（running/queued/stopping/等审批/等澄清）**绝不能**算结束。
+            //
+            // 这条兜底闹钟是固定的 15 分钟粒度，长任务跑到第 15 分钟闹钟必响——旧代码只排除
+            // 了 Unknown，探到 Known(running) 也照发「任务完成」并清掉活跃标记，于是用户看到
+            // 「任务还在跑、手机却报已完成」，而且标记被清后真跑完也不再提醒了
+            //（2026-10-10 用户报「两次了，任务跑到 15 分钟还在进行中，通知说已完成」；
+            // 真机日志实证：19:55:07 还在收工具事件，19:55:15 兜底就发了完成通知）。
+            if (st is HermesApi.RunStatus.Known && st.status in ReconnectPolicy.RUNNING_STATES) continue
             val text = when (st) {
                 is HermesApi.RunStatus.Known -> {
                     val out = runCatching { st.payload?.optString("output", "").orEmpty() }.getOrDefault("")
@@ -116,8 +124,10 @@ class KeepAliveReceiver : BroadcastReceiver() {
                 }
                 else -> "服务端已没有这一轮，点开查看结果"            // Missing
             }
+            val status = if (st is HermesApi.RunStatus.Known) st.status else "missing"
             val title = if (st is HermesApi.RunStatus.Known && st.status.contains("fail")) "任务失败" else "任务完成"
-            AppLog.log("keepalive", "补提醒 sid=" + sid.take(8) + " run=" + rid.take(12) + " 状态=" + text.take(20))
+            AppLog.log("keepalive", "补提醒 sid=" + sid.take(8) + " run=" + rid.take(12) +
+                " 探测状态=" + status + " 文本=" + text.take(20))
             Notifier.notifyDone(ctx, title, text, sid)
             p.removeActiveRun(sid)
         }
