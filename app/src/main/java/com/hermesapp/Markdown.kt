@@ -537,19 +537,31 @@ fun VoiceMiniButton(target: String, modifier: Modifier = Modifier) {
  * 音频不存在（服务端已淘汰该留档）时点了不响，只在日志里记一行。
  */
 @Composable
-fun VoiceReplayMiniButton(runId: String, modifier: Modifier = Modifier) {
+fun VoiceReplayMiniButton(runId: String, inlineTarget: String = "", modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
     val c = LocalAppColors.current
     val playing by VoiceReplayPlayer.nowPlaying.collectAsStateWithLifecycle()
+    // 完成语音的**自动播报**走的是 VoicePlayer（按正文里的内联音频附件），不是重播播放器。
+    // 原来这里只看重播状态：自动播报正响着这条时按钮却一直是 ▶，点它走 toggle→重播，
+    // 把同一句从头再放一遍——用户报「任务结束后的首次语音播报没法立即停止」（2026-10-10）。
+    // 现在同时盯两个播放器：内联自动播报在响这条时也亮成 ■，点了停的就是它。
+    val inlineNow by VoicePlayer.nowPlaying.collectAsStateWithLifecycle()
+    val inlinePlaying = inlineTarget.isNotEmpty() && inlineNow == inlineTarget
     val isThis = runId.isNotEmpty() && playing == runId
     Icon(
-        imageVector = if (isThis) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
-        contentDescription = if (isThis) "停止播放" else "播放语音",
-        tint = if (isThis) c.accent else c.dim,
+        imageVector = if (isThis || inlinePlaying) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
+        contentDescription = if (isThis || inlinePlaying) "停止播放" else "播放语音",
+        tint = if (isThis || inlinePlaying) c.accent else c.dim,
         modifier = modifier
             .size(16.dp)
             .clip(CircleShape)
-            .clickable(enabled = runId.isNotEmpty()) { VoiceReplayPlayer.toggle(ctx, runId) }
+            .clickable(enabled = runId.isNotEmpty() || inlineTarget.isNotEmpty()) {
+                when {
+                    inlinePlaying -> VoicePlayer.stop()          // 停自动播报
+                    isThis -> VoiceReplayPlayer.stop()           // 停手动重播
+                    else -> VoiceReplayPlayer.toggle(ctx, runId) // 都没在响：重播
+                }
+            }
     )
 }
 

@@ -1166,7 +1166,9 @@ fun Bubble(
                         // 本机有缓存则零网络），没有 runId 的老消息才回落正文里的内联附件按钮。
                         if (replayRunId.isNotEmpty()) {
                             Spacer(Modifier.width(6.dp))
-                            VoiceReplayMiniButton(replayRunId)
+                            // inlineTarget：完成语音自动播报走 VoicePlayer（内联附件），
+                            // 传给重播按钮让它也能停掉正在自动播报的这条（2026-10-10 报障）。
+                            VoiceReplayMiniButton(replayRunId, inlineTarget = voiceTarget)
                             // 正在播这条时额外点一个喇叭：播放按钮只在「手动重播」时
                             // 变停止方块，自动播报（流式）期间它一直是三角，
                             // 用户看不出队列轮到哪条了。
