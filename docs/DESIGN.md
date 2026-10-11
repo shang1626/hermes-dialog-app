@@ -17,7 +17,7 @@ MainActivity (App.kt)
 
 | 文件 | 行数级 | 职责 |
 |---|---|---|
-| `App.kt` | ~540 | 昼夜配色（DarkColors/LightColors + LocalAppColors）、主题模式 system/day/night、MainActivity、登录页（服务器地址+密码+选 profile）、MainScaffold（抽屉/顶部栏/返回键处理） |
+| `App.kt` | ~540 | 昼夜配色（NightColors/LightColors + LocalAppColors）、主题模式 system/day/night、MainActivity、登录页（服务器地址+密码+选 profile）、MainScaffold（抽屉/顶部栏/返回键处理） |
 | `Screens.kt` | ~650 | ChatScreen（消息列表+输入栏+图片待发区+全屏输入）、MessageList、Bubble、StatusScreen（状态卡片）、SettingsScreen、NativeChatInput（原生 EditText 桥） |
 | `ChatViewModel.kt` | ~830 | 唯一状态源：消息列表、会话索引、run 生命周期、SSE 流、工具调用行、图片上传、状态页数据；输入草稿去抖落盘 |
 | `net/HermesApi.kt` | ~190 | OkHttp 封装：REST 同步调用 + SSE 流式读取（手写 event-stream 解析） |

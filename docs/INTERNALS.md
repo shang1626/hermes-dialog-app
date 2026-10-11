@@ -75,7 +75,7 @@ App 私有目录 `filesDir`，纯 JSON，不碰服务端库：
 
 ## 昼夜配色
 
-- `AppColors` 数据类 + `DarkColors` / `LightColors` 两套常量，`LocalAppColors` 是 CompositionLocal
+- `AppColors` 数据类 + `NightColors` / `LightColors` 两套常量（`NightColors` = 夜间/跟随系统深色，2.196 起是灰底黑字），`LocalAppColors` 是 CompositionLocal
 - 三种模式：`system` / `day` / `night`（`Prefs.themeMode`），`isDarkMode()` 判当前
 - MainActivity `onCreate` 里**先定窗口底色再 setContent**，避免浅色模式闪一下黑
 - v1.3 修过「黑背景黑字」：浅色模式必须整套换色，不能只换背景
