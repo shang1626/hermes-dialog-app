@@ -1358,12 +1358,6 @@ fun StatusScreen(vm: ChatViewModel, prefs: Prefs) {
     // 上次刷新时刻：给「每 5 秒自动刷新」配一个会动的秒数，一眼看出数据是新的。
     var refreshedAt by remember { mutableStateOf(0L) }
     LaunchedEffect(Unit) { vm.refreshStatus() }
-    // 告诉心跳循环「状态页在眼前」：它据此决定要不要拉 /health/sysinfo（顶栏 CPU%）——
-    // 不在这页就不拉，省电省流量（2026-10-11 用户要求：只有打开该界面才刷新）。
-    DisposableEffect(Unit) {
-        StatusVisibility.statusVisible = true
-        onDispose { StatusVisibility.statusVisible = false }
-    }
     // 每 5 秒自动刷新（仅前台；退后台停，省电省包）
     val resumedStatus by isResumedState()
     LaunchedEffect(resumedStatus) {
