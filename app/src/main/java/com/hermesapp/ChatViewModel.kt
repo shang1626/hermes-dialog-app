@@ -8,6 +8,7 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.hermesapp.net.HermesApi
+import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -777,16 +778,23 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // 接流，后者决定回前台该对齐哪几条会话。
                 val runs = LinkedHashMap<String, String>()
                 val lastActive = HashMap<String, Long>()
+                // 服务端有哪些会话行 —— 待补推的改名要等这一行出现才能推上去。
+                val serverIds = HashSet<String>()
+                // 本地刚改、还没推上去的标题：别让服务端那个（旧的/自动生成的）标题把用户
+                // 刚改的名盖回去，否则用户看到「改名过一会自己变回去」。
+                val pending = prefs.pendingTitles()
                 for (i in 0 until arr.length()) {
                     val o = arr.optJSONObject(i) ?: continue
                     val id = o.optString("id", "")
                     if (id.isEmpty() || o.optBoolean("is_internal_child", false)) continue
+                    serverIds.add(id)
                     val ar = o.optString("active_run", "")
                     if (ar.isNotEmpty() && ar != "null") runs[id] = ar
                     val la = o.optDouble("last_active", 0.0)
                     if (la > 0) lastActive[id] = (la * 1000).toLong()
                     val idx = list.indexOfFirst { it.id == id }
                     if (idx < 0) continue      // 本地没有这条：一律不补行
+                    if (pending.containsKey(id)) continue   // 待补推：跳过标题覆盖
                     val title = o.optString("title", "").trim()
                     if (title.isNotEmpty() && list[idx].title != title) {
                         list[idx] = list[idx].copy(title = title); changed = true
@@ -800,6 +808,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     _sessions.value = list
                     store.saveIndex(list)
                 }
+                flushPendingTitles(a, serverIds)
                 // 服务端说当前会话在跑而本地没有 → 别的端发起的（或本地标记丢了），接上去。
                 reconcileServerRuns()
                 refreshRunFlags()
@@ -807,6 +816,24 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 AppLog.err("sync", "同步会话标题失败", e)
                 // 离线 / 接口异常：保留本地列表，不影响使用
             }
+        }
+    }
+
+    /**
+     * 把「本地已改、服务端还没推上去」的标题补推（在 syncFromServer 的 IO 线程里顺序执行）。
+     *
+     * 只推服务端已经有行的那些（[serverIds] 是这次列表里真实存在的会话）——没行的推上去也是
+     * 404，留着等它出现。推成功后清掉待办；失败保留，下次同步再试（不静默丢改名）。
+     */
+    private fun flushPendingTitles(a: HermesApi, serverIds: Set<String>) {
+        val pend = prefs.pendingTitles()
+        if (pend.isEmpty()) return
+        for ((sid, t) in pend) {
+            if (sid !in serverIds) continue
+            if (t.isEmpty()) { prefs.removePendingTitle(sid); continue }
+            val ok = runCatching { a.renameSession(sid, t) }.isSuccess
+            AppLog.log("sync", "补推改名 sid=" + sid.take(8) + " 成功=" + ok + " 标题=" + t.take(16))
+            if (ok) prefs.removePendingTitle(sid)
         }
     }
 
@@ -982,13 +1009,24 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val res = runCatching { a.renameSession(id, t) }
             withContext(Dispatchers.Main) {
                 val e = res.exceptionOrNull()
-                if (e != null) {
-                    applyTitle(id, old, t)
-                    toast("重命名没同步到服务器：" + diagText(e))
-                } else {
-                    val srv = res.getOrNull()?.optJSONObject("session")?.optString("title", "").orEmpty()
-                    if (srv.isNotEmpty()) applyTitle(id, srv, t)
-                    AppLog.log("sync", "重命名已同步 sid=" + id.take(8) + " 服务端标题=" + srv.take(16))
+                when {
+                    e == null -> {
+                        prefs.removePendingTitle(id)
+                        val srv = res.getOrNull()?.optJSONObject("session")?.optString("title", "").orEmpty()
+                        if (srv.isNotEmpty()) applyTitle(id, srv, t)
+                        AppLog.log("sync", "重命名已同步 sid=" + id.take(8) + " 服务端标题=" + srv.take(16))
+                    }
+                    // 服务端还没有这个会话的行（新建但没发过消息）→ 不改回本地，记成待补推：
+                    // 该会话在服务端建行后由 syncFromServer 自动推上去。
+                    e is IOException && e.message.orEmpty().contains("HTTP 404") -> {
+                        prefs.putPendingTitle(id, t)
+                        toast("已改名；服务器端还没有这个会话，发出第一条消息后会自动同步")
+                        AppLog.log("sync", "改名待补推（服务端无此行）sid=" + id.take(8))
+                    }
+                    else -> {
+                        applyTitle(id, old, t)
+                        toast("重命名没同步到服务器：" + diagText(e))
+                    }
                 }
             }
         }
@@ -1026,6 +1064,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         runtimes[id]?.let { r -> r.dead = true; r.saveJob?.cancel() }
         runtimes.remove(id)
         prefs.clearDraft(id)
+        // 待补推的改名也要一并清掉，否则这条会话删了还留着一条永远推不出去的待办。
+        prefs.removePendingTitle(id)
         val list = _sessions.value.filter { it.id != id }.toMutableList()
         _sessions.value = list
         saveIndexAsync(debounceMs = 0L)
