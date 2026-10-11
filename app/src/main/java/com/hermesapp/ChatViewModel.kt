@@ -1082,6 +1082,47 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * 一键清空全部对话（侧边栏「历史对话」标题行右侧的「清空」调用，UI 先弹确认）。
+     *
+     * 语义与逐条 deleteSession 保持一致 —— 「全部」只是把同一条路径一次性跑完：
+     *   1) 正在跑的会话先 stopSession（服务端一并停），再把运行态标死、取消挂着的保存任务。
+     *      顺序不能反：反了的话删完文件，刚挂上去的异步保存会把文件又写回来（会话复活）。
+     *   2) 落盘清空走 store.clearAllLocal()：按前缀扫目录，索引里已丢行的孤儿文件也带走。
+     *   3) prefs 里按会话 id 存的运行时状态（草稿/活跃 run/续接序号/待补推标题）整表扫掉，
+     *      否则这些「对话内容」还留在手机上，且没人回收。
+     *   4) 列表置空、当前会话清空、索引立刻落盘；本地搜索与跨会话搜索的命中都清掉（那些结果
+     *      来自刚删的文件，留着会显示「有结果但点不开」）；运行角标立刻重算，不等 2 秒巡检。
+     *
+     * 服务端那份会话记录不动 —— 与单条删除的口径完全一致，UI 确认弹窗里也如实这么写。
+     * syncFromServer 不会把它们补回来：它只更新本地已有的行，不为服务端独有的会话建行。
+     */
+    fun clearAllConversations() {
+        val ids = _sessions.value.map { it.id }
+        AppLog.log("ui", "清空全部对话 本地条数=" + ids.size + " 含归档=" + _sessions.value.count { it.archived })
+        for (id in ids) {
+            stopSession(id)
+            runtimes[id]?.let { r -> r.dead = true; r.saveJob?.cancel() }
+            runtimes.remove(id)
+        }
+        val prefsCleared = prefs.clearAllSessionState()
+        _sessions.value = emptyList()
+        saveIndexAsync(debounceMs = 0L)
+        // 走与单条删除同一条落地路径：_sessions 已空，它会清掉当前会话指针并进入空态。
+        selectNextOrEmpty()
+        prefs.pendingOpenSession = ""
+        // 两个搜索的命中都作废：它们指向刚删掉的消息，留着会出现「有结果但点不开」。
+        clearSearch()
+        clearGlobalSearch()
+        // 列表/角标立刻降下来，不等 2 秒一次的巡检。runFlags 由 runtimes 与 _sessions 重算，
+        // 两个来源都已清空，所以这一步的结果就是「没有任何会话在跑」。
+        refreshRunFlags()
+        RuntimeHub.scope.launch(Dispatchers.IO) {
+            val n = runCatching { store.clearAllLocal() }.getOrDefault(-1)
+            AppLog.log("ui", "清空全部对话完成 prefs键=" + prefsCleared + " 文件=" + n)
+        }
+    }
+
+    /**
      * 把一个会话导出成 Markdown 文件并调系统分享面板发出去（发同事/存网盘）。
      *
      * 落在 App 私有目录 exports/（FileProvider 已声明），只读本地记录，不碰服务端。

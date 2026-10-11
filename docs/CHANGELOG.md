@@ -1,3 +1,18 @@
+## 2.195 — versionCode 206
+
+**为什么会有这一版**：用户要求「App 端历史对话增加一键清空全部对话的按钮」。
+
+- 侧边栏「历史对话」标题行最右加红色「清空」入口（列表非空才显示），点击弹二次确认（复用「清空收件箱？」那套），确认框里写明清什么、什么不动、有几个任务在跑会被停掉。
+- 清除分两层落盘：`SessionStore.clearAllLocal()` 按文件名前缀整目录扫（`chat_<profile>_`、`queue_<profile>_`，连归档 `.archive.json`、`.bak`/`.tmp` 备份、1.4 老格式 `chat_<profile>.json` 一起走），`Prefs.clearAllSessionState()` 按 key 扫草稿/活跃 run/续接序号/待补推标题/通知栏回复暂存。只按索引里的 id 循环删会留下「索引已丢行、文件还在」的孤儿文件与 prefs 残留，所以按前缀扫。
+- 顺序：先停正在跑的任务（服务端一并停）→ 标死 runtime、取消保存任务 → 再删文件，避免异步保存把刚删的会话写回。
+- 服务端会话记录不动，与单条删除口径一致；导出、附件、别的身份的文件、凭据与设置均不连坐（凭据被连坐等于把用户踢下线）。
+- 抽出两条纯函数 `isClearableFileName` / `isConversationContentPrefKey`，新增 10 条单测钉住「删哪些、留哪些」：profile 为空一律不删；前缀结尾带下划线，防 `profile="a"` 误伤 `chat_ab_x.json`；前缀必须带冒号，防 `run:` 误伤 `runner`。
+- 清空后同时清本地搜索与跨会话搜索的命中（否则显示「有结果但点不开」），并立刻重算运行角标，不等 2 秒巡检。
+
+（改 App.kt / ChatViewModel.kt / SessionStore.kt / Prefs.kt / app/build.gradle.kts / docs/CHANGELOG.md；新增 app/src/test/java/com/hermesapp/ClearAllSessionsTest.kt）
+
+---
+
 ## 2.194 — versionCode 205
 
 **为什么会有这一版**：用户要求「把顶栏的 CPU% 弄回来，单独保留这一项，默认 8 秒刷新一次」。

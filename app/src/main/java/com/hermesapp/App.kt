@@ -726,6 +726,8 @@ fun DrawerPanel(
     // 排序模式：默认关，标题行点「排序」才在每行右侧露出上/下移箭头。
     // 目的是把常驻的排序控件收进一个入口，平时列表干净。
     var sortMode by remember { mutableStateOf(false) }
+    // 「清空全部对话」的二次确认开关：删除不可恢复，点入口只开弹窗，真删在弹窗里确认。
+    var clearAllConfirm by remember { mutableStateOf(false) }
 
     ModalDrawerSheet(
         drawerContainerColor = c.panel,
@@ -800,7 +802,54 @@ fun DrawerPanel(
                         color = c.accent, fontSize = T.sub,
                         modifier = Modifier.clickable { showArchived = !showArchived }
                     )
+                    // 清空全部：列表空着不给入口（空按钮没意义）。放在整行最右、与
+                    // 「排序/搜索/已归档」隔开，用告警色——它是这里唯一的破坏性动作，
+                    // 不该混在日常控件里被顺手点到，所以点它只开确认弹窗。
+                    if (sessions.isNotEmpty()) {
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            "清空", color = c.bad, fontSize = T.sub,
+                            modifier = Modifier.clickable {
+                                AppLog.log("ui", "点清空全部对话(待确认) 本地条数=" + sessions.size)
+                                clearAllConfirm = true
+                            }
+                        )
+                    }
                 }
+            }
+
+            // 清空全部对话的二次确认。文案把「清掉什么、什么不动、在跑的任务怎么办」讲全，
+            // 免得用户点了才知道后果：四个数字口径与 ViewModel.clearAllConversations 一致。
+            if (clearAllConfirm) {
+                val running = sessions.count { runFlags[it.id]?.busy == true || runFlags[it.id]?.remote == true }
+                val archivedCnt = sessions.count { it.archived }
+                AlertDialog(
+                    onDismissRequest = { clearAllConfirm = false },
+                    title = { Text("清空全部对话？", color = c.text, fontSize = T.body, fontWeight = T.bold) },
+                    text = {
+                        Text(
+                            "本机 " + sessions.size + " 个对话" +
+                                (if (archivedCnt > 0) "（含已归档 " + archivedCnt + " 个）" else "") +
+                                "的本地记录都会删除，删了找不回来。" +
+                                (if (running > 0) "正在执行的 " + running + " 个任务会先停掉。" else "") +
+                                "服务器上的会话记录不受影响。",
+                            color = c.dim, fontSize = T.sub
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            clearAllConfirm = false
+                            AppLog.log("ui", "确认清空全部对话 条数=" + sessions.size)
+                            vm.clearAllConversations()
+                        }) { Text("清空", color = c.bad, fontSize = T.body, fontWeight = T.bold) }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { clearAllConfirm = false }) {
+                            Text("取消", color = c.dim, fontSize = T.body)
+                        }
+                    },
+                    containerColor = c.panel,
+                )
             }
             Spacer(Modifier.height(6.dp))
 

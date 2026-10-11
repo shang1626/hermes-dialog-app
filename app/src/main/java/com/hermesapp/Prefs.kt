@@ -156,6 +156,28 @@ class Prefs(ctx: Context) {
     }
 
     /**
+     * 一键清空全部对话时，把「属于对话内容/运行时状态」的 prefs 键扫干净：
+     * 草稿 draft_input: 、活跃 run: 、续接序号 seq: 、待补推标题 ptitle: ，以及
+     * 通知栏直接回复的暂存 pending_reply（里面是用户打的一段话，还指着某个会话 id）。
+     *
+     * 按 key 前缀整表扫，而不是按传进来的 id 列表删：索引里已经丢行的会话（崩溃、降级、
+     * 旧版写坏留下的）它那几条键还在 prefs 里，只按 ids 删会留下这批无人回收的垃圾，
+     * 而这些键的内容正是「对话内容/草稿」——用户要求的是清空，不是留着。
+     * 凭据 credential: 、主题、服务器地址等身份级配置不在此列，不能误伤（见 isConversationContentPrefKey）。
+     */
+    fun clearAllSessionState(): Int {
+        var n = 0
+        sp.edit().apply {
+            for (k in sp.all.keys) {
+                if (isConversationContentPrefKey(k)) {
+                    remove(k); n++
+                }
+            }
+        }.apply()
+        return n
+    }
+
+    /**
      * 待跳转的会话：审批/澄清通知被点开时写入，App 起来后切到该会话并清空。
      * 走落盘而不是 Intent extra——App 可能已被系统杀掉，单靠 extra 会在冷启动时丢。
      */
@@ -230,3 +252,24 @@ class Prefs(ctx: Context) {
         sp.edit().putString("notified_reports", list.joinToString(",")).apply()
     }
 }
+
+/**
+ * 「清空全部对话」该扫掉哪些 prefs 键——纯函数，便于单测钉住规则（不依赖设备）。
+ *
+ * 命中「对话内容/运行时状态」：
+ *   draft_input:<sid> 输入框草稿（可能就是用户没发出去的一段话）
+ *   run:<sid>         活跃运行标记
+ *   seq:<sid>         续接序号
+ *   ptitle:<sid>      服务端还没回报时的待补推标题
+ *   pending_reply / pending_reply_profile 通知栏直接回复的暂存（sessionId\0文本 + 写入身份）：
+ *                     里面是一段用户打的字，且指着某个会话 id；清空后留着，App 下次起来
+ *                     会拿它往一个本地已不存在的会话发消息
+ *
+ * 不命中：credential:<profile>（登录凭据）、logged_in、theme_mode/server_url/keep_alive/
+ * 语音/通知等设置项、profile/system 之类的身份指针。
+ * 清对话连坐凭据 = 把用户踢下线，属于事故，所以这里用白名单而不是「见会话 id 就删」。
+ */
+internal fun isConversationContentPrefKey(k: String): Boolean =
+    k.startsWith("draft_input:") || k.startsWith("run:") ||
+        k.startsWith("seq:") || k.startsWith("ptitle:") ||
+        k == "pending_reply" || k == "pending_reply_profile"

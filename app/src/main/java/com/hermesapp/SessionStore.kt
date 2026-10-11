@@ -554,6 +554,38 @@ class SessionStore(ctx: Context, private val profile: String) {
     }
 
     /**
+     * 「清空全部对话」的落盘部分：把本身份的消息文件 / 待发队列 / 遗留老格式文件一次清干净。
+     *
+     * 为什么不直接循环 deleteMessages(id)：那次调用只认索引里还记得的 id，而用户要的是
+     * 「一键清空」——索引里已经丢行、文件还躺在目录里的孤儿（崩溃中断、降级、旧版写坏留下的）
+     * 会活下来，用户之后还能在目录里翻到「删掉的对话」。这里按文件名前缀整目录扫，
+     * 孤儿一并带走：
+     *   chat_<profile>_*  消息文件（含 .archive.json 与 .bak/.tmp —— 主文件删了留备份
+     *                     等于「删掉的对话还能被读回」，必须一起走）
+     *   queue_<profile>_* 待发队列
+     *   chat_<profile>.json 1.4 老格式；不清的话下次重启 migrateLegacy 会把它当成
+     *                     「历史对话」补回列表，表现是「清空过一会儿又出来一条」
+     * 索引文件（sessions_<profile>.json）与 exports/ 导出、attachments/ 附件不动：
+     * 索引随后由调用方写空，导出与附件是另一样东西，不该被对话清空连坐。
+     */
+    fun clearAllLocal(): Int {
+        var n = 0
+        runCatching {
+            val files = dir.listFiles() ?: emptyArray<File>()
+            for (f in files) {
+                if (!f.isFile) continue
+                if (!isClearableFileName(f.name, profile)) continue
+                if (runCatching { f.delete() }.getOrDefault(false)) n++
+                else AppLog.err("store", "清空：删文件失败 " + f.name, null)
+            }
+            val lg = legacyFile()
+            if (lg.exists() && runCatching { lg.delete() }.getOrDefault(false)) n++
+        }.onFailure { AppLog.err("store", "清空全部对话本地文件失败 profile=" + profile, it) }
+        AppLog.log("store", "清空全部对话本地文件 profile=" + profile + " 已删=" + n + " 个")
+        return n
+    }
+
+    /**
      * 把一个会话导出成 Markdown 文本（只读本地记录，不碰网络、不改任何数据）。
      *
      * 工具轨迹默认用 <details> 折叠——手机上看着乱，但导出给同事时想留着还能展开。
@@ -694,4 +726,28 @@ internal fun restartSafeStatus(s: String): String = when (s) {
     Receipt.SENDING -> Receipt.UNCERTAIN
     Receipt.QUEUED -> Receipt.NOT_SENT
     else -> s
+}
+
+/**
+ * 「清空全部对话」该删哪些文件——纯函数，便于单测钉住规则（不依赖设备）。
+ *
+ * 删：chat_<profile>_* 本会话消息文件（含 .archive.json 归档与 .bak/.tmp —— 主文件删了
+ * 留备份，等于「删掉的对话还能被读回」）、queue_<profile>_* 待发队列、
+ * chat_<profile>.json 1.4 老格式（不清则下次重启 migrateLegacy 会把它当成一条历史对话补回列表，
+ * 用户看到的是「清空过一会儿又冒出一条」）。
+ *
+ * 不删：sessions_<profile>.json 索引（由调用方写空）、exports/ 导出、attachments/ 附件、
+ * 别的 profile 的文件 —— 清对话不该连坐这些。
+ *
+ * 两条边界：profile 为空一律 false（空 profile 会让 "chat_" 前缀扫掉全部身份的文件，宁可不删）；
+ * 结尾那个下划线是关键，profile="a" 不会误伤 "chat_ab_x.json"。
+ */
+internal fun isClearableFileName(name: String, profile: String): Boolean {
+    if (profile.isEmpty() || name.isEmpty()) return false
+    val m = "chat_${profile}_"
+    val q = "queue_${profile}_"
+    // 前缀之后必须还有内容：目录里真出现一个叫 chat_default_ 的畸形文件也不该被当成会话文件。
+    if (name.startsWith(m) && name.length > m.length) return true
+    if (name.startsWith(q) && name.length > q.length) return true
+    return name == "chat_$profile.json"
 }
