@@ -79,33 +79,43 @@ data class AppColors(
 )
 
 /**
- * 深色：夜间主用。
- * 新增角色（cardAlt / border / borderSoft / bubble / bubbleBorder / accentSoft / faint）是为了
- * 让「面与面之间」有可分辨的层次 —— 旧版助手气泡用 panel、背景用 bg，两者只差一档亮度，
- * 整屏看起来是一块平的灰。
+ * 夜间：灰底 + 黑字。
+ *
+ * （配色角色的来历：cardAlt / border / borderSoft / bubble / bubbleBorder / accentSoft / faint
+ * 这几个角色是为了让「面与面之间」有可分辨的层次 —— 旧版助手气泡用 panel、背景用 bg，
+ * 两者只差一档亮度，整屏看起来是一块平的灰。这条设计沿用。）
+ *
+ * 用户看不惯夜间的黑底白字（白字压 #0F1115 是 15.67:1，反差过硬、夜里刺眼），
+ * 改成「浅灰底 + 近黑字」。字色和底色必须成对改——黑字压原来的 #0F1115 只有 1.05:1，
+ * 等于字和底同色看不见（这就是他说的「重叠」）。
+ *
+ * 底色 #868B90（屏幕亮度 25.5%，原来的 0.6%）；正文/底色 5.66:1。
+ * 层次沿用浅色主题的方向：工具栏面比底色亮、卡片比底色暗、助手气泡比底色亮。
+ * 所有组合都用脚本算过（正文 5.66 / 次要 4.55 / 最淡 3.54 / 强调 4.54 / 链接 4.68 /
+ * 状态色 3.6~3.8 以保留颜色识别 / 用户字 8.69）。
  */
-val DarkColors = AppColors(
-    bg = Color(0xFF0F1115),
-    panel = Color(0xFF171A21),
-    card = Color(0xFF1E2530),
-    cardAlt = Color(0xFF232B38),
-    accent = Color(0xFF56A5FF),
-    accentSoft = Color(0xFF1B2C44),
+val NightColors = AppColors(
+    bg = Color(0xFF868B90),
+    panel = Color(0xFF93989D),
+    card = Color(0xFF7F8489),
+    cardAlt = Color(0xFF8A8F94),
+    accent = Color(0xFF0A1E5A),
+    accentSoft = Color(0xFFA9B3BF),
     onAccent = Color(0xFFFFFFFF),
-    link = Color(0xFF79BAFF),
-    dim = Color(0xFFA3ABBA),
-    faint = Color(0xFF71798A),
-    border = Color(0xFF33404F),
-    borderSoft = Color(0xFF242C38),
-    ok = Color(0xFF3FB950),
-    warn = Color(0xFFD29922),
-    bad = Color(0xFFFA7D77),
-    text = Color(0xFFE6EAF2),
-    userBubble = Color(0xFF1E3A5F),
-    userText = Color(0xFFE6EAF2),
-    userBorder = Color(0xFF2C527E),
-    bubble = Color(0xFF1A1F28),
-    bubbleBorder = Color(0xFF28313D),
+    link = Color(0xFF0A1D50),
+    dim = Color(0xFF1F2429),
+    faint = Color(0xFF32363A),
+    border = Color(0xFF6B7075),
+    borderSoft = Color(0xFF7A7F84),
+    ok = Color(0xFF0F3D18),
+    warn = Color(0xFF472F00),
+    bad = Color(0xFF5E1812),
+    text = Color(0xFF0B0D10),
+    userBubble = Color(0xFFA3B3C6),
+    userText = Color(0xFF0D1418),
+    userBorder = Color(0xFF8698AC),
+    bubble = Color(0xFF9AA0A5),
+    bubbleBorder = Color(0xFF868B90),
 )
 
 /** 浅色：GitHub Light 系，白天可读。 */
@@ -161,7 +171,7 @@ val EyeColors = AppColors(
     bubbleBorder = Color(0xFFE0D8C6),
 )
 
-val LocalAppColors = staticCompositionLocalOf { DarkColors }
+val LocalAppColors = staticCompositionLocalOf { NightColors }
 
 const val MODE_SYSTEM = "system"
 const val MODE_DAY = "day"
@@ -179,7 +189,7 @@ fun isDarkMode(mode: String, ctx: Context): Boolean = when (mode) {
 /** 主题模式 → 色板（护眼优先判，其次按明暗）。窗口底色与 Compose 侧共用，保证不闪色。 */
 fun colorsFor(mode: String, ctx: Context): AppColors = when {
     mode == MODE_EYE -> EyeColors
-    isDarkMode(mode, ctx) -> DarkColors
+    isDarkMode(mode, ctx) -> NightColors
     else -> LightColors
 }
 
@@ -310,7 +320,7 @@ fun HermesApp(vm: ChatViewModel, prefs: Prefs) {
         else -> isSystemInDarkTheme()
     }
     // 护眼优先：不是 Dark/Light 二分，直接按模式取板
-    val c = if (mode == MODE_EYE) EyeColors else if (dark) DarkColors else LightColors
+    val c = if (mode == MODE_EYE) EyeColors else if (dark) NightColors else LightColors
 
     // 键必须是 c（而不是 dark）：护眼(MODE_EYE)与白天(MODE_DAY)的 dark 同为 false，
     // 用 dark 当键时这两档互切不会重跑，系统栏会停在旧色。c 是 data class，配色一变即触发。
@@ -321,7 +331,11 @@ fun HermesApp(vm: ChatViewModel, prefs: Prefs) {
         }
     }
 
-    val scheme = if (dark) darkColorScheme(
+    // 三套配色现在都是「深字压浅面」（夜间改成灰底黑字后，不再有浅字压深面的情况），
+    // 所以 Material 一律走 lightColorScheme：若还按 dark 走 darkColorScheme，
+    // 对话框 / 下拉菜单 / 输入框会拿 Material 的深色默认值（surfaceContainerHigh 等槽位），
+    // 那些面上又是我们的近黑字 → 字直接看不见。容器槽位显式给到本配色，弹窗与 App 同色。
+    val scheme = lightColorScheme(
         primary = c.accent,
         onPrimary = c.onAccent,
         primaryContainer = c.accentSoft,
@@ -330,39 +344,29 @@ fun HermesApp(vm: ChatViewModel, prefs: Prefs) {
         onSecondary = c.onAccent,
         secondaryContainer = c.accentSoft,
         onSecondaryContainer = c.accent,
+        tertiary = c.accent,
+        onTertiary = c.onAccent,
         background = c.bg,
         onBackground = c.text,
         surface = c.panel,
         onSurface = c.text,
         surfaceVariant = c.card,
         onSurfaceVariant = c.dim,
+        surfaceTint = c.accent,
+        surfaceContainerLowest = c.panel,
+        surfaceContainerLow = c.panel,
+        surfaceContainer = c.card,
+        surfaceContainerHigh = c.card,
+        surfaceContainerHighest = c.cardAlt,
+        inverseSurface = c.text,
+        inverseOnSurface = c.bg,
         outline = c.border,
         outlineVariant = c.borderSoft,
         error = c.bad,
         onError = c.onAccent,
         errorContainer = c.card,
         onErrorContainer = c.bad,
-    ) else lightColorScheme(
-        primary = c.accent,
-        onPrimary = c.onAccent,
-        primaryContainer = c.accentSoft,
-        onPrimaryContainer = c.accent,
-        secondary = c.accent,
-        onSecondary = c.onAccent,
-        secondaryContainer = c.accentSoft,
-        onSecondaryContainer = c.accent,
-        background = c.bg,
-        onBackground = c.text,
-        surface = c.panel,
-        onSurface = c.text,
-        surfaceVariant = c.card,
-        onSurfaceVariant = c.dim,
-        outline = c.border,
-        outlineVariant = c.borderSoft,
-        error = c.bad,
-        onError = c.onAccent,
-        errorContainer = c.card,
-        onErrorContainer = c.bad,
+        scrim = Color(0xCC000000),
     )
 
     MaterialTheme(colorScheme = scheme, typography = AppTypography, shapes = AppShapes) {
