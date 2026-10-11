@@ -175,3 +175,12 @@ internal fun titleRejectReason(title: String, limit: Int = RENAME_TITLE_MAX): St
     title.length > limit -> "标题太长，最多 " + limit + " 个字"
     else -> null
 }
+
+/**
+ * 审批/澄清回执是不是「终局失效」。
+ *
+ * 404（run 不存在）与 409（服务端已不在等这条：本轮结束 / 审批超时静默放行 / 已被别处回答）
+ * 都是终局——客户端必须把卡片收起来，不能一直挂着让人反复点。
+ * 其余（-1 网络/异常、5xx）保持可重试，原来的「回执没送到」文案不变。
+ */
+internal fun receiptGone(code: Int): Boolean = code == 404 || code == 409

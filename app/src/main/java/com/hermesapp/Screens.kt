@@ -449,7 +449,7 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
             items(msgs, key = { it.id }) { m ->
                 val hl = hits.getOrNull(hitIdx) == m.id
                 Bubble(
-                    m, vm::respondApproval, vm::respondClarify,
+                    m, vm::respondApproval, vm::respondClarify, vm::ignoreCard,
                     receiptMenuOpen = rcMenu == m.id,
                     onReceiptTap = { vm.openReceiptMenu(it) },
                     onConfirmReceipt = { vm.confirmReceipt(it) },
@@ -904,6 +904,8 @@ fun Bubble(
     m: Msg,
     onApproval: (Long, String) -> Unit = { _, _ -> },
     onClarify: (Long, String) -> Unit = { _, _ -> },
+    /** 用户点「忽略」：收起这条待办提示（不是回答服务端，本轮仍按超时处理）。 */
+    onIgnoreCard: (Long, Boolean) -> Unit = { _, _ -> },
     /** 该条的投递处置按钮是否展开（由 vm.receiptMenu 控制）。 */
     receiptMenuOpen: Boolean = false,
     onReceiptTap: (Long) -> Unit = {},
@@ -1004,7 +1006,11 @@ fun Bubble(
                         Modifier.fillMaxWidth().clip(RoundedCornerShape(Rad.card))
                             .background(c.cardAlt).padding(G.x3)
                     ) {
-                        Text("需要你确认", color = c.warn, fontSize = T.sub, fontWeight = T.bold)
+                        Text(
+                            if (ap.expired && ap.resolved.isEmpty()) "审批已失效" else "需要你确认",
+                            color = if (ap.expired && ap.resolved.isEmpty()) c.dim else c.warn,
+                            fontSize = T.sub, fontWeight = T.bold
+                        )
                         if (ap.description.isNotEmpty()) {
                             Spacer(Modifier.height(G.x1))
                             Text(ap.description, color = c.text, fontSize = T.sub, lineHeight = T.lineSub)
@@ -1018,10 +1024,25 @@ fun Bubble(
                             )
                         }
                         Spacer(Modifier.height(G.x2))
-                        if (ap.resolved.isNotEmpty()) {
-                            Text("已选择：" + choiceLabel(ap.resolved), color = c.dim, fontSize = T.sub)
-                        } else {
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        when {
+                            ap.resolved.isNotEmpty() ->
+                                Text("已选择：" + choiceLabel(ap.resolved), color = c.dim, fontSize = T.sub)
+                            // 已失效：本轮结束 / 审批超时静默放行 / 已被别处处理——再点也是 409。
+                            // 只留痕 + 一个「知道了」的出口，绝不再显示成「等你点头」。
+                            ap.expired -> {
+                                Text(
+                                    "本轮已结束（或这条审批已在别处处理），再点按钮也不会送达。点「知道了」收起这条。",
+                                    color = c.faint, fontSize = T.cap
+                                )
+                                Spacer(Modifier.height(G.x2))
+                                OutlinedButton(
+                                    onClick = { onIgnoreCard(m.id, true) },
+                                    border = BorderStroke(1.dp, c.border),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                    shape = RoundedCornerShape(Rad.pill),
+                                ) { Text("知道了", color = c.dim, fontSize = T.sub) }
+                            }
+                            else -> Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 for (ch in ap.choices) {
                                     OutlinedButton(
                                         onClick = { onApproval(m.id, ch) },
@@ -1029,6 +1050,14 @@ fun Bubble(
                                         shape = RoundedCornerShape(Rad.pill),
                                     ) { Text(choiceLabel(ch), color = c.accent, fontSize = T.sub) }
                                 }
+                                // 常备的「忽略」出口（行内可见，不靠长按）：用户可能不想回、或已错过时机，
+                                // 旧版没有这个出口时就是「确认不了也拒绝不了，提示一直挂着」。
+                                OutlinedButton(
+                                    onClick = { onIgnoreCard(m.id, true) },
+                                    border = BorderStroke(1.dp, c.border),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                    shape = RoundedCornerShape(Rad.pill),
+                                ) { Text("忽略", color = c.dim, fontSize = T.sub) }
                             }
                         }
                     }
@@ -1043,14 +1072,32 @@ fun Bubble(
                         Modifier.fillMaxWidth().clip(RoundedCornerShape(Rad.chip))
                             .background(c.card).padding(10.dp)
                     ) {
-                        Text("需要你选一下", color = c.warn, fontSize = T.body)
+                        Text(
+                            if (cl.expired && cl.resolved.isEmpty()) "选择已失效" else "需要你选一下",
+                            color = if (cl.expired && cl.resolved.isEmpty()) c.dim else c.warn,
+                            fontSize = T.body
+                        )
                         Spacer(Modifier.height(4.dp))
                         Text(cl.question, color = c.text, fontSize = T.sub)
                         Spacer(Modifier.height(G.x2))
-                        if (cl.resolved.isNotEmpty()) {
-                            Text("已选择：" + cl.resolved, color = c.dim, fontSize = T.sub)
-                        } else if (cl.choices.isNotEmpty()) {
-                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        when {
+                            cl.resolved.isNotEmpty() ->
+                                Text("已选择：" + cl.resolved, color = c.dim, fontSize = T.sub)
+                            // 同审批卡：失效只留痕 + 「知道了」出口，不再当成「等你选」。
+                            cl.expired -> {
+                                Text(
+                                    "本轮已结束（或这条选择已在别处处理），再点也不会送达。点「知道了」收起这条。",
+                                    color = c.faint, fontSize = T.cap
+                                )
+                                Spacer(Modifier.height(G.x2))
+                                OutlinedButton(
+                                    onClick = { onIgnoreCard(m.id, false) },
+                                    border = BorderStroke(1.dp, c.border),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                    shape = RoundedCornerShape(Rad.pill),
+                                ) { Text("知道了", color = c.dim, fontSize = T.sub) }
+                            }
+                            else -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 for (ch in cl.choices) {
                                     OutlinedButton(
                                         onClick = { onClarify(m.id, ch) },
@@ -1058,9 +1105,16 @@ fun Bubble(
                                         shape = RoundedCornerShape(Rad.pill),
                                     ) { Text(ch, color = c.accent, fontSize = T.sub) }
                                 }
+                                if (cl.choices.isEmpty()) {
+                                    Text("请在下方输入框回复", color = c.dim, fontSize = T.sub)
+                                }
+                                OutlinedButton(
+                                    onClick = { onIgnoreCard(m.id, false) },
+                                    border = BorderStroke(1.dp, c.border),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                    shape = RoundedCornerShape(Rad.pill),
+                                ) { Text("忽略", color = c.dim, fontSize = T.sub) }
                             }
-                        } else {
-                            Text("请在下方输入框回复", color = c.dim, fontSize = T.sub)
                         }
                     }
                     if (m.text.isNotBlank() || m.subagents.isNotEmpty() || m.usage != null) {
