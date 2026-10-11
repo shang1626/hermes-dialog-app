@@ -637,6 +637,7 @@ fun MainScaffold(
                     }
                     1 -> StatusScreen(vm, prefs)
                     3 -> JobsScreen(vm, prefs)
+                    4 -> StatsScreen(vm, prefs)
                     else -> SettingsScreen(vm, prefs, mode, onMode, onLogout)
                 }
             }
@@ -648,7 +649,7 @@ fun MainScaffold(
 fun TopBar(vm: ChatViewModel, prefs: Prefs, tab: Int, onMenu: () -> Unit) {
     val c = LocalAppColors.current
     val online by vm.online.collectAsStateWithLifecycle()
-    val title = when (tab) { 0 -> "对话"; 1 -> "状态"; 3 -> "定时任务"; else -> "设置" }
+    val title = when (tab) { 0 -> "对话"; 1 -> "状态"; 3 -> "定时任务"; 4 -> "统计"; else -> "设置" }
     // 子任务小标展开状态：默认折叠，点顶栏那个小标才在下面列明细。
     var subOpen by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().background(c.panel)) {
@@ -898,6 +899,7 @@ fun DrawerPanel(
             // 页面切换（对话通过点会话/标题进入，不单列按钮）
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 NavChip("状态", tab == 1, Modifier.weight(1f)) { onTab(1) }
+                NavChip("统计", tab == 4, Modifier.weight(1f)) { onTab(4) }
                 NavChip("任务", tab == 3, Modifier.weight(1f)) { onTab(3) }
                 NavChip("设置", tab == 2, Modifier.weight(1f), badge = updateBadge) { onTab(2) }
             }

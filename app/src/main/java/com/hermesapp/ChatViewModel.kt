@@ -2175,6 +2175,44 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---------- 用量统计（「统计」页） ----------
+
+    /** 统计窗口（天）：1/7/30/90 四档，默认 7；页面按钮与它同源（动作后重拉才不会再错位）。 */
+    private val _statsDays = MutableStateFlow(7)
+    val statsDays = _statsDays.asStateFlow()
+
+    private val _stats = MutableStateFlow<StatsModel?>(null)
+    val stats = _stats.asStateFlow()
+    private val _statsErr = MutableStateFlow("")
+    val statsErr = _statsErr.asStateFlow()
+    private val _statsLoading = MutableStateFlow(false)
+    val statsLoading = _statsLoading.asStateFlow()
+
+    /**
+     * 拉一次用量统计（服务端只读聚合）。
+     *
+     * 必须走 Dispatchers.IO：HermesApi 全是阻塞式 okhttp，挂在主线程作用域上会抛
+     * NetworkOnMainThreadException（收件箱/子任务轮询都栽过，且该异常 message 为 null，
+     * 报障里只留一个「?」）。失败只写 [statsErr]、**不清空已有数据**——切换窗口失败时留着
+     * 上一份数据比空屏有用。
+     */
+    fun refreshStats(days: Int = _statsDays.value) {
+        _statsDays.value = days
+        _statsLoading.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val raw = api?.stats(days) ?: return@launch
+                _stats.value = buildStats(raw)
+                _statsErr.value = ""
+            } catch (e: Exception) {
+                AppLog.err("stats", "获取用量统计失败", e)
+                _statsErr.value = "获取失败：" + diagText(e)
+            } finally {
+                _statsLoading.value = false
+            }
+        }
+    }
+
     // ---------- 发送与流式接收 ----------
 
     fun send(text: String) {
