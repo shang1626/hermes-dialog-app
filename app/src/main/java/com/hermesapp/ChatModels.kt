@@ -293,6 +293,16 @@ data class JobItem(
     val createdAt: String = "",
     /** 已执行次数（服务端 repeat.completed）。 */
     val repeatDone: Int = 0,
+    /**
+     * 谁按的暂停：user = 你在 App/CLI 里按的（**agent 不得自行恢复**）；agent = agent 自己那轮按的。
+     * 2026-10-11 加：用户报「暂停无效，到点还是跑」——实际是任务自己的对话轮把用户按下的暂停
+     * resume 了。服务端现在记 paused_by，界面要把它显示出来，用户才不再怀疑按钮坏了。
+     */
+    val pausedBy: String = "",
+    /** 暂停时刻（已格式化）。 */
+    val pausedAt: String = "",
+    /** 暂停原因（agent 暂停时通常带理由）。 */
+    val pausedReason: String = "",
 )
 
 /**

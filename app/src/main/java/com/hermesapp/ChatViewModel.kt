@@ -1811,6 +1811,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             // 避免单次超时（fails 未达 3 次阈值）也把角标打红。
             var lastOkAt = 0L
             while (true) {
+                // 省电（2026-10-11 用户要求）：App 不在前台就一个请求都不发——心跳、CPU、更新检查
+                // 全停，只留 10 秒醒一次的廉价 sleep（不给网络栈和射频添活动）。
+                if (!AppForeground.isForeground) {
+                    if (_cpuPercent.value >= 0) _cpuPercent.value = -1.0   // 不留过期 CPU 值
+                    delay(10_000)
+                    continue
+                }
                 val ok = api?.ping() ?: false
                 if (ok) {
                     if (!_online.value) AppLog.log("net", "恢复在线")
@@ -1830,18 +1837,24 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         AppLog.log("net", "探测失败第 " + fails + " 次（最近成功=" + recentlyOk + "），暂不标离线")
                     }
                 }
-                // 顶栏 CPU 百分比：与心跳同拍（每 5 秒）拉一次，失败保留上次值（不闪空）。
-                runCatching {
-                    val h = api?.sysinfo()
-                    if (h != null) {
-                        val p = h.optDouble("cpu_percent", -1.0)
-                        if (p >= 0) _cpuPercent.value = p
+                // 顶栏 CPU 百分比：**只在「状态」页可见时**拉（用户要求这页只在打开时刷新）。
+                // 不在那页就把值置 -1：界面本来就不显示 -1，也不会留一个过期读数骗人。
+                if (StatusVisibility.statusVisible) {
+                    runCatching {
+                        val h = api?.sysinfo()
+                        if (h != null) {
+                            val p = h.optDouble("cpu_percent", -1.0)
+                            if (p >= 0) _cpuPercent.value = p
+                        }
                     }
+                } else if (_cpuPercent.value >= 0) {
+                    _cpuPercent.value = -1.0
                 }
-                // 每 30 秒静默查一次更新：发新版后角标自动亮起，不必等下次启动。
+                // 每 30 秒静默查一次更新：发新版后角标自动亮起，不必等下次启动（仅前台）。
                 tick++
                 if (tick % 6 == 0) checkUpdateSilently()
-                delay(5000)
+                // 在线点不必 5 秒那么勤：在状态页 5 秒（页面本身就是 5 秒刷新），其余页 15 秒。
+                delay(if (StatusVisibility.statusVisible) 5_000L else 15_000L)
             }
         }
     }
@@ -2055,6 +2068,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     model = jsonStr(o, "model"),
                     createdAt = TimeFmt.isoToBj(jsonStr(o, "created_at")),
                     repeatDone = o.optJSONObject("repeat")?.optInt("completed", 0) ?: 0,
+                    // 谁停的：user = 用户在界面上按的（服务端会拒绝 agent 的自行恢复）。
+                    pausedBy = jsonStr(o, "paused_by"),
+                    pausedAt = TimeFmt.isoToBj(jsonStr(o, "paused_at")),
+                    pausedReason = jsonStr(o, "paused_reason"),
                 )
             )
         }
@@ -4157,7 +4174,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // 交给 syncFromServer 内部的 reconcileServerRuns 接管。不带这个，用户开着 App
                 // 时别的端起的任务要等切前后台/切会话才被发现。
                 tick++
-                if (tick % 15 == 0) syncFromServer(30_000L)
+                if (tick % 15 == 0 && AppForeground.isForeground) syncFromServer(30_000L)
                 delay(2_000L)
             }
         }
