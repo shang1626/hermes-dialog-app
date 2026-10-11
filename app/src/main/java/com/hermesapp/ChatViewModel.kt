@@ -949,6 +949,74 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (id == _currentId.value && archived) selectNextOrEmpty()
     }
 
+    /**
+     * 重命名会话：本地先改（立刻可见 + 落索引），随后把标题 PATCH 给服务端。
+     *
+     * 为什么必须推服务端：服务端存的是 title_source=user 的标题，权重最高——推上去之后
+     * 小模型的自动标题不会再覆盖它，[syncFromServer] 的「服务端标题覆盖本地」也只会盖回
+     * 同一串，改名才真正稳得住。反过来若只改本地不改服务端，下次同步就被服务端旧标题盖
+     * 回去，用户看到的是「改名过一会儿自己变回去了」。
+     *
+     * 推送失败**回滚本地标题**并明确报错（不静默、不留「本地改了服务端没改」的分裂态）；
+     * 成功则采用服务端回执里的标题（服务端会去零宽/控制字符并折叠空白，以它为准）。
+     */
+    fun renameSession(id: String, rawTitle: String) {
+        val t = normalizeTitle(rawTitle)
+        titleRejectReason(t)?.let { toast(it); return }
+        val list = _sessions.value.toMutableList()
+        val i = list.indexOfFirst { it.id == id }
+        if (i < 0) return
+        val old = list[i].title
+        if (t == old) return
+        list[i] = list[i].copy(title = t)
+        _sessions.value = list
+        saveIndexAsync(debounceMs = 0L)
+        AppLog.log("ui", "重命名会话 sid=" + id.take(8) + " 旧=" + old.take(16) + " 新=" + t.take(16))
+        val a = api
+        if (a == null) {
+            applyTitle(id, old, t)
+            toast("重命名没同步：未连接服务器")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val res = runCatching { a.renameSession(id, t) }
+            withContext(Dispatchers.Main) {
+                val e = res.exceptionOrNull()
+                if (e != null) {
+                    applyTitle(id, old, t)
+                    toast("重命名没同步到服务器：" + diagText(e))
+                } else {
+                    val srv = res.getOrNull()?.optJSONObject("session")?.optString("title", "").orEmpty()
+                    if (srv.isNotEmpty()) applyTitle(id, srv, t)
+                    AppLog.log("sync", "重命名已同步 sid=" + id.take(8) + " 服务端标题=" + srv.take(16))
+                }
+            }
+        }
+    }
+
+    /**
+     * 把某会话的标题从 [expect] 改成 [want]（只在当前值仍等于 [expect] 时才改）。
+     * 用于改名的回滚与服务端回执对齐——窗口期内标题若被别处改过（同步/新会话生成），
+     * 就不该拿旧值盖掉它。
+     */
+    private fun applyTitle(id: String, want: String, expect: String) {
+        val list = _sessions.value.toMutableList()
+        val i = list.indexOfFirst { it.id == id }
+        if (i < 0) return
+        if (list[i].title == want) return
+        if (list[i].title != expect) return
+        list[i] = list[i].copy(title = want)
+        _sessions.value = list
+        saveIndexAsync(debounceMs = 0L)
+    }
+
+    /** 一次性提示（抽屉里的改名等操作没有顶部提示条可用，用系统 Toast，不静默）。 */
+    private fun toast(text: String) {
+        runCatching {
+            android.widget.Toast.makeText(getApplication(), text, android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+
     fun deleteSession(id: String) {
         AppLog.log("ui", "删除会话 sid=" + id.take(8))
         // 若该会话有正在跑的任务，先停掉（服务端一并停），再删本地记录。

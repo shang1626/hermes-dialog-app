@@ -884,6 +884,7 @@ fun DrawerPanel(
                                 onArchive = { vm.archiveSession(s.id, !s.archived) },
                                 onDelete = { vm.deleteSession(s.id) },
                                 onExport = { vm.exportSession(ctx, s.id) },
+                                onRename = { t -> vm.renameSession(s.id, t) },
                             )
                         }
                     }
@@ -964,6 +965,8 @@ fun SessionRow(
     onArchive: () -> Unit,
     onDelete: () -> Unit,
     onExport: () -> Unit = {},
+    /** 改名：菜单里点「重命名」→ 弹输入框 → 回传新标题（由 ViewModel 同步给服务端）。 */
+    onRename: (String) -> Unit = {},
     /** 是否处于排序模式（决定是否露出上/下移箭头）。 */
     showSort: Boolean = false,
     /** 是否可上/下移（顶行不能上、底行不能下）。 */
@@ -976,6 +979,9 @@ fun SessionRow(
     var menu by remember { mutableStateOf(false) }
     // 删除会连本地记录一起清掉且不可恢复，手一滑就没了——点删除先弹确认。
     var confirmDelete by remember { mutableStateOf(false) }
+    // 重命名：弹输入框，预填当前标题（改名不是长按才有的隐藏功能，摆在 ⋯ 菜单里点得到）。
+    var renaming by remember { mutableStateOf(false) }
+    var draft by remember { mutableStateOf("") }
     Row(
         Modifier.fillMaxWidth()
             .background(if (selected) c.card else Color.Transparent, RoundedCornerShape(8.dp))
@@ -1036,6 +1042,15 @@ fun SessionRow(
             )
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                 DropdownMenuItem(
+                    text = { Text("重命名", fontSize = T.body) },
+                    onClick = {
+                        menu = false
+                        draft = meta.title
+                        renaming = true
+                        AppLog.log("ui", "点重命名 sid=" + meta.id.take(8))
+                    }
+                )
+                DropdownMenuItem(
                     text = { Text("导出为 Markdown", fontSize = T.body) },
                     onClick = { menu = false; onExport() }
                 )
@@ -1049,6 +1064,51 @@ fun SessionRow(
                 )
             }
         }
+    }
+    // 重命名弹窗：预填当前标题，输入框走主题配色（深色底必须显式指定文字色，否则黑底黑字）。
+    if (renaming) {
+        AlertDialog(
+            onDismissRequest = { renaming = false },
+            title = { Text("重命名这个对话", color = c.text, fontSize = T.body) },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = draft,
+                        // 上限 60 字（服务端 100 是硬上限，这里留余量给手机上好看）
+                        onValueChange = { if (it.length <= 60) draft = it },
+                        singleLine = true,
+                        colors = fieldColors(c),
+                        placeholder = { Text("新标题", fontSize = T.sub) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "改名会同步到服务器，自动生成的标题不会再覆盖它。",
+                        color = c.dim, fontSize = T.micro
+                    )
+                }
+            },
+            confirmButton = {
+                Text(
+                    "保存", color = c.accent, fontSize = T.body,
+                    modifier = Modifier
+                        .clickable(enabled = draft.trim().isNotEmpty()) {
+                            val t = draft
+                            renaming = false
+                            onRename(t)
+                        }
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                )
+            },
+            dismissButton = {
+                Text(
+                    "取消", color = c.dim, fontSize = T.body,
+                    modifier = Modifier.clickable { renaming = false }
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                )
+            },
+            containerColor = c.panel,
+        )
     }
     // 删除前二次确认：删除会把本地记录一并清掉，删了就找不回来。
     if (confirmDelete) {

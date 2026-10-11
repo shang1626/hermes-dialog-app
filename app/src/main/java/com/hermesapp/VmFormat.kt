@@ -146,3 +146,32 @@ internal fun oneLine(s: String, n: Int): String {
     val t = s.replace(Regex("\\s+"), " ").trim()
     return if (t.length > n) t.take(n) + "…" else t
 }
+/**
+ * 会话改名的标题归一：折叠连续空白（含换行/全角空格外的空白）+ 去首尾空格。
+ * 服务端 `sanitize_title` 也会做一遍并额外去零宽字符，这里先做是为了「本地显示的标题」与
+ * 「提交给服务端的标题」一致 —— 否则本地把带换行的多行串当标题显示、服务端回执却是一行，
+ * 看起来像被改掉了一半。
+ */
+internal fun normalizeTitle(raw: String): String = raw.replace(TITLE_WS, " ").trim()
+
+/**
+ * 标题里的空白（含 U+00A0 不换行空格、U+3000 全角空格）。
+ * Java 正则的 `\s` 默认只认 ASCII 空白，而服务端 `sanitize_title` 用的是 Python 的 `\s`（含
+ * 全部 Unicode 空白）—— 只写 `\s` 会让「带全角空格的标题」两边不一致：本地显示两个词中间
+ * 是宽空格、服务端回执却是普通空格。
+ */
+private val TITLE_WS = Regex("[\\s\\u00a0\\u3000]+")
+
+/** 手机端改名的字数上限。服务端硬上限 100（超了返 400 invalid_title），留余量给列表好看。 */
+internal const val RENAME_TITLE_MAX = 60
+
+/**
+ * 标题不可提交的原因，null = 可以提交。
+ * 空标题**必须本地拦掉**：服务端对空串的语义是「清空标题」（写 NULL），本地列表会立刻失去
+ * 标题显示，而列表里的标题又不能为空 —— 两边语义不一致，所以不给提交。
+ */
+internal fun titleRejectReason(title: String, limit: Int = RENAME_TITLE_MAX): String? = when {
+    title.isEmpty() -> "标题不能为空"
+    title.length > limit -> "标题太长，最多 " + limit + " 个字"
+    else -> null
+}
