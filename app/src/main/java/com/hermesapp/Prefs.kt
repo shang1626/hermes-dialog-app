@@ -108,6 +108,33 @@ class Prefs(ctx: Context) {
     }
 
     /**
+     * 待补推的改名：本地已经改好，但服务端还没有这个会话的行 —— 手机上新建、还没发过
+     * 消息的会话，在服务端要等第一轮 `/v1/runs` 才建行，直接 PATCH 会 404。
+     * 键形如 "ptitle:<sessionId>"；会话在服务端出现后由 syncFromServer 补推并清掉。
+     * 语义是「这次的改名一定会到达服务端」，不是「尽力而为后忘掉」。
+     */
+    fun pendingTitles(): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        for ((k, v) in sp.all) {
+            if (k.startsWith("ptitle:") && v is String && v.isNotEmpty()) {
+                out[k.removePrefix("ptitle:")] = v
+            }
+        }
+        return out
+    }
+
+    fun putPendingTitle(sessionId: String, title: String) {
+        if (sessionId.isEmpty()) return
+        if (title.isEmpty()) sp.edit().remove("ptitle:" + sessionId).apply()
+        else sp.edit().putString("ptitle:" + sessionId, title).apply()
+    }
+
+    fun removePendingTitle(sessionId: String) {
+        if (sessionId.isEmpty()) return
+        sp.edit().remove("ptitle:" + sessionId).apply()
+    }
+
+    /**
      * 已收到的最后一个事件序号（SSE 的 id / seq），与消息一起落盘。
      * 重开 App 恢复任务时用它做 Last-Event-ID，只补断线之后的事件；不存的话续接
      * 只能从 0 全量重放，工具轨迹（trace）会被二次追加——表现就是「重开后过程重复显示」。
