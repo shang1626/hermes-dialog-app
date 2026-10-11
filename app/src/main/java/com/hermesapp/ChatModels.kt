@@ -114,6 +114,15 @@ data class ApprovalCard(
     val description: String,
     val choices: List<String>,
     val resolved: String = "",
+    /**
+     * 卡片是否已失效。
+     *
+     * 为什么需要这个状态：审批在服务端是**静默失败关闭**——到点（approvals.timeout）gate 自己
+     * 放行、run 继续跑，客户端却仍然是「未处理」，用户点确认/拒绝都收到 409
+     * （approval_not_active），于是顶层提示一直挂着、既确认不了也拒绝不了（2026-10-11 实测）。
+     * 失效卡片不再进「待处理」提示条，只留痕显示「已失效」+ 一个「知道了」。
+     */
+    val expired: Boolean = false,
 )
 
 /** 澄清卡片：服务端 clarify.request 事件下发（我问你「选 A 还是 B」），点选项回执。 */
@@ -123,6 +132,8 @@ data class ClarifyCard(
     val choices: List<String>,
     val multiSelect: Boolean = false,
     val resolved: String = "",
+    /** 同 [ApprovalCard.expired]：本轮结束/服务端已不在等这条选择时置真，不再置顶提示。 */
+    val expired: Boolean = false,
 )
 
 /** 一轮对话的 token 用量（run.completed 的 usage 字段）。 */

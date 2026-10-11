@@ -309,17 +309,20 @@ class HermesApi(
      * 把返回整个吞了，回执没送到时界面照样把卡片标成「已选择」，用户以为送达了其实没有
      * （与 steer 同一类缺陷）。
      */
-    fun respondClarify(runId: String, clarifyId: String, response: String): Boolean = runCatching {
+    /** 澄清回执：同 [respondApproval]，返回 HTTP 码（-1 = 网络/异常），404/409 = 已失效。 */
+    fun respondClarify(runId: String, clarifyId: String, response: String): Int = runCatching {
         val body = JSONObject().put("clarify_id", clarifyId).put("response", response)
         val t0 = System.currentTimeMillis()
         client.newCall(
             base("/v1/runs/" + runId + "/clarify").post(body.toString().toRequestBody(jsonType)).build()
         ).execute().use { resp ->
+            val text = if (resp.isSuccessful) "" else resp.body?.string().orEmpty()
             AppLog.log("receipt", "澄清回执 run=" + runId.take(12) + " choice=" + response.take(40) +
-                " -> " + resp.code + " " + (System.currentTimeMillis() - t0) + "ms")
-            resp.isSuccessful
+                " -> " + resp.code + " " + (System.currentTimeMillis() - t0) + "ms" +
+                (if (text.isEmpty()) "" else " body=" + text.take(160)))
+            resp.code
         }
-    }.getOrDefault(false)
+    }.getOrDefault(-1)
 
     /** 按需下载网关托管的媒体文件（大附件走这条路，不塞进消息体）。 */
     fun downloadMedia(token: String): ByteArray {
@@ -507,20 +510,27 @@ class HermesApi(
 
     /**
      * 审批回执：POST /v1/runs/{id}/approval，choice ∈ once/session/always/deny。
-     * 返回是否被服务端接受（HTTP 2xx）；失败时调用方给「回执没送到」提示，不静默。
+     * 返回 HTTP 状态码（-1 = 网络/异常）。
+     *
+     * 为什么要返回码而不是布尔：404/409 是**终局**（服务端已经不在等这条审批：本轮结束、
+     * 审批超时静默放行、或已被别处回答），界面必须把卡片收起来；其余（-1 网络、5xx）
+     * 才是「可重试」。旧实现只回布尔，两种情况混成一个「回执没送到」，卡片就永远杵在那
+     * （2026-10-11 实测：用户点确认/拒绝反复 409，提示条既不消也点不动）。
      */
-    fun respondApproval(runId: String, requestId: String, choice: String): Boolean = runCatching {
+    fun respondApproval(runId: String, requestId: String, choice: String): Int = runCatching {
         val body = JSONObject().put("choice", choice)
         if (requestId.isNotEmpty()) body.put("request_id", requestId)
         val t0 = System.currentTimeMillis()
         client.newCall(
             base("/v1/runs/" + runId + "/approval").post(body.toString().toRequestBody(jsonType)).build()
         ).execute().use { resp ->
+            val text = if (resp.isSuccessful) "" else resp.body?.string().orEmpty()
             AppLog.log("receipt", "审批回执 run=" + runId.take(12) + " choice=" + choice +
-                " -> " + resp.code + " " + (System.currentTimeMillis() - t0) + "ms")
-            resp.isSuccessful
+                " -> " + resp.code + " " + (System.currentTimeMillis() - t0) + "ms" +
+                (if (text.isEmpty()) "" else " body=" + text.take(160)))
+            resp.code
         }
-    }.getOrDefault(false)
+    }.getOrDefault(-1)
 
     // ---------- 定时任务（服务端 /api/jobs） ----------
 

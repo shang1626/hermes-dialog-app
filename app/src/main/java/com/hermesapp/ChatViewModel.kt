@@ -162,8 +162,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             if (id.isEmpty()) flowOf(null)
             else rt(id).messages.map { msgs ->
                 // 取最后一条未处理的卡片；审批优先（同会话极少两者同时有）。
-                val ap = msgs.lastOrNull { it.approval?.resolved?.isEmpty() == true }
-                val cl = msgs.lastOrNull { it.clarify?.resolved?.isEmpty() == true }
+                // 失效（expired）的不算「在等我点头」——它们只是留痕，不能再置顶提示。
+                val ap = msgs.lastOrNull {
+                    it.approval?.resolved?.isEmpty() == true && it.approval?.expired != true
+                }
+                val cl = msgs.lastOrNull {
+                    it.clarify?.resolved?.isEmpty() == true && it.clarify?.expired != true
+                }
                 when {
                     ap != null -> PendingAction(
                         ap.id, "需要你确认",
@@ -2958,23 +2963,28 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (!receiptInFlight.add(msgId)) return
         r.retryNote.value = "正在送达回执…"
         viewModelScope.launch(Dispatchers.IO) {
-            val ok = a.respondClarify(rid, card.clarifyId, choice)
+            val code = a.respondClarify(rid, card.clarifyId, choice)
             withContext(Dispatchers.Main) {
                 receiptInFlight.remove(msgId)
-                if (ok) {
-                    val cur = r.messages.value.toMutableList()
-                    val k = cur.indexOfFirst { it.id == msgId }
-                    if (k >= 0) {
-                        val cc = cur[k].clarify
-                        if (cc != null && cc.resolved.isEmpty()) {
-                            cur[k] = cur[k].copy(clarify = cc.copy(resolved = choice))
-                            setMsgs(r, cur)
+                when {
+                    code in 200..299 -> {
+                        val cur = r.messages.value.toMutableList()
+                        val k = cur.indexOfFirst { it.id == msgId }
+                        if (k >= 0) {
+                            val cc = cur[k].clarify
+                            if (cc != null && cc.resolved.isEmpty()) {
+                                cur[k] = cur[k].copy(clarify = cc.copy(resolved = choice))
+                                setMsgs(r, cur)
+                            }
                         }
+                        // 同上：澄清回执的确认也只闪一下。
+                        flashNote(r, "已选择「" + choice + "」，已送达服务端")
                     }
-                    // 同上：澄清回执的确认也只闪一下。
-                    flashNote(r, "已选择「" + choice + "」，已送达服务端")
-                } else {
-                    r.retryNote.value = "回执没送到：本轮可能已收尾，可重试"
+                    receiptGone(code) -> {
+                        expireCard(r, msgId, false)
+                        flashNote(r, "这条选择已失效（本轮已结束或已被处理），已收起")
+                    }
+                    else -> r.retryNote.value = "回执没送到：本轮可能已收尾，可重试"
                 }
             }
         }
@@ -3021,7 +3031,88 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         when (p.optString("status", "")) {
             "waiting_for_clarify" -> placeClarify(r, p.optJSONObject("clarify") ?: return)
             "waiting_for_approval" -> placeApproval(r, p.optJSONObject("approval") ?: return)
+            else -> {
+                // 服务端这条 run 没有待审批/待澄清：本地落盘读回、还标着「未处理」的卡片就是过期的。
+                //
+                // 为什么必须在这里收：审批在服务端是**静默失败关闭**——到点（approvals.timeout）
+                // gate 自己放行、run 继续跑，服务端既不会推事件也不会改 run 状态，客户端那张卡片
+                // 就成了「点确认/拒绝都 409」的死卡片（2026-10-11 实测 run_ff9eddc7：run 还在
+                // running、last_event=tool.completed，approval 早已不在等）。这一条把「run 探活
+                // 时 payload 里没有 approval」直接判成卡片失效，不用等用户去点。
+                expireAllPendingCards(r, "服务端 payload 无待办（status=" + p.optString("status", "") + "）")
+            }
         }
+    }
+
+    /**
+     * 把该会话里所有「未处理」的卡片一次性标失效（不删，留痕）。
+     *
+     * 用在三类确知「这条待办已经没人能回答了」的时刻：服务端 payload 说没有待办、用户点了停止、
+     * 会话空闲且服务端没有在跑的 run。绝不用在「不确定」的场合——不确定就保持可点。
+     */
+    private fun expireAllPendingCards(r: SessionRuntime, why: String) {
+        val list = r.messages.value.toMutableList()
+        var changed = false
+        for (k in list.indices) {
+            val m = list[k]
+            val ap = m.approval
+            if (ap != null && ap.resolved.isEmpty() && !ap.expired) {
+                list[k] = m.copy(approval = ap.copy(expired = true)); changed = true; continue
+            }
+            val cl = m.clarify
+            if (cl != null && cl.resolved.isEmpty() && !cl.expired) {
+                list[k] = m.copy(clarify = cl.copy(expired = true)); changed = true
+            }
+        }
+        if (changed) {
+            setMsgs(r, list)
+            AppLog.log("approval", "过期待办卡片已收起 sid=" + r.id.take(8) + " 原因=" + why)
+        }
+    }
+
+    /**
+     * 单条卡片标失效（回执收到 404/409、或用户点「忽略」）。
+     * 返回是否真的改了（没改就不写盘，避免无意义的重组与落盘）。
+     */
+    private fun expireCard(r: SessionRuntime, msgId: Long, isApproval: Boolean) {
+        val cur = r.messages.value.toMutableList()
+        val k = cur.indexOfFirst { it.id == msgId }
+        if (k < 0) return
+        val m = cur[k]
+        val changed = if (isApproval) {
+            val c = m.approval ?: return
+            if (c.expired) false else { cur[k] = m.copy(approval = c.copy(expired = true)); true }
+        } else {
+            val c = m.clarify ?: return
+            if (c.expired) false else { cur[k] = m.copy(clarify = c.copy(expired = true)); true }
+        }
+        if (changed) setMsgs(r, cur)
+    }
+
+    /**
+     * 用户点「忽略」：不再提示这条（不问服务端）。
+     *
+     * 语义要说清：本轮该问的还是要问——服务端那条审批/澄清会照它自己的超时（或让 agent 继续）
+     * 处理，这里只是把「客户端这条提示」收掉。可点是因为：用户可能根本不想回、或者已经错过
+     * 时机，而旧版没有任何出口（确认/拒绝都 409，提示条下不去）。
+     */
+    fun ignoreCard(msgId: Long, isApproval: Boolean) {
+        val r = rt(_currentId.value)
+        expireCard(r, msgId, isApproval)
+        flashNote(r, if (isApproval) "已收起这条审批（本轮仍按超时处理）" else "已收起这条选择（本轮仍按超时处理）")
+        AppLog.log("approval", "用户忽略卡片 msgId=" + msgId + " 审批=" + isApproval)
+    }
+
+    /**
+     * 会话空闲时收起过期卡片：本地不忙、没有 runId、服务端也没有在跑的 run（runFlags 无 remote）。
+     * 这类卡片只可能来自「本轮早已结束、审批从未被回答」的历史状态，留着就是一条点不动的假提示。
+     */
+    private fun expireCardsWhenIdle(sid: String) {
+        val r = runtimes[sid] ?: return
+        if (r.busy.value || r.runId.isNotEmpty()) return
+        val f = runFlags.value[sid]
+        if (f != null && (f.remote || f.subagents > 0 || f.queued > 0)) return
+        expireAllPendingCards(r, "会话空闲且服务端无在跑 run")
     }
 
     /**
@@ -3076,23 +3167,30 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (!receiptInFlight.add(msgId)) return
         r.retryNote.value = "正在送达回执…"
         viewModelScope.launch(Dispatchers.IO) {
-            val ok = a.respondApproval(rid, card.requestId, choice)
+            val code = a.respondApproval(rid, card.requestId, choice)
             withContext(Dispatchers.Main) {
                 receiptInFlight.remove(msgId)
-                if (ok) {
-                    val cur = r.messages.value.toMutableList()
-                    val k = cur.indexOfFirst { it.id == msgId }
-                    if (k >= 0) {
-                        val cc = cur[k].approval
-                        if (cc != null && cc.resolved.isEmpty()) {
-                            cur[k] = cur[k].copy(approval = cc.copy(resolved = choice))
-                            setMsgs(r, cur)
+                when {
+                    code in 200..299 -> {
+                        val cur = r.messages.value.toMutableList()
+                        val k = cur.indexOfFirst { it.id == msgId }
+                        if (k >= 0) {
+                            val cc = cur[k].approval
+                            if (cc != null && cc.resolved.isEmpty()) {
+                                cur[k] = cur[k].copy(approval = cc.copy(resolved = choice))
+                                setMsgs(r, cur)
+                            }
                         }
+                        // 确认类提示只闪一下：常驻会一直钉在顶部，像还有事没处理。
+                        flashNote(r, "已选择「" + choice + "」，已送达服务端")
                     }
-                    // 确认类提示只闪一下：常驻会一直钉在顶部，像还有事没处理。
-                    flashNote(r, "已选择「" + choice + "」，已送达服务端")
-                } else {
-                    r.retryNote.value = "回执没送到：本轮可能已收尾，可重试"
+                    // 服务端已不在等这条（本轮结束/审批超时放行/别处已答）：终局，把卡片收起。
+                    // 不收的话就是用户报的「确认不了、也拒绝不了，提示一直在」。
+                    receiptGone(code) -> {
+                        expireCard(r, msgId, true)
+                        flashNote(r, "这条审批已失效（本轮已结束或已被处理），已收起")
+                    }
+                    else -> r.retryNote.value = "回执没送到：本轮可能已收尾，可重试"
                 }
             }
         }
@@ -3902,6 +4000,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.sendJob?.cancel()
         appendDelta(r, "\n[已请求停止]")
         finishPending(r)
+        // 用户主动停止本轮：还挂着的审批/澄清不可能再有答案（run 正在收尾），一并收起，
+        // 否则那张卡片留在气泡里、顶层提示条也跟着挂着（用户 2026-10-11 报的另一半场景）。
+        expireAllPendingCards(r, "用户停止本轮")
         r.busy.value = false
         r.runId = ""
         prefs.removeActiveRun(sid)
@@ -4085,6 +4186,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (out != _runFlags.value) _runFlags.value = out
         val busyIds = out.filterValues { it.busy }.keys
         if (busyIds != _runningIds.value) _runningIds.value = busyIds
+        // 顺手收掉「本轮早已结束、审批却从未被回答」的死卡片：会话空闲（本地不忙、无 runId、
+        // 服务端也没有在跑的 run）时它不可能再被回答，留着就是一条点不动的假提示。
+        // 放在这个 2 秒心跳里是为了覆盖所有入口（冷启动读盘、切会话、回前台、轮末）——
+        // 分散打点必漏，而这里只读内存、无未处理卡片时立即返回。
+        for (sid in runtimes.keys.toList()) {
+            if (hasUnresolvedCard(sid)) expireCardsWhenIdle(sid)
+        }
+    }
+
+    /** 该会话里还有没有「未处理且未失效」的卡片（心跳里的廉价前置判断，避免每 2 秒拼列表）。 */
+    private fun hasUnresolvedCard(sid: String): Boolean {
+        val msgs = runtimes[sid]?.messages?.value ?: return false
+        return msgs.any { m ->
+            (m.approval?.resolved?.isEmpty() == true && m.approval?.expired != true) ||
+                (m.clarify?.resolved?.isEmpty() == true && m.clarify?.expired != true)
+        }
     }
 
     /**
