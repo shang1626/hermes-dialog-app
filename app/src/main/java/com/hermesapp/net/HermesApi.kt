@@ -633,6 +633,13 @@ class HermesApi(
 
     fun sysinfo(): JSONObject = sync(base("/health/sysinfo").get().build())
 
+    /**
+     * 用量统计（服务端只读端点 GET /api/stats?days=N，N 夹 1..90）。
+     * 走 [sync]→[callText] 的 HTTP/1.1 客户端（callTimeout 180s）：服务端首次冷查
+     * 要 3~5 秒（大 state.db），不能按探针那套 15s 超时算。调用方须在 Dispatchers.IO 里跑。
+     */
+    fun stats(days: Int): JSONObject = sync(base("/api/stats?days=" + days.coerceIn(1, 90)).get().build())
+
     fun ping(): Boolean = runCatching {
         probeClient.newCall(base("/health").get().build()).execute().use { resp ->
             if (!resp.isSuccessful) AppLog.err("http", "GET /health -> " + resp.code)

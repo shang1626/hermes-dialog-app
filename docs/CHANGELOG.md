@@ -1,3 +1,20 @@
+## 2.191 — versionCode 202
+
+**为什么会有这一版**：用户要求在侧边栏「状态 / 任务 / 设置」旁边加一个「统计」按钮，点进去看输入 token、输出 token、调用次数等信息。
+
+- 侧边栏底部改成四个平铺按钮：**状态 · 统计 · 任务 · 设置**；顶栏标题加「统计」；tab 号 4，返回键行为与其它页一致。
+- 新统计页：窗口切 24 小时 / 7 天 / 30 天 / 90 天（平铺小按钮，手点刷新，不做自动轮询）。
+  - 概览格：调用次数、会话数、我提问/助手回复条数、工具调用次数、输入/输出/缓存读/推理/合计 token、平均每调用 token、活跃时长、消息总数。
+  - 分渠道（App / 微信 / 定时任务 / 子任务 / 命令行）、分模型、按用途（主对话 / 压缩摘要 / 审批判断 / 视觉识图 / 自动取名 / 后台复盘）。
+  - 按天趋势（数字 + 横条）、工具调用 Top、最耗 token 的会话 Top 5。
+  - 页脚写明口径：按会话开始时刻归日；合计 token = 输入+输出+缓存读+缓存写；不放费用（本机未记录计费）。
+- 数据源：服务端新增**只读**端点 `GET /api/stats?days=N`（补丁 `apply_app_stats_patch.py`，已登记进补丁清单）。它聚合 state.db 里**本来就有的**逐会话计数（sessions / messages / session_model_usage）+ 复用 `agent.insights` 的工具用量：**不新增表、不埋点、不改写入路径**，独立只读连接纯 SELECT，查询跑 worker 线程，历史数据立刻可查。
+- App 侧新增纯函数与单测（StatsFormatTest：token 缩写 / 千分位 / 时长 / 来源与用途中文名，5 例）。
+
+（改 App.kt / ChatViewModel.kt / Screens.kt / net/HermesApi.kt / StatsBuild.kt（新）/ StatsFormatTest.kt（新）/ app/build.gradle.kts / docs/CHANGELOG.md；服务端 api_server.py 走补丁）
+
+---
+
 ## 2.188 — versionCode 199
 
 **为什么会有这一版**：用户反馈设置页里的「保活（防被系统回收）」那一块不必摆在界面上（三步说明 + 「电池优化白名单」「自启动 / 省电设置」两个按钮），要求去掉。

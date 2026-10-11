@@ -1507,6 +1507,280 @@ fun StatusCard(s: StatusSection) {
 }
 
 /**
+ * 统计页：只读展示服务端 `/api/stats` 的用量聚合（窗口 24 小时 / 7 / 30 / 90 天）。
+ *
+ * 手机端布局：窗口按钮平铺（不用下拉）+ 刷新；概览格两列；下面依次是 分渠道 / 分模型 /
+ * 分用途 / 按天 / 工具 Top / 最耗会话。**不做自动轮询**——这是历史累计数据，手点刷新即可，
+ * 也避免在大 state.db 上反复跑聚合查询（服务端一次 0.7~5 秒）。
+ */
+@Composable
+fun StatsScreen(vm: ChatViewModel, prefs: Prefs) {
+    val c = LocalAppColors.current
+    val model by vm.stats.collectAsStateWithLifecycle()
+    val err by vm.statsErr.collectAsStateWithLifecycle()
+    val loading by vm.statsLoading.collectAsStateWithLifecycle()
+    val days by vm.statsDays.collectAsStateWithLifecycle()
+
+    // 首次进入拉一次（已有数据就不重复拉，切页回来仍是上次的结果）。
+    LaunchedEffect(Unit) { if (model == null) vm.refreshStats(days) }
+
+    Column(Modifier.fillMaxSize()) {
+        // 顶部条：标题 + 上次刷新时刻 + 刷新（与状态页同一视觉语言）。
+        Row(
+            Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("用量统计", color = c.text, fontSize = T.body, fontWeight = T.bold)
+            Spacer(Modifier.weight(1f))
+            Text(
+                if (loading) "刷新中…" else if (model != null) "上次 " + TimeFmt.hhmmss(model!!.generatedAt) else "",
+                color = c.faint, fontSize = T.micro
+            )
+            Spacer(Modifier.width(G.x2))
+            OutlinedButton(
+                onClick = { vm.refreshStats(days) },
+                enabled = !loading,
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                shape = RoundedCornerShape(Rad.pill),
+                border = BorderStroke(1.dp, c.border),
+            ) { Text("刷新", fontSize = T.sub, color = if (loading) c.dim else c.accent) }
+        }
+        // 窗口：四个平铺小描边按钮，选中项用主色描边高亮。
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            for (opt in listOf(1 to "24小时", 7 to "7天", 30 to "30天", 90 to "90天")) {
+                val sel = days == opt.first
+                OutlinedButton(
+                    onClick = { vm.refreshStats(opt.first) },
+                    shape = RoundedCornerShape(Rad.pill),
+                    border = BorderStroke(1.dp, if (sel) c.accent else c.border),
+                    contentPadding = PaddingValues(vertical = 4.dp),
+                    modifier = Modifier.weight(1f),
+                ) { Text(opt.second, fontSize = T.cap, color = if (sel) c.accent else c.dim) }
+            }
+        }
+        if (err.isNotEmpty()) {
+            Text(
+                err, color = c.bad, fontSize = T.sub,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp)
+            )
+        }
+        val m = model
+        if (m == null) {
+            Text(
+                if (err.isEmpty()) "正在统计…" else "",
+                color = c.dim, fontSize = T.sub, modifier = Modifier.padding(G.page)
+            )
+            return
+        }
+
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(G.page)) {
+            // ① 概览格：两列平铺（同类数据同行，不留大块空白）。
+            for (row in m.metrics.chunked(2)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(G.x2)) {
+                    for (mm in row) StatsCell(mm, Modifier.weight(1f))
+                    if (row.size == 1) Spacer(Modifier.weight(1f))
+                }
+                Spacer(Modifier.height(G.x2))
+            }
+            // ② 分渠道 / 分模型 / 分用途。
+            StatsSectionCard("按渠道（token 花在哪）", m.sources)
+            StatsSectionCard("按模型", m.models)
+            StatsSectionCard("按用途（含辅助调用）", m.tasks)
+            // ③ 按天趋势（数字 + 横条）。
+            StatsDailyCard(m.daily)
+            // ④ 工具调用 Top、最耗会话。
+            StatsToolCard(m.tools)
+            StatsTopCard(m.tops)
+            Text(
+                "口径：「按天」按会话开始时刻归日（跨午夜的会话整段记在开始那天）；合计 token = 输入 + 输出 + 缓存读 + 缓存写；工具调用数与上方列表同口径。本页不放费用——本机未记录计费，显示 0 会误导。",
+                color = c.faint, fontSize = T.micro
+            )
+        }
+    }
+}
+
+/** 概览格：标签 + 主值 + 一行小字副值。 */
+@Composable
+private fun StatsCell(m: StatsMetric, modifier: Modifier = Modifier) {
+    val c = LocalAppColors.current
+    Surface(
+        color = c.panel,
+        shape = RoundedCornerShape(Rad.card),
+        border = BorderStroke(1.dp, c.borderSoft),
+        modifier = modifier,
+    ) {
+        Column(Modifier.padding(G.x3)) {
+            Text(m.label, color = c.dim, fontSize = T.cap)
+            Spacer(Modifier.height(2.dp))
+            Text(
+                m.value, color = c.text, fontSize = T.body, fontWeight = T.bold,
+                maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+            if (m.sub.isNotEmpty()) {
+                Spacer(Modifier.height(1.dp))
+                Text(
+                    m.sub, color = c.faint, fontSize = T.micro,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+/** 通用分段卡：标题 + 「左名 / 右主值 + 副值」行列表（分渠道、分模型、分用途共用）。 */
+@Composable
+private fun StatsSectionCard(title: String, rows: List<StatsRow>) {
+    val c = LocalAppColors.current
+    if (rows.isEmpty()) return
+    Surface(
+        color = c.panel,
+        shape = RoundedCornerShape(Rad.card),
+        border = BorderStroke(1.dp, c.borderSoft),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(G.x4)) {
+            Text(title, color = c.accent, fontSize = T.sub, fontWeight = T.bold)
+            Spacer(Modifier.height(G.x3))
+            for (r in rows) {
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        r.name, color = c.dim, fontSize = T.cap,
+                        modifier = Modifier.width(88.dp), maxLines = 1, overflow = TextOverflow.Ellipsis
+                    )
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            r.value, color = c.text, fontSize = T.sub,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis
+                        )
+                        if (r.sub.isNotEmpty()) {
+                            Text(
+                                r.sub, color = c.faint, fontSize = T.micro,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Spacer(Modifier.height(G.x3))
+}
+
+/** 按天：每天一行「日期 + 横条 + 调用/输入/输出」，条长按当天 token 占比。 */
+@Composable
+private fun StatsDailyCard(list: List<StatsDaily>) {
+    val c = LocalAppColors.current
+    if (list.isEmpty()) return
+    val maxTok = (list.maxOfOrNull { it.input + it.output } ?: 1L).coerceAtLeast(1L)
+    Surface(
+        color = c.panel,
+        shape = RoundedCornerShape(Rad.card),
+        border = BorderStroke(1.dp, c.borderSoft),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(G.x4)) {
+            Text("按天（最近 " + list.size + " 天）", color = c.accent, fontSize = T.sub, fontWeight = T.bold)
+            Spacer(Modifier.height(G.x3))
+            for (d in list) {
+                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(d.label, color = c.dim, fontSize = T.cap, modifier = Modifier.width(44.dp))
+                    Column(Modifier.weight(1f)) {
+                        Box(
+                            Modifier.fillMaxWidth().height(6.dp)
+                                .clip(RoundedCornerShape(Rad.pill)).background(c.cardAlt)
+                        ) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth(((d.input + d.output).toFloat() / maxTok.toFloat()).coerceIn(0.03f, 1f))
+                                    .fillMaxHeight()
+                                    .clip(RoundedCornerShape(Rad.pill)).background(c.accent)
+                            )
+                        }
+                        Spacer(Modifier.height(1.dp))
+                        Text(
+                            "调用 " + fmtNum(d.calls) + " · 入 " + fmtTok(d.input) + " · 出 " + fmtTok(d.output),
+                            color = c.faint, fontSize = T.micro,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
+    }
+    Spacer(Modifier.height(G.x3))
+}
+
+/** 工具调用 Top：名字左、次数右。 */
+@Composable
+private fun StatsToolCard(list: List<StatsTool>) {
+    val c = LocalAppColors.current
+    if (list.isEmpty()) return
+    Surface(
+        color = c.panel,
+        shape = RoundedCornerShape(Rad.card),
+        border = BorderStroke(1.dp, c.borderSoft),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(G.x4)) {
+            Text("工具调用 Top", color = c.accent, fontSize = T.sub, fontWeight = T.bold)
+            Spacer(Modifier.height(G.x3))
+            for (t in list) {
+                Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        t.name, color = c.text, fontSize = T.sub,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
+                    )
+                    Text(fmtNum(t.count) + " 次", color = c.dim, fontSize = T.cap)
+                }
+            }
+        }
+    }
+    Spacer(Modifier.height(G.x3))
+}
+
+/** 消耗最高的会话：标题 + 来源/模型/调用 + 右侧 token。 */
+@Composable
+private fun StatsTopCard(list: List<StatsTop>) {
+    val c = LocalAppColors.current
+    if (list.isEmpty()) return
+    Surface(
+        color = c.panel,
+        shape = RoundedCornerShape(Rad.card),
+        border = BorderStroke(1.dp, c.borderSoft),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(G.x4)) {
+            Text("最耗 token 的会话", color = c.accent, fontSize = T.sub, fontWeight = T.bold)
+            Spacer(Modifier.height(G.x3))
+            for ((i, t) in list.withIndex()) {
+                Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text((i + 1).toString() + ".", color = c.faint, fontSize = T.cap, modifier = Modifier.width(20.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            t.title, color = c.text, fontSize = T.sub,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            t.sub, color = c.faint, fontSize = T.micro,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Spacer(Modifier.width(G.x2))
+                    Text(fmtTok(t.tokens), color = c.dim, fontSize = T.cap)
+                }
+            }
+        }
+    }
+    Spacer(Modifier.height(G.x3))
+}
+
+/**
  * 定时任务页：列出服务端 /api/jobs 的任务，支持暂停 / 恢复 / 立即执行。
  * 只看得到本机器人的任务（两个机器人各用各的 key，服务端按档案隔离）。
  */
