@@ -450,6 +450,21 @@ class HermesApi(
         sync(base("/api/sessions?limit=" + limit).get().build())
 
     /**
+     * 重命名会话：PATCH /api/sessions/{id}，body {"title": ...}。
+     *
+     * 服务端把它记成 title_source=user（权重最高的一条来源），此后小模型自动生成的标题
+     * **不会再覆盖它**——所以改完不会「过一会自己变回去」。约束：标题唯一（与别的会话重名
+     * 服务端返 400 invalid_title）、最长 100 字符（超长同样 400）、会话不存在 404。
+     * 非 2xx 由 [sync] 抛 IOException，调用方必须给用户明确反馈并回滚本地标题。
+     */
+    fun renameSession(sessionId: String, title: String): JSONObject =
+        sync(
+            base("/api/sessions/" + sessionId)
+                .patch(JSONObject().put("title", title).toString().toRequestBody(jsonType))
+                .build()
+        )
+
+    /**
      * 请求停止一条 run。
      *
      * 返回值 = 服务端是否确认收到（HTTP 2xx）。调用方据此区分「已请求停止」与
