@@ -205,6 +205,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      */
     private val _cpuPercent = MutableStateFlow(-1.0)
     val cpuPercent = _cpuPercent.asStateFlow()
+    /** 顶栏 CPU% 的刷新周期（用户定版 2026-10-11：8 秒一次，且只要前台就刷新，与所在页面无关）。 */
+    private val CPU_REFRESH_MS = 8_000L
+    private var cpuTicker: Job? = null
 
     private val _statusSections = MutableStateFlow<List<StatusSection>>(emptyList())
     val statusSections = _statusSections.asStateFlow()
@@ -1228,6 +1231,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         VoicePlayer.rate = p.voiceRate
         StreamVoicePlayer.rate = p.voiceRate
         pingLoop()
+        startCpuLoop()
         refreshStatus()
         refreshFromServer()
         fetchCapabilities()
@@ -1512,6 +1516,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun onAppForeground() {
         AppLog.log("ui", "回前台")
+        // 回前台立刻补一次 CPU%（平时的 8 秒循环可能刚好在后台睡过一轮，别让顶栏空着）。
+        viewModelScope.launch(Dispatchers.IO) { refreshCpuOnce() }
         // 回前台顺手看一眼定时任务收件箱：App 这个通道收不到推送（服务端
         // supports_async_delivery=False），任务产出只能自己来拉。
         refreshInbox()
@@ -1811,10 +1817,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             // 避免单次超时（fails 未达 3 次阈值）也把角标打红。
             var lastOkAt = 0L
             while (true) {
-                // 省电（2026-10-11 用户要求）：App 不在前台就一个请求都不发——心跳、CPU、更新检查
-                // 全停，只留 10 秒醒一次的廉价 sleep（不给网络栈和射频添活动）。
+                // 省电（2026-10-11 用户要求）：App 不在前台就一个请求都不发——心跳、更新检查全停，
+                // 只留 10 秒醒一次的廉价 sleep（不给网络栈和射频添活动）。CPU% 也停，但**不清值**：
+                // 回前台会立刻补一次（onAppForeground），清掉反而让顶栏先空一拍。
                 if (!AppForeground.isForeground) {
-                    if (_cpuPercent.value >= 0) _cpuPercent.value = -1.0   // 不留过期 CPU 值
                     delay(10_000)
                     continue
                 }
@@ -1837,25 +1843,37 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         AppLog.log("net", "探测失败第 " + fails + " 次（最近成功=" + recentlyOk + "），暂不标离线")
                     }
                 }
-                // 顶栏 CPU 百分比：**只在「状态」页可见时**拉（用户要求这页只在打开时刷新）。
-                // 不在那页就把值置 -1：界面本来就不显示 -1，也不会留一个过期读数骗人。
-                if (StatusVisibility.statusVisible) {
-                    runCatching {
-                        val h = api?.sysinfo()
-                        if (h != null) {
-                            val p = h.optDouble("cpu_percent", -1.0)
-                            if (p >= 0) _cpuPercent.value = p
-                        }
-                    }
-                } else if (_cpuPercent.value >= 0) {
-                    _cpuPercent.value = -1.0
-                }
                 // 每 30 秒静默查一次更新：发新版后角标自动亮起，不必等下次启动（仅前台）。
                 tick++
                 if (tick % 6 == 0) checkUpdateSilently()
-                // 在线点不必 5 秒那么勤：在状态页 5 秒（页面本身就是 5 秒刷新），其余页 15 秒。
-                delay(if (StatusVisibility.statusVisible) 5_000L else 15_000L)
+                // 在线点 5 秒一探就够（CPU% 不在这条循环里，见 startCpuLoop）。
+                delay(5_000L)
             }
+        }
+    }
+
+    /**
+     * 顶栏 CPU 百分比：独立的一条 8 秒循环（用户 2026-10-11 定版：把这一项弄回来、单独保留、8 秒一次）。
+     *
+     * 为什么与心跳分开：心跳（在线点）和 CPU 是两件互不相干的事，之前把 CPU 并进心跳并按「状态页
+     * 是否可见」开关，结果用户不在状态页时顶栏就不显示 CPU 了。现在 CPU 归自己这条循环——只要
+     * App 在前台就取，跟停在哪一页无关；后台一律不取（省电，用户明确要求过）。
+     */
+    private fun startCpuLoop() {
+        if (cpuTicker?.isActive == true) return
+        cpuTicker = viewModelScope.launch(Dispatchers.IO) {
+            while (isActive) {
+                if (AppForeground.isForeground) refreshCpuOnce()
+                delay(CPU_REFRESH_MS)
+            }
+        }
+    }
+
+    /** 取一次 CPU%（失败保留上一次的值，不闪空；后台调用方自己负责不问）。 */
+    private fun refreshCpuOnce() {
+        runCatching {
+            val p = api?.sysinfo()?.optDouble("cpu_percent", -1.0) ?: -1.0
+            if (p >= 0) _cpuPercent.value = p
         }
     }
 
@@ -4418,6 +4436,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         runFlagsTicker?.cancel()
         runFlagsTicker = null
+        cpuTicker?.cancel()
+        cpuTicker = null
         super.onCleared()
     }
 

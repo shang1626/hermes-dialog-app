@@ -35,17 +35,6 @@ object ChatVisibility {
 }
 
 /**
- * 「状态」页是否在眼前（2026-10-11 省电）。
- *
- * 为什么单列：顶栏的 CPU% 由心跳循环每 5 秒拉一次 /health/sysinfo —— 用户不在这页时那是纯浪费
- * 电量和流量（用户明确要求「只有打开该界面才刷新，别在后台一直刷」）。心跳循环据此只在这页可见
- * 时才拉 sysinfo；不可见时把 CPU 值置 -1（界面本就不显示占位）。
- */
-object StatusVisibility {
-    @Volatile var statusVisible: Boolean = false
-}
-
-/**
  * 后台消息提醒：App 不在前台时收到助手回复，走系统通知（提示音 + 震动）。
  * 渠道重要性 HIGH，声音/震动由渠道属性控制；Android 13+ 需 POST_NOTIFICATIONS 授权。
  */
