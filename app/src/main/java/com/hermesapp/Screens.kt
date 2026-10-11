@@ -1358,6 +1358,12 @@ fun StatusScreen(vm: ChatViewModel, prefs: Prefs) {
     // 上次刷新时刻：给「每 5 秒自动刷新」配一个会动的秒数，一眼看出数据是新的。
     var refreshedAt by remember { mutableStateOf(0L) }
     LaunchedEffect(Unit) { vm.refreshStatus() }
+    // 告诉心跳循环「状态页在眼前」：它据此决定要不要拉 /health/sysinfo（顶栏 CPU%）——
+    // 不在这页就不拉，省电省流量（2026-10-11 用户要求：只有打开该界面才刷新）。
+    DisposableEffect(Unit) {
+        StatusVisibility.statusVisible = true
+        onDispose { StatusVisibility.statusVisible = false }
+    }
     // 每 5 秒自动刷新（仅前台；退后台停，省电省包）
     val resumedStatus by isResumedState()
     LaunchedEffect(resumedStatus) {
@@ -1575,8 +1581,8 @@ fun StatsScreen(vm: ChatViewModel, prefs: Prefs) {
     val loading by vm.statsLoading.collectAsStateWithLifecycle()
     val days by vm.statsDays.collectAsStateWithLifecycle()
 
-    // 首次进入拉一次（已有数据就不重复拉，切页回来仍是上次的结果）。
-    LaunchedEffect(Unit) { if (model == null) vm.refreshStats(days) }
+    // 每次进这一页刷新一次（用户要求：只有打开该界面才刷新；页面本身不做轮询）。
+    LaunchedEffect(Unit) { vm.refreshStats(days) }
 
     Column(Modifier.fillMaxSize()) {
         // 顶部条：标题 + 上次刷新时刻 + 刷新（与状态页同一视觉语言）。
@@ -2145,6 +2151,17 @@ fun JobCard(j: JobItem, onAction: (String) -> Unit) {
                 if (j.schedule.isNotEmpty()) add("排期 " + j.schedule)
                 if (j.repeatDone > 0) add("已跑 " + j.repeatDone + " 次")
             }.joinToString("   ·   ")
+            // 已停用时多一行「谁停的」：用户自己按的暂停，服务端会拒绝 agent 的自行恢复；
+            // agent 停的则写明它停的理由——不然用户只会看到「暂停了却还在跑」，以为按钮坏了
+            //（2026-10-11 实测就是 agent 把自己 resume 了）。
+            val pauseLine = if (!j.enabled) {
+                val who = when (j.pausedBy) {
+                    "user" -> "你按的暂停（agent 不能替你恢复）"
+                    "agent" -> "agent 自己停的" + (if (j.pausedReason.isNotEmpty()) "：" + j.pausedReason else "")
+                    else -> "已暂停"
+                }
+                who + if (j.pausedAt.isNotEmpty()) " · " + j.pausedAt else ""
+            } else ""
             if (line2.isNotEmpty()) {
                 Spacer(Modifier.height(G.x1))
                 Text(
@@ -2157,6 +2174,13 @@ fun JobCard(j: JobItem, onAction: (String) -> Unit) {
                 Text(
                     line3, color = c.dim, fontSize = T.micro,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (pauseLine.isNotEmpty()) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    pauseLine, color = if (j.pausedBy == "user") c.accent else c.warn,
+                    fontSize = T.micro, maxLines = 2, overflow = TextOverflow.Ellipsis,
                 )
             }
             Spacer(Modifier.height(G.x2))
@@ -2184,6 +2208,15 @@ fun JobCard(j: JobItem, onAction: (String) -> Unit) {
                 if (j.model.isNotEmpty()) JobMeta("模型", j.model)
                 if (j.createdAt.isNotEmpty()) JobMeta("创建", j.createdAt)
                 if (j.repeatDone > 0) JobMeta("已跑", j.repeatDone.toString() + " 次")
+                if (!j.enabled) {
+                    val who = when (j.pausedBy) {
+                        "user" -> "你在 App 里暂停"
+                        "agent" -> "agent 暂停"
+                        else -> "已暂停"
+                    }
+                    JobMeta("暂停", who + (if (j.pausedAt.isNotEmpty()) " · " + j.pausedAt else "") +
+                        (if (j.pausedReason.isNotEmpty()) " · " + j.pausedReason else ""))
+                }
                 // 最近一次执行明细：状态 + 耗时 / 失败原因。
                 // 这一段回答的是「刚才点『立即执行』到底跑了哪条、跑成没成」。
                 if (j.execStatus.isNotEmpty()) {

@@ -1,3 +1,15 @@
+## 2.193 — versionCode 204
+
+**为什么会有这一版**：用户报两件事——①「定时任务」页的「暂停」按钮像失效，暂停后到点还是跑；②「状态」「统计」页的信息不该在后台一直刷新（费电）。
+
+- ①根因（服务端日志实据，不是按钮坏）：用户在 App 里 15:52 暂停 game-dev-loop，16:10:37 **该任务自己的对话轮**调用 `cronjob_manage(action='resume')` 把它恢复了，紧接着 16:10:38 调度器把攒下的 16:00 刻度补跑 —— 用户看到的就是「暂停无效」。修法（服务端补丁 apply_user_pause_patch）：暂停记录 `paused_by`（user / agent）；**用户在 App/CLI 里的暂停高于 agent 的 resume**，agent 调 resume/update(enabled) 会被明确拒绝并提示「让用户自己恢复」；App 的 /api/jobs 暂停/恢复记为 user，恢复时清掉标记。另外给现存「用户按过暂停」的任务补了标记。
+- ①界面：任务卡在「已停用」时多一行**谁停的**（「你按的暂停（agent 不能替你恢复）· 16:20」/「agent 自己停的：原因」），详情里也有「暂停」一行，用户不用再怀疑按钮。
+- ②省电：心跳循环原来无论前台后台每 5 秒都在打 `/health` + `/health/sysinfo`。现在——**App 不在前台一个请求都不发**；顶栏 CPU% 只在「状态」页可见时才拉（不在这页就把值置 -1，不留过期读数）；在线点探针在状态页 5 秒、其余页 15 秒；「状态」页自身的 5 秒刷新与「统计」页一样，只在页面打开时发生（统计页改成每次进入刷新一次）。
+
+（改 ChatModels.kt / ChatViewModel.kt / Screens.kt / Notifier.kt / app/build.gradle.kts / docs/CHANGELOG.md；服务端走补丁 apply_user_pause_patch.py）
+
+---
+
 ## 2.192 — versionCode 203
 
 **为什么会有这一版**：用户报「敏感权限审批错过 → 超时没确认 → 提示一直挂着，确认不了也拒绝不了」（真机实据：App 对 run_ff9eddc7 / run_2f6096e8 反复 POST approval，服务端每条都回 409 approval_not_active）。
