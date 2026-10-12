@@ -36,12 +36,23 @@ DESIGN.md 讲「有哪些文件」，这份讲「运行时到底怎么跑、哪�
 
 老版本在 `onClosed`/`onError` 里直接 `startRunWith(a, "继续")`，把「继续」当成用户输入写进会话——用户会看到自己没发过的消息。现在 `maybeContinue()` 的做法：
 
-- 最多自动重连 3 次（`autoContinue >= 3` 就报「已自动重连 3 次」并 `failPending`）
-- 每次：延迟 1.2s → 查 `/v1/runs/{id}` 状态
-  - 还在跑（含 `stopping`）→ `streamRun()` 续接**同一个 run**，不新增任何用户消息
-  - 已结束 → `finishPending()` + `refreshFromServer()` 拉回服务端产出
+- 最多自动重连 8 次（`autoContinue >= MAX_RECONNECT_ATTEMPTS`），退避 1→2→4→8→16→30 秒封顶；用尽后不判死，转状态轮询 / 翻历史取回
+- 每次：退避等待 → 查 `/v1/runs/{id}` 状态
+  - 还在跑（含 `stopping` / 等审批 / 等澄清）→ `streamRun()` 续接**同一个 run**，不新增任何用户消息
+  - 已结束 → `finishRecoveredTurn()` 收尾 + 拉回服务端产出
 
 `runFinished` 是幂等闸：一旦置位，后续 onClosed/onError 都不再触发续接。
+
+**兜底：断流自愈看门狗（v2.199）**。上面这条退避链有三个已知的静默出口——流代际号把回调作废、
+同会话探测的单飞位没释放、退避用尽转翻历史后不起任何任务；任何一种命中都会让界面上的
+「正在执行」永久停住。真机现场（10-13 01:44–01:50）还多一种：**半死的流**——连接对象还在、
+既没有事件也没有 onClosed/onError 回调，只有切前后台时的 25 秒体检才会去掐它。
+
+`startRunFlagsTicker` 里那个每 2 秒的扫描因此多了一件事：对「本轮还在跑、却没有活流」的会话
+（判据 `ReconnectPolicy.streamNeedsRestart`：没有流 / 流已取消 / 静默超过 `STREAM_DEAD_AFTER_MS`=45 秒，
+服务端每 10 秒必发心跳帧所以正常空闲不会误判）立刻重起流，退避归零、作废历史轮询。
+纯读内存、零新增请求；同一会话 15 秒内最多重起一次；正在跑状态轮询/翻历史的会话跳过。
+
 
 ## 图片链路
 

@@ -1,6 +1,8 @@
 package com.hermesapp
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -40,5 +42,41 @@ class ReconnectPolicyTest {
     @Test
     fun max_attempts_is_8() {
         assertEquals(8, ReconnectPolicy.MAX_RECONNECT_ATTEMPTS)
+    }
+
+    // ---- 断流自愈看门狗（2026-10-13 现场：流断了之后十分钟 App 一次都没再连）----------------
+
+    private fun need(
+        busy: Boolean = true, finished: Boolean = false, hasRunId: Boolean = true,
+        hasCall: Boolean = true, callCanceled: Boolean = false, idleMs: Long = 0L,
+    ) = ReconnectPolicy.streamNeedsRestart(busy, finished, hasRunId, hasCall, callCanceled, idleMs)
+
+    @Test
+    fun watchdog_restarts_when_no_stream_at_all() {
+        // 退避用尽转「翻历史」的死胡同、或流从未起来 → 手上没有流，必须重起
+        assertTrue(need(hasCall = false))
+        assertTrue(need(hasCall = false, idleMs = Long.MAX_VALUE))
+    }
+
+    @Test
+    fun watchdog_restarts_when_stream_was_canceled() {
+        assertTrue(need(callCanceled = true))
+    }
+
+    @Test
+    fun watchdog_restarts_only_after_stream_goes_quiet() {
+        // 服务端每 10 秒必发心跳帧（任何一行都刷 lastEventAt）→ 静默超过 45 秒才算死
+        assertFalse(need(idleMs = 10_000L))                       // 正常心跳
+        assertFalse(need(idleMs = 30_000L))                       // 长工具执行期间只有心跳
+        assertFalse(need(idleMs = ReconnectPolicy.STREAM_DEAD_AFTER_MS))  // 边界：等于阈值不算死
+        assertTrue(need(idleMs = ReconnectPolicy.STREAM_DEAD_AFTER_MS + 1))
+    }
+
+    @Test
+    fun watchdog_never_touches_idle_or_finished_turns() {
+        assertFalse(need(busy = false))                // 本轮不在跑：不许凭空起流
+        assertFalse(need(finished = true))             // 已收尾（等收尾补拉那一段）
+        assertFalse(need(hasRunId = false))            // 没有 runId：起流也没目标
+        assertFalse(need(busy = false, hasCall = false, idleMs = Long.MAX_VALUE))
     }
 }
