@@ -41,6 +41,12 @@ private const val MAX_RECONNECT_ATTEMPTS = ReconnectPolicy.MAX_RECONNECT_ATTEMPT
 private const val FOREGROUND_SYNC_THROTTLE_MS = 3_000L
 
 /**
+ * 增量同步的窗口：本地已有记录时只拉服务端末尾这么多行（原始行，含工具行）。
+ * 实测同一会话全量 581KB~1.81MB、末尾 40 行 112~196KB → 省 87%。
+ */
+private const val SYNC_TAIL_ROWS = 40
+
+/**
  * 「服务端还在跑」的状态集合：探测到这些状态就续接事件流，不判结束。
  * 注意必须与 api_server 的 run 状态机一致（含 stopping——已请求停止但还没收尾）。
  */
@@ -1785,16 +1791,31 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 表现就是「该同步的时候没同步」。
         RuntimeHub.scope.launch(Dispatchers.IO) {
             try {
-                val resp = a.sessionMessages(id)
-                val arr = resp.optJSONArray("data") ?: return@launch
-                val list = mutableListOf<Msg>()
-                for (i in 0 until arr.length()) {
-                    val o = arr.optJSONObject(i) ?: continue
-                    val role = o.optString("role", "assistant")
-                    if (role != "user" && role != "assistant") continue
-                    val content = o.optString("content", "")
-                    if (content.isEmpty()) continue
-                    list.add(Msg(role, content, pending = false, ts = parseTs(o.optString("timestamp", ""))))
+                fun parseRows(a0: org.json.JSONArray?): MutableList<Msg> {
+                    val out = mutableListOf<Msg>()
+                    if (a0 == null) return out
+                    for (i in 0 until a0.length()) {
+                        val o = a0.optJSONObject(i) ?: continue
+                        val role = o.optString("role", "assistant")
+                        if (role != "user" && role != "assistant") continue
+                        val content = o.optString("content", "")
+                        if (content.isEmpty()) continue
+                        out.add(Msg(role, content, pending = false, ts = parseTs(o.optString("timestamp", ""))))
+                    }
+                    return out
+                }
+                // 增量优先（2026-10-13 省电改动）：本地已有这一会话的记录时只拉末尾 40 行。
+                // 实测同一会话：全量 581KB~1.81MB，末尾 40 行 112~196KB（省 87%）；这一项原来
+                // 37.5 MB/小时，是手机上最大的一笔流量。全量只在「本地还没有内容」时用。
+                val localNow = r.messages.value
+                var list = if (localNow.isEmpty()) parseRows(a.sessionMessages(id).optJSONArray("data"))
+                           else parseRows(a.sessionMessagesTail(id, SYNC_TAIL_ROWS).optJSONArray("data"))
+                // 兜底：末尾窗口正好落在一轮中间（这一轮原始行超过 40 条）时，窗口里一条用户
+                // 消息都没有 —— 服务端那一段会被当成 head 丢掉、补不回最终正文，退回全量再拉一次。
+                // 只在极少数长工具轮次里发生，不是常规路径。
+                if (localNow.isNotEmpty() && list.isNotEmpty() && list.none { it.role == "user" }) {
+                    AppLog.log("sync", "末尾窗口内无用户消息，退回全量 sid=" + id.take(8))
+                    list = parseRows(a.sessionMessages(id).optJSONArray("data"))
                 }
                 // 守卫：该会话此刻已在跑任务则不覆盖（切换会话不影响——只写它自己的缓冲）。
                 // 但要落 needSync：请求往返期间 run 可能刚开始/被恢复（冷启动就是这么撞上的），
@@ -1885,9 +1906,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         AppLog.log("net", "探测失败第 " + fails + " 次（最近成功=" + recentlyOk + "），暂不标离线")
                     }
                 }
-                // 每 30 秒静默查一次更新：发新版后角标自动亮起，不必等下次启动（仅前台）。
+                // 每 10 分钟静默查一次更新（2026-10-13 省电：原 30 秒一次 = 95 次/小时的公网往返，
+                // 实测 3 小时 285 次；发新版后角标最多晚 10 分钟亮起，可接受）。仅前台。
                 tick++
-                if (tick % 6 == 0) checkUpdateSilently()
+                if (tick % 120 == 0) checkUpdateSilently()
                 // 在线点 5 秒一探就够（CPU% 不在这条循环里，见 startCpuLoop）。
                 delay(5_000L)
             }
@@ -4388,7 +4410,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // 交给 syncFromServer 内部的 reconcileServerRuns 接管。不带这个，用户开着 App
                 // 时别的端起的任务要等切前后台/切会话才被发现。
                 tick++
-                if (tick % 15 == 0 && AppForeground.isForeground) syncFromServer(30_000L)
+                // 会话列表轮询节流（2026-10-13 省电）：有任务在跑 30 秒一轮，空闲 120 秒一轮；
+                // 响应侧也精简了（compact=1）。原来固定 30 秒 × 167KB = 11.5 MB/小时。
+                val period = ReconnectPolicy.sessionsSyncTicks(
+                    runtimes.values.any { it.busy.value } || _serverRuns.value.isNotEmpty())
+                if (tick % period == 0 && AppForeground.isForeground) syncFromServer(period * 2_000L)
                 delay(2_000L)
             }
         }

@@ -79,4 +79,15 @@ class ReconnectPolicyTest {
         assertFalse(need(hasRunId = false))            // 没有 runId：起流也没目标
         assertFalse(need(busy = false, hasCall = false, idleMs = Long.MAX_VALUE))
     }
+
+    // ---- 会话列表轮询节拍（2026-10-13 省电：167KB × 120 次/小时 → 精简 + 降频）-----------
+
+    @Test
+    fun sessions_sync_slows_down_when_nothing_is_running() {
+        assertEquals(15, ReconnectPolicy.sessionsSyncTicks(true))    // 有任务在跑：30 秒一轮
+        assertEquals(60, ReconnectPolicy.sessionsSyncTicks(false))   // 空闲：120 秒一轮
+        // 两个节拍各自 × 2 秒 = 期望的真实间隔
+        assertEquals(30_000L, ReconnectPolicy.sessionsSyncTicks(true) * 2_000L)
+        assertEquals(120_000L, ReconnectPolicy.sessionsSyncTicks(false) * 2_000L)
+    }
 }

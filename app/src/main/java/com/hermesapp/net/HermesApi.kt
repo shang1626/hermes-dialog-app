@@ -449,8 +449,8 @@ class HermesApi(
      * 用途：把服务端的正式标题同步回本地会话索引——本地只会生成「新对话」和首句截断，
      * 服务端由小模型生成 3~7 词的正式标题，质量更好，且历史会话也有。
      */
-    fun listSessions(limit: Int = 200): JSONObject =
-        sync(base("/api/sessions?limit=" + limit).get().build())
+    fun listSessions(limit: Int = 200, compact: Boolean = true): JSONObject =
+        sync(base("/api/sessions?limit=" + limit + (if (compact) "&compact=1" else "")).get().build())
 
     /**
      * 重命名会话：PATCH /api/sessions/{id}，body {"title": ...}。
