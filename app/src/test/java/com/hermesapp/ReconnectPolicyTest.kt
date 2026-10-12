@@ -90,4 +90,35 @@ class ReconnectPolicyTest {
         assertEquals(30_000L, ReconnectPolicy.sessionsSyncTicks(true) * 2_000L)
         assertEquals(120_000L, ReconnectPolicy.sessionsSyncTicks(false) * 2_000L)
     }
+
+    // ---- 增量窗口（铁律：本地绝不能比服务端少）-----------------------------------------
+
+    @Test
+    fun sync_window_covers_exactly_what_local_is_missing() {
+        // 本地完整（不落后）→ 只拉常规 40 行
+        assertEquals(40, ReconnectPolicy.syncFetchRows(serverRows = 400, localRows = 400, localEmpty = false))
+        // 本地落后 30 行 → 窗口放大到 70，缺的那 30 行落在窗口里
+        assertEquals(70, ReconnectPolicy.syncFetchRows(serverRows = 430, localRows = 400, localEmpty = false))
+        // 本地落后 200 行 → 窗口 240（补上落后的部分）
+        assertEquals(240, ReconnectPolicy.syncFetchRows(serverRows = 600, localRows = 400, localEmpty = false))
+        // 服务端比本地少（本地有服务端没有的：本地独有的助手行/轨迹）→ 仍只拉 40 行，不整份
+        assertEquals(40, ReconnectPolicy.syncFetchRows(serverRows = 300, localRows = 400, localEmpty = false))
+    }
+
+    @Test
+    fun sync_window_falls_back_to_full_pull_when_unknown_or_far_behind() {
+        // 本地空 / 服务端条数未知 → 整份拉（宁可多花一次，也不能少内容）
+        assertEquals(0, ReconnectPolicy.syncFetchRows(serverRows = 400, localRows = 0, localEmpty = true))
+        assertEquals(0, ReconnectPolicy.syncFetchRows(serverRows = -1, localRows = 400, localEmpty = false))
+        // 落后到 400 行仍拼窗口（400+40），401 行就整份拉
+        assertEquals(440, ReconnectPolicy.syncFetchRows(serverRows = 800, localRows = 400, localEmpty = false))
+        assertEquals(0, ReconnectPolicy.syncFetchRows(serverRows = 801, localRows = 400, localEmpty = false))
+    }
+
+    @Test
+    fun local_raw_rows_counts_trace_lines() {
+        assertEquals(12, ReconnectPolicy.localRawRows(10, 2))     // 消息 + 轨迹行
+        assertEquals(10, ReconnectPolicy.localRawRows(10, 0))
+        assertEquals(10, ReconnectPolicy.localRawRows(10, -5))    // 负数兜底
+    }
 }

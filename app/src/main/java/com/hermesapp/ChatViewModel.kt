@@ -40,11 +40,9 @@ private const val MAX_RECONNECT_ATTEMPTS = ReconnectPolicy.MAX_RECONNECT_ATTEMPT
  */
 private const val FOREGROUND_SYNC_THROTTLE_MS = 3_000L
 
-/**
- * 增量同步的窗口：本地已有记录时只拉服务端末尾这么多行（原始行，含工具行）。
- * 实测同一会话全量 581KB~1.81MB、末尾 40 行 112~196KB → 省 87%。
- */
-private const val SYNC_TAIL_ROWS = 40
+/** 过程轨迹的行数：服务端把每个工具调用也存成一行，用它当「本地原始行」代理的一部分。 */
+private fun traceLineCount(trace: String): Int =
+    if (trace.isEmpty()) 0 else trace.count { it == '\n' } + (if (trace.endsWith("\n")) 0 else 1)
 
 /**
  * 「服务端还在跑」的状态集合：探测到这些状态就续接事件流，不判结束。
@@ -267,6 +265,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 服务端每行 last_active（毫秒）。回前台挑「比本地新」的会话对齐时用。 */
     private var serverLastActive: Map<String, Long> = emptyMap()
+
+    /**
+     * 服务端每行的 message_count（含工具行）。
+     * 用来算「本地落后服务端多少行」，据此放大增量窗口——本地绝不能比服务端少。
+     */
+    private var serverMsgCounts: Map<String, Int> = emptyMap()
 
     /** 上次回前台批量对齐其它会话的时间（节流 30 秒，别每次切前后台全拉一遍）。 */
     private var lastAlignAt = 0L
@@ -793,6 +797,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // 接流，后者决定回前台该对齐哪几条会话。
                 val runs = LinkedHashMap<String, String>()
                 val lastActive = HashMap<String, Long>()
+                // message_count（含工具行）：算本地落后多少行、增量窗口开多大（见 refreshFromServerFor）。
+                val msgCounts = HashMap<String, Int>()
                 // 服务端有哪些会话行 —— 待补推的改名要等这一行出现才能推上去。
                 val serverIds = HashSet<String>()
                 // 本地刚改、还没推上去的标题：别让服务端那个（旧的/自动生成的）标题把用户
@@ -807,6 +813,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     if (ar.isNotEmpty() && ar != "null") runs[id] = ar
                     val la = o.optDouble("last_active", 0.0)
                     if (la > 0) lastActive[id] = (la * 1000).toLong()
+                    val mc = o.optInt("message_count", -1)
+                    if (mc >= 0) msgCounts[id] = mc
                     val idx = list.indexOfFirst { it.id == id }
                     if (idx < 0) continue      // 本地没有这条：一律不补行
                     if (pending.containsKey(id)) continue   // 待补推：跳过标题覆盖
@@ -816,6 +824,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
                 serverLastActive = lastActive
+                serverMsgCounts = msgCounts
                 if (_serverRuns.value != runs) _serverRuns.value = runs
                 AppLog.log("sync", "同步标题：服务端=" + arr.length() + " 条，本地=" + list.size +
                     " 条，覆盖=" + changed + " 服务端在跑=" + runs.size)
@@ -1804,12 +1813,25 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     return out
                 }
-                // 增量优先（2026-10-13 省电改动）：本地已有这一会话的记录时只拉末尾 40 行。
-                // 实测同一会话：全量 581KB~1.81MB，末尾 40 行 112~196KB（省 87%）；这一项原来
-                // 37.5 MB/小时，是手机上最大的一笔流量。全量只在「本地还没有内容」时用。
+                // 增量窗口（2026-10-13 省电改动 + 用户铁律「本地绝不能比服务端少」）：
+                // 窗口 = 常规 40 行 + 本地落后服务端的行数 —— 落后多少就把多少补进窗口里，
+                // 本地缺、只在服务端的内容一定落在窗口内。整份拉只在三种情况：本地为空、
+                // 服务端条数未知、落后超过上限（ReconnectPolicy.syncFetchRows 返回 0）。
+                // 实测同一会话：全量 581KB~1.81MB，末尾 40 行 112~196KB（省 87%）；这一项
+                // 原来 37.5 MB/小时，是手机上最大的一笔流量。
                 val localNow = r.messages.value
-                var list = if (localNow.isEmpty()) parseRows(a.sessionMessages(id).optJSONArray("data"))
-                           else parseRows(a.sessionMessagesTail(id, SYNC_TAIL_ROWS).optJSONArray("data"))
+                val srvRows = serverMsgCounts[id] ?: -1
+                val rows = ReconnectPolicy.syncFetchRows(
+                    serverRows = srvRows,
+                    localRows = ReconnectPolicy.localRawRows(
+                        localNow.size, localNow.sumOf { traceLineCount(it.trace) }),
+                    localEmpty = localNow.isEmpty(),
+                )
+                AppLog.log("sync", "同步窗口 sid=" + id.take(8) + " " +
+                    (if (rows <= 0) "整份" else rows.toString() + " 行") +
+                    "（本地=" + localNow.size + " 条 服务端=" + srvRows + " 行）")
+                var list = if (rows <= 0) parseRows(a.sessionMessages(id).optJSONArray("data"))
+                           else parseRows(a.sessionMessagesTail(id, rows).optJSONArray("data"))
                 // 兜底：末尾窗口正好落在一轮中间（这一轮原始行超过 40 条）时，窗口里一条用户
                 // 消息都没有 —— 服务端那一段会被当成 head 丢掉、补不回最终正文，退回全量再拉一次。
                 // 只在极少数长工具轮次里发生，不是常规路径。
