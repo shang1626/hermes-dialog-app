@@ -3881,8 +3881,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     " 现run=" + r.runId.take(12) + " gen=" + gen + "/" + r.sendGen + "）")
                 return@launch
             }
-            val st = a.probeRun(rid)
-            r.probing.set(false)   // 探测出结果即释放单飞位，后续该重试还能再进
+            val st = try {
+                a.probeRun(rid)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLog.err("retry", "退避探测抛异常 run=" + rid.take(12), e)
+                HermesApi.RunStatus.Unknown
+            } finally {
+                // 单飞位必须**无条件**释放：异常或取消漏掉这一行，该会话之后每次重连都会被
+                // 入口那个 CAS 挡回，界面上「正在执行」就永久停住 —— 守卫本身成了泄漏源。
+                // （2026-10-13 加固：原来这行在 probeRun 之后裸着，抛异常就永久泄漏。）
+                r.probing.set(false)
+            }
             // 探测期间（阻塞网络调用）用户也可能停/换轮：这份结果属于旧轮，
             // 不许拿它改当前会话（R02）。
             if (r.sendGen != gen || r.runId != rid || !r.busy.value || r.finished) {
@@ -4371,6 +4382,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             var tick = 0
             while (isActive) {
                 refreshRunFlags()
+                // 断流自愈看门狗：跟状态扫描同一趟（纯读内存，不发请求；只有真判定「没流」时才起流）。
+                superviseStreams()
                 // 每 ~30 秒顺带刷新一次服务端会话列表：把「别的端刚起的轮次」收进来（active_run），
                 // 交给 syncFromServer 内部的 reconcileServerRuns 接管。不带这个，用户开着 App
                 // 时别的端起的任务要等切前后台/切会话才被发现。
@@ -4378,6 +4391,52 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 if (tick % 15 == 0 && AppForeground.isForeground) syncFromServer(30_000L)
                 delay(2_000L)
             }
+        }
+    }
+
+    /**
+     * 断流自愈看门狗：每 2 秒扫一遍内存，凡是「本轮还在跑、手上却没有一条活着的流」的会话，
+     * 立刻把流重起。
+     *
+     * 为什么必须有一个兜底，而不是把三条重连链各自修好就够：断流后的重连有**三个已知的
+     * 静默出口** —— ① 流代际号把这条流的回调作废；② 同会话探测的单飞位没释放，之后每次
+     * 重连都被挡回；③ 退避 8 次用尽转「翻历史」后，那条分支只留一行提示、不起任何任务。
+     * 2026-10-13 真机现场就是这么停住的：01:33:37 起流的任务，流 01:45:59 断掉，之后十分钟
+     * App 一次都没再连（同期健康轮询正常），界面上「正在执行」永久停住。
+     *
+     * 判据只看**事实**（有没有流、流多久没动静，见 ReconnectPolicy.streamNeedsRestart），
+     * 不看是哪条链挂了 —— 以后新加的静默出口也自动被兜住。
+     *
+     * 成本：纯读内存 + 复用已经在跑的 2 秒心跳，零新增请求。只有真判定没流时才发一次
+     * /events（那本来就是这个会话该有的长连接），同一会话 15 秒内最多重起一次。
+     * 正在跑状态轮询/翻历史的会话跳过：那两条链自己会接流，别跟它们抢。
+     */
+    private fun superviseStreams() {
+        val a = api ?: return
+        val now = System.currentTimeMillis()
+        for (r in runtimes.values) {
+            if (r.recoveryJob?.isActive == true) continue
+            val call = r.call
+            val since = if (r.lastEventAt > 0) now - r.lastEventAt else Long.MAX_VALUE
+            val need = ReconnectPolicy.streamNeedsRestart(
+                busy = r.busy.value,
+                finished = r.finished,
+                hasRunId = r.runId.isNotEmpty(),
+                hasCall = call != null,
+                callCanceled = call?.isCanceled() == true,
+                msSinceLastEvent = since,
+            )
+            if (!need) continue
+            if (now - r.lastStreamRestartAt < ReconnectPolicy.STREAM_RESTART_THROTTLE_MS) continue
+            r.lastStreamRestartAt = now
+            AppLog.log("stream", "看门狗重起流 sid=" + r.id.take(8) + " run=" + r.runId.take(12) +
+                "（" + (if (call == null) "没有流" else if (call.isCanceled()) "流已取消"
+                        else "流静默 " + since + "ms") + "）")
+            // 与回前台体检同一套：退避归零 + 作废历史轮询，让流式续接优先于「只等最终答案」。
+            r.autoContinue = 0
+            r.recoveryJob?.cancel()
+            if (r.retryNote.value.isEmpty()) r.retryNote.value = "连接中断，正在重连…"
+            streamRun(a, r.id)
         }
     }
 

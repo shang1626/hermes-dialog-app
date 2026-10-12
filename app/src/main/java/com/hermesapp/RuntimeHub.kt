@@ -111,6 +111,11 @@ internal class SessionRuntime(val id: String) {
     @Volatile var sendJob: Job? = null
     /** 最近一次收到事件的墙钟时间，用于「回到前台」判断流是否已假死。 */
     @Volatile var lastEventAt: Long = 0L
+    /**
+     * 最近一次被看门狗重起流的墙钟时间：只用来节流，防止看门狗每 2 秒都去重起一条
+     * 刚被掐掉、还在退避里的流（重起本身是幂等的，但会刷日志、白打一次 /events）。
+     */
+    @Volatile var lastStreamRestartAt: Long = 0L
     /** 本轮（当前这条流）收到的 SSE 事件条数：排查「步骤不显示」时看事件到底到没到。 */
     @Volatile var evCount: Int = 0
     /** 本轮收到的工具事件（tool.started/completed/failed）条数。 */
