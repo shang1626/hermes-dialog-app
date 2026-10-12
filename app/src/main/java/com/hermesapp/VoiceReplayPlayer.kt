@@ -76,8 +76,12 @@ object VoiceReplayPlayer {
         Thread {
             try {
                 // 先看本机留档：流式播过的那条已经落盘，这里是纯本地读，即时。
+                // 但只有「收完了」的那份才敢直接读（标记里的字节数与文件长度一致）：
+                // 被跳过/让位/手动重播打断的是截断文件，拿它重播会少一截尾巴
+                //（2026-10-13 实测 187 块只落了 176 块，少了 11 块 ≈ 12 秒）。
                 val f = StreamVoicePlayer.voiceFile(ctx, runId)
-                val local = if (f.isFile && f.length() > 0L) f.readBytes() else null
+                val local = if (StreamVoicePlayer.localComplete(ctx, runId) && f.isFile && f.length() > 0L)
+                    f.readBytes() else null
                 val bytes = local ?: fetcher?.invoke(runId)
                 if (bytes == null || bytes.isEmpty()) {
                     AppLog.log("voice", "重播取音频失败 run=" + runId.take(12) + "（服务端无留档或已淘汰）")
@@ -87,9 +91,12 @@ object VoiceReplayPlayer {
                     synchronized(lock) { if (myGen == gen) _nowPlaying.value = "" }
                     return@Thread
                 }
-                // 取回来的才落盘，供下次离线重播。
+                // 取回来的才落盘，供下次离线重播；同时盖章（这份长度就是完整长度）。
                 if (local == null) {
                     runCatching { f.writeBytes(bytes) }
+                    runCatching {
+                        StreamVoicePlayer.completeMarker(ctx, runId).writeText(bytes.size.toString())
+                    }
                 }
                 // 下载期间用户可能已停止 / 切到别的任务：代际变了就不许起播。
                 if (myGen != gen) {
@@ -113,7 +120,9 @@ object VoiceReplayPlayer {
             // 只 release 自己那份）；Stop 时 nowPlaying 为空、B 的播放器已无人管理——
             // 替身实测 after-late-A-then-stop.nowPlaying= 而 active 仍为 1。
             val f = StreamVoicePlayer.voiceFile(ctx, runId)
-            if (!f.isFile || f.length() == 0L) f.writeBytes(bytes)
+            // 长度不符就重写：本机可能是被打断的半截文件（VoiceReplayPlayer 已判过「收完了」，
+            // 这里只是兜一层，避免半截文件被当成完整文件播）。
+            if (!f.isFile || f.length() != bytes.size.toLong()) f.writeBytes(bytes)
             val mp = MediaPlayer()
             mp.setDataSource(f.absolutePath)
             mp.setOnCompletionListener {
