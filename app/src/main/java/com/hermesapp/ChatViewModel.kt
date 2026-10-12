@@ -1592,7 +1592,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             if (last > 0 && now - last > 25_000L) {
                 val c = r.call
                 if (c != null && !c.isCanceled()) {
-                    if (r.retryNote.value.isEmpty()) r.retryNote.value = "回到前台，正在重连…"
+                    if (r.retryNote.value.isEmpty()) r.retryNote.value = ReconnectPolicy.noteForegroundReconnect()
                     // 主动掐掉假死连接：它的 onError 回调自己会走一次退避续接。
                     c.cancel()
                 }
@@ -3743,8 +3743,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val name = ev.event ?: ev.data.optString("event", "")
                 r.evCount++
                 if (name.startsWith("tool.")) r.toolCount++
-                // 收到任何真实事件即视为连接已恢复正常：清掉重试提示与计数。
-                if (name != "replay.truncated" && r.autoContinue != 0) {
+                // 收到任何真实事件即视为连接已恢复正常：清掉重连提示与退避计数。
+                // 判据交给 ReconnectPolicy：必须覆盖「不经退避计数」的恢复路径
+                // （看门狗重起流、回前台掐假死流），否则那行提示会一直钉在会话上方。
+                if (ReconnectPolicy.shouldClearNoteOnEvent(r.retryNote.value, name, r.autoContinue)) {
                     r.autoContinue = 0
                     r.retryNote.value = ""
                 }
@@ -3867,7 +3869,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         r.autoContinue = MAX_RECONNECT_ATTEMPTS
                         waitLiveRunByStatus(sid, rid)
                     } else {
-                        if (r.retryNote.value.isEmpty()) r.retryNote.value = "连接中断：" + (e.message ?: "未知")
+                        if (r.retryNote.value.isEmpty()) r.retryNote.value = ReconnectPolicy.noteReconnecting("：" + (e.message ?: "未知"))
                         maybeContinue(sid)
                     }
                 }
@@ -3906,7 +3908,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val attempt = r.autoContinue + 1
         r.autoContinue = attempt
         val waitMs = backoffDelayMs(attempt)
-        r.retryNote.value = "连接中断，${waitMs / 1000} 秒后重试（$attempt/$MAX_RECONNECT_ATTEMPTS）"
+        r.retryNote.value = ReconnectPolicy.noteReconnecting("，${waitMs / 1000} 秒后重试（$attempt/$MAX_RECONNECT_ATTEMPTS）")
         AppLog.log("retry", "第 $attempt/$MAX_RECONNECT_ATTEMPTS 次重试，${waitMs / 1000}s 后探 run=" + rid.take(12))
         // 退避链认轮（R02）：进入时记下轮次与 runId，结果回来时逐字核对。
         // 旧实现只查 busy/finished —— 用户 Stop A 后起了 B 时 busy 仍是 true，于是
@@ -4124,11 +4126,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 r.autoContinue = 0
                 return
             }
-            r.retryNote.value = "连接中断，已重试 $MAX_RECONNECT_ATTEMPTS 次仍未完成"
+            // 终态提示：故意**不用**重连前缀（ReconnectPolicy.RECONNECTING_NOTE_PREFIX），
+            // 因为它的语义不是「当下正在重连」而是「本轮到此结束」，流恢复也不该把它清掉。
+            r.retryNote.value = "本轮连接中断：重试 $MAX_RECONNECT_ATTEMPTS 次仍未取回结果"
             failPending(sid)
             return
         }
-        r.retryNote.value = "连接中断，正在从服务端取回结果…"
+        r.retryNote.value = ReconnectPolicy.noteReconnecting("，正在从服务端取回结果…")
         r.recoveryJob = RuntimeHub.scope.launch(Dispatchers.IO) {
             var delayMs = 5_000L
             var elapsed = 0L
@@ -4483,7 +4487,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             // 与回前台体检同一套：退避归零 + 作废历史轮询，让流式续接优先于「只等最终答案」。
             r.autoContinue = 0
             r.recoveryJob?.cancel()
-            if (r.retryNote.value.isEmpty()) r.retryNote.value = "连接中断，正在重连…"
+            if (r.retryNote.value.isEmpty()) r.retryNote.value = ReconnectPolicy.noteReconnecting()
             streamRun(a, r.id)
         }
     }

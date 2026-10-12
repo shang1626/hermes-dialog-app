@@ -80,8 +80,8 @@ object ReconnectPolicy {
      * 看门狗判据：这一轮**还在跑**，但手上没有一条活着的流 → 必须重起流。
      *
      * 为什么要有这条（2026-10-13 真机现场）：断流后的重连链有三个已知的静默出口 ——
-     * ① 流代际号把这条流的回调作废；② 同会话探测的单飞位没释放，之后每次重连都被挡回；
-     * ③ 退避 8 次用尽转「翻历史」后，那条分支只留一行提示、不起任何任务。
+     * ① 流代际号把这条流的回调作废；② 同会话探测的单飞位没释放；③ 退避 8 次用尽转「翻历史」后，
+     * 那条分支只留一行提示、不起任何任务。
      * 任何一条命中，界面上「正在执行」就永久停住（实测：01:33:37 起流的任务，流 01:45:59
      * 断掉，之后十分钟 App 一次都没再连）。
      *
@@ -99,5 +99,47 @@ object ReconnectPolicy {
         if (!busy || finished || !hasRunId) return false
         if (!hasCall || callCanceled) return true
         return msSinceLastEvent > STREAM_DEAD_AFTER_MS
+    }
+
+    // ---- 重连提示的自动清理（2026-10-13 现场：那行提示一直钉在会话上方）--------------------
+
+    /**
+     * 「正在重连 / 正在取回」这类提示的统一前缀。
+     *
+     * 为什么清理判据要看**提示本身的内容**、不能只看退避计数：看门狗重起流时会把
+     * `autoContinue` 归零并写下「连接中断，正在重连…」，而清理条件原来是 `autoContinue != 0`
+     * —— 于是流早已恢复、进度也在正常刷新，那行提示却再也不消失（用户报「一直显示连接中断，
+     * 正在重连」）。规则：**这行提示描述的是「当下的连接状态」，状态一不成立它就必须自己消失**。
+     *
+     * 所有重连类提示都必须经 [noteReconnecting] / [noteForegroundReconnect] 构造 ——
+     * 在别处手写这个前缀的字符串会让它逃出自动清理，这正是本次缺陷的成因。
+     */
+    const val RECONNECTING_NOTE_PREFIX = "连接中断"
+
+    /** 回前台时那条「回到前台，正在重连…」的前缀。 */
+    const val FOREGROUND_RECONNECT_NOTE_PREFIX = "回到前台，正在重连"
+
+    /** 构造「连接中断…」提示（唯一入口）。 */
+    fun noteReconnecting(suffix: String = "，正在重连…"): String = RECONNECTING_NOTE_PREFIX + suffix
+
+    /** 构造「回到前台，正在重连…」。 */
+    fun noteForegroundReconnect(): String = FOREGROUND_RECONNECT_NOTE_PREFIX + "…"
+
+    /** 这行提示是不是在讲「当下正在重连」——流一恢复它就不成立。 */
+    fun isReconnectingNote(note: String): Boolean =
+        note.startsWith(RECONNECTING_NOTE_PREFIX) || note.startsWith(FOREGROUND_RECONNECT_NOTE_PREFIX)
+
+    /**
+     * 收到一个真实事件后，这行提示该不该清掉。
+     *
+     * ① 退避链收到事件（`autoContinue != 0`）→ 清（既有行为，保持不动）；
+     * ② 不经退避计数的恢复路径（看门狗重起流、回前台掐假死流）→ 只要提示本身是重连类也清。
+     *
+     * `replay.truncated` 不算「恢复」：它是服务端在说「断线期间的事件已经补不回来了」，
+     * 此时清掉提示会把「正在取回」的语义抹掉（既有行为，别改）。
+     */
+    fun shouldClearNoteOnEvent(note: String, eventName: String, autoContinue: Int): Boolean {
+        if (eventName == "replay.truncated") return false
+        return autoContinue != 0 || isReconnectingNote(note)
     }
 }

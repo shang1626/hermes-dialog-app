@@ -1,3 +1,15 @@
+## 2.202 — versionCode 213
+
+**为什么会有这一版**：你报「对话框一直显示连接中断，正在重连」。查真机日志（10-13 06:13–06:16）：那行提示是 06:14:37 由断流看门狗写下的，**流在 06:14:38 就恢复了、进度一路正常刷新，提示却再也没消失**——一直钉到这一轮跑完。
+
+- **根因（判据与文案脱钩）**：重连提示的清理条件原来是「退避计数 `autoContinue != 0` 且收到真实事件」，而看门狗重起流的路径**恰好把 `autoContinue` 归零**再写下提示 —— 条件永远不成立，这行提示就成了永久残留。现场同一条日志里能看到「流静默 69135ms → 重起流」紧跟「过程行已打 patch」，提示却还在。
+- **真凶场景**：这也解释了它为什么总在切后台后出现 —— App 在后台被系统速冻 68 秒（整段无任何日志），回前台那一下 2 秒心跳按 45 秒静默判流死、重起流并写提示。重起流本身是对的（服务端支持按 `lastSeq` 续接），错的只是提示不会退场。
+- **修法**：清理判据改看**提示本身**（`ReconnectPolicy.shouldClearNoteOnEvent`：退避计数命中 **或** 文案是「重连类」即清）。五种真实重连文案（看门狗重起流 / onError 带原因 / 退避倒计时 / 翻历史取回 / 回前台重连）统一由 `ReconnectPolicy.noteReconnecting(...)`、`noteForegroundReconnect()` 构造，文案与判据同源，以后新写的重连提示不会再漏。
+- **不该被清的要留住**：终态提示改成「本轮连接中断：重试 8 次仍未取回结果」并**故意不套**重连前缀（语义是「本轮结束」，不是「正在重连」）；回执失败、排队、附件过大、插话回执等提示一并钉进单测，确认健康流不会顺手把它们抹掉。
+- **回归用例（先复现、后修）**：先把清理逻辑抽成 `ReconnectPolicy.shouldClearNoteOnEvent` 并按旧语义接线，新增 5 个单测跑 **红**（`watchdog_restart_note_disappears_once_stream_recovers` 失败，复现旧行为），再改语义转 **绿**。全量 `gradle test` 合计 tests=238 failures=0 errors=0。
+
+（改 app/src/main/java/com/hermesapp/ChatViewModel.kt / ReconnectPolicy.kt、app/src/test/java/com/hermesapp/ReconnectPolicyTest.kt、app/build.gradle.kts、docs/CHANGELOG.md、docs/INTERNALS.md；纯客户端改动，服务端无需重启）
+
 ## 2.201 — versionCode 212
 
 **为什么会有这一版**：你明确要求「本地绝不能比服务端少」，所以把 2.200 的固定 40 行增量窗口改成**自适应窗口**。
