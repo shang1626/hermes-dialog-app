@@ -1,3 +1,13 @@
+## 2.198 — versionCode 209
+
+**为什么会有这一版**：FreeLLMAPI 侧把 opencode-go 两把 key 指定的模型从旧名 `deepseek-flash` 换成现名 `deepseek-v4.1-flash`（面板「每把 key 的模型白名单」+ 该端点上启用的模型行一起换，旧名行删除），峰谷定时任务照旧只认 key 编号、逻辑不变。App 里「FreeLLMAPI密钥用途守卫」这条任务的备注还写着旧名，随这一版改成新名。
+
+- **任务备注文案**：`JobFormat.kt` 的 `jobZhNote` 里那条守卫说明由「两把 opencode-go 都只准 deepseek-flash」改为「两把 opencode-go 都只准 deepseek-v4.1-flash」（备注只存在于 App 侧，服务端没有这个字段，所以只能随发版生效）。
+
+（改 app/src/main/java/com/hermesapp/JobFormat.kt / app/build.gradle.kts / docs/CHANGELOG.md；纯文案与版本号，无逻辑改动）
+
+---
+
 ## 2.197 — versionCode 208
 
 **为什么会有这一版**：用户提三条——①「侧边栏点添加新对话，没有立即进入新对话窗口，在任何界面点都应该跳转过去」；②「敏感权限审批缺少本次任务全部批准的按钮，一次任务多次授权、一次一次点很麻烦」；③「需要审批的敏感权限的说明能不能换成中文」。
