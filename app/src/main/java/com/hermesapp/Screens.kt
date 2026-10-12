@@ -401,6 +401,27 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
             Text(note, color = c.warn, fontSize = T.sub,
                 modifier = Modifier.fillMaxWidth().background(c.panel).padding(8.dp))
         }
+        // 「本次任务全部批准」开着时的常驻提示条：一行说清口径（只到本轮结束），并给一个**行内可见**
+        // 的关闭出口——放行敏感权限这种事不能只有隐藏入口，也不能悄悄一直开着。
+        val autoAll by vm.autoApproveActive.collectAsStateWithLifecycle()
+        val curId by vm.currentId.collectAsStateWithLifecycle()
+        if (curId.isNotEmpty() && autoAll.contains(curId)) {
+            Row(
+                Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "本次任务已全部批准：后续敏感操作不再问你",
+                    color = c.warn, fontSize = T.sub, modifier = Modifier.weight(1f)
+                )
+                OutlinedButton(
+                    onClick = { vm.disarmAutoApprove(notify = true) },
+                    border = BorderStroke(1.dp, c.border),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                    shape = RoundedCornerShape(Rad.pill),
+                ) { Text("恢复逐个询问", color = c.dim, fontSize = T.sub) }
+            }
+        }
         // 归档入口已移到侧边栏（DrawerPanel）——本会话的超 300 条老消息入口不再占对话窗口顶部。
         // 会话内搜索栏：输入即搜（去抖），显示「第几/共几」，上下跳、× 收起
         if (searchOn) {
@@ -449,7 +470,9 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
             items(msgs, key = { it.id }) { m ->
                 val hl = hits.getOrNull(hitIdx) == m.id
                 Bubble(
-                    m, vm::respondApproval, vm::respondClarify, vm::ignoreCard,
+                    m, vm::respondApproval, vm::approveAllForTask,
+                    onDisarmAll = { vm.disarmAutoApprove(notify = true) },
+                    onClarify = vm::respondClarify, onIgnoreCard = vm::ignoreCard,
                     receiptMenuOpen = rcMenu == m.id,
                     onReceiptTap = { vm.openReceiptMenu(it) },
                     onConfirmReceipt = { vm.confirmReceipt(it) },
@@ -903,6 +926,10 @@ fun SubagentDetailDialog(vm: ChatViewModel, d: SubagentDetail) {
 fun Bubble(
     m: Msg,
     onApproval: (Long, String) -> Unit = { _, _ -> },
+    /** 卡片上的「全部批准」：本条 + 本轮后续敏感操作都不再问（只到本轮结束）。 */
+    onApproveAll: (Long) -> Unit = {},
+    /** 关掉「本次任务全部批准」，恢复逐个询问。 */
+    onDisarmAll: () -> Unit = {},
     onClarify: (Long, String) -> Unit = { _, _ -> },
     /** 用户点「忽略」：收起这条待办提示（不是回答服务端，本轮仍按超时处理）。 */
     onIgnoreCard: (Long, Boolean) -> Unit = { _, _ -> },
@@ -1007,13 +1034,21 @@ fun Bubble(
                             .background(c.cardAlt).padding(G.x3)
                     ) {
                         Text(
-                            if (ap.expired && ap.resolved.isEmpty()) "审批已失效" else "需要你确认",
-                            color = if (ap.expired && ap.resolved.isEmpty()) c.dim else c.warn,
+                            when {
+                                ap.expired && ap.resolved.isEmpty() -> "审批已失效"
+                                ap.resolved == APPROVAL_AUTO -> "已自动批准"
+                                ap.resolved == APPROVAL_ALL -> "已全部批准"
+                                else -> "需要你确认"
+                            },
+                            color = if (ap.expired && ap.resolved.isEmpty()) c.dim
+                            else if (ap.resolved == APPROVAL_AUTO) c.dim else c.warn,
                             fontSize = T.sub, fontWeight = T.bold
                         )
                         if (ap.description.isNotEmpty()) {
                             Spacer(Modifier.height(G.x1))
-                            Text(ap.description, color = c.text, fontSize = T.sub, lineHeight = T.lineSub)
+                            // 服务端给的是英文 pattern key（如 recursive delete），这里翻成中文只影响显示：
+                            // 回执与落盘仍是原文（见 ApprovalZh.kt 的说明）。
+                            Text(approvalDescZh(ap.description), color = c.text, fontSize = T.sub, lineHeight = T.lineSub)
                         }
                         if (ap.command.isNotEmpty()) {
                             Spacer(Modifier.height(G.x1))
@@ -1025,6 +1060,20 @@ fun Bubble(
                         }
                         Spacer(Modifier.height(G.x2))
                         when {
+                            // 「本次任务全部批准」下自动回执的那条：只留痕，另给一个显式的「恢复逐个询问」
+                            // 出口（写操作不能只有隐藏入口）。口径只到本轮结束。
+                            ap.resolved == APPROVAL_AUTO -> {
+                                Text("这条没再问你：本次任务开着「全部批准」，已按「允许一次」回执服务端。", color = c.dim, fontSize = T.cap)
+                                Spacer(Modifier.height(G.x2))
+                                OutlinedButton(
+                                    onClick = { onDisarmAll() },
+                                    border = BorderStroke(1.dp, c.border),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                    shape = RoundedCornerShape(Rad.pill),
+                                ) { Text("恢复逐个询问", color = c.dim, fontSize = T.sub) }
+                            }
+                            ap.resolved == APPROVAL_ALL ->
+                                Text("已全部批准：本轮后续敏感操作不再问你（本轮结束恢复）。", color = c.dim, fontSize = T.sub)
                             ap.resolved.isNotEmpty() ->
                                 Text("已选择：" + choiceLabel(ap.resolved), color = c.dim, fontSize = T.sub)
                             // 已失效：本轮结束 / 审批超时静默放行 / 已被别处处理——再点也是 409。
@@ -1050,6 +1099,14 @@ fun Bubble(
                                         shape = RoundedCornerShape(Rad.pill),
                                     ) { Text(choiceLabel(ch), color = c.accent, fontSize = T.sub) }
                                 }
+                                // 「全部批准」：本条 + 本轮后续的敏感操作都不再问（只到本轮结束）。
+                                // 起因：一个任务里连着来好几条审批，一条一条点太烦（用户 2026-10-12）。
+                                OutlinedButton(
+                                    onClick = { onApproveAll(m.id) },
+                                    border = BorderStroke(1.dp, c.accent.copy(alpha = 0.75f)),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                    shape = RoundedCornerShape(Rad.pill),
+                                ) { Text("全部批准", color = c.accent, fontSize = T.sub) }
                                 // 常备的「忽略」出口（行内可见，不靠长按）：用户可能不想回、或已错过时机，
                                 // 旧版没有这个出口时就是「确认不了也拒绝不了，提示一直挂着」。
                                 OutlinedButton(
@@ -1059,6 +1116,13 @@ fun Bubble(
                                     shape = RoundedCornerShape(Rad.pill),
                                 ) { Text("忽略", color = c.dim, fontSize = T.sub) }
                             }
+                        }
+                        if (ap.resolved.isEmpty() && !ap.expired) {
+                            Spacer(Modifier.height(G.x1))
+                            Text(
+                                "「全部批准」= 本条连同本轮后续敏感操作都不再问你，直到本轮结束。",
+                                color = c.faint, fontSize = T.cap
+                            )
                         }
                     }
                     if (m.text.isNotBlank() || m.subagents.isNotEmpty() || m.usage != null) {

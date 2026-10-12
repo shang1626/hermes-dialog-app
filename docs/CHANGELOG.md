@@ -1,3 +1,20 @@
+## 2.197 — versionCode 208
+
+**为什么会有这一版**：用户提三条——①「侧边栏点添加新对话，没有立即进入新对话窗口，在任何界面点都应该跳转过去」；②「敏感权限审批缺少本次任务全部批准的按钮，一次任务多次授权、一次一次点很麻烦」；③「需要审批的敏感权限的说明能不能换成中文」。
+
+- **① 新对话当场跳转**：侧边栏「＋ 新对话」原来只 `newConversation()` + 收抽屉，**没切页**——人在设置/状态/任务页点它，会话确实建了、抽屉也收了，但人还留在原页，看起来就是「点了没反应」。改为与会话行点击同一条路：`vm.newConversation(); onTab(0)`（`onTab` 自身会收抽屉）。抽屉里凡「改变当前会话」的动作都必须带 `onTab(0)`。
+- **② 审批卡片的「全部批准」**：卡片按钮行加一个描边按钮，作用两件事——本条连同服务端当时还挂着的审批一起解（`POST /v1/runs/{id}/approval` 带 `all: true`，服务端 `resolve_all` 一次全解，已实测 3 条 pending 一解全清），并**武装本轮**：本轮后续每个审批请求由 App 直接回执 `once`，不再弹卡片等人点。
+  - 口径严格绑 `runId`（`autoApproveRun`），不是布尔：换轮/收尾/用户点停止/翻历史取回结果都会解武装，下一轮重新问；App 重启即失效（内存态，不落盘）。
+  - `once` 而非 `session`/`always`：不写任何白名单（`approvals.allow` 不动），放行决定只活在 App 这一侧，不留跨会话后门。
+  - 留痕不静默：每条自动放行的审批都在会话里留一张 `resolved="auto"` 的灰卡片（写明「这条没再问你」），另有**行内可见**的「恢复逐个询问」按钮 + 对话窗口顶部常驻提示条（带同样的关闭按钮）。自动回执没送到时把卡片改回「等你点」，绝不装成已批准。
+- **③ 审批说明中文化**：服务端那些英文说明（`recursive delete`、`vssadmin`…）本身就是 **pattern_key**，会被写进会话级/永久批准记录，改文案等于改批准键——所以只在 App 显示层翻译（新增 `ApprovalZh.kt`）。词表 115 条，与服务端 `tools/approval_detection.py` 的 HARDLINE/DANGEROUS 两张表逐条对拍（115/115，无多无缺），另有三条组合句模板（写入 SSH 客户端配置、写入受保护指令文件、computer_use 动作）保留动态路径。未收录的（插件自定义规则、MCP 自述）原样显示，不空不崩。
+- 顶部「需要你确认」提示条与系统通知的正文也走同一个翻译函数。
+- 新增单测 `ApprovalZhTest`：已知词条、组合句、未收录原样返回，以及「词表 ≥110 条 / 无空译 / 无漏译 / 键无空白」的整表体检（上游加模式或有人改词表时能当场发现）。
+
+（改 App.kt / ChatViewModel.kt / Screens.kt / ChatModels.kt / net/HermesApi.kt / app/build.gradle.kts / docs/CHANGELOG.md；新增 app/src/main/java/com/hermesapp/ApprovalZh.kt、app/src/test/java/com/hermesapp/ApprovalZhTest.kt）
+
+---
+
 ## 2.196 — versionCode 207
 
 **为什么会有这一版**：用户要求「夜间模式的字体改成黑体，白色字体我看不惯，背景颜色你也要改，不然字体和背景颜色重叠了」。

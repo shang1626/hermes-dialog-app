@@ -107,6 +107,15 @@ data class Receipt(
     }
 }
 
+/**
+ * 审批卡片上的两个「客户端自造」选择标记（服务端的 choice 只有 once/session/always/deny，不会撞）：
+ * - [APPROVAL_ALL]：用户点了卡片上的「全部批准」，本条连同当时挂着的其它审批一起放行。
+ * - [APPROVAL_AUTO]：本轮开着「全部批准」，这条审批由 App 自动回执，卡片只留痕、不再等人点。
+ * 两者都只用于显示，绝不作为 choice 回给服务端。
+ */
+const val APPROVAL_ALL = "all"
+const val APPROVAL_AUTO = "auto"
+
 /** 审批卡片：服务端 approval.request 事件下发，用户选一个 choice 回执后置 resolved。 */
 data class ApprovalCard(
     val requestId: String,

@@ -172,7 +172,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 when {
                     ap != null -> PendingAction(
                         ap.id, "需要你确认",
-                        ap.approval?.description?.ifEmpty { ap.approval?.command.orEmpty() }.orEmpty(), true)
+                        approvalDescZh(ap.approval?.description?.ifEmpty { ap.approval?.command.orEmpty() }
+                            .orEmpty()), true)
                     cl != null -> PendingAction(
                         cl.id, "需要你选一下", cl.clarify?.question.orEmpty(), false)
                     else -> null
@@ -3069,8 +3070,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 审批请求：挂到该会话当前助手气泡上，等用户点按钮回执。 */
     private fun attachApproval(r: SessionRuntime, ev: com.hermesapp.net.SseEvent) {
         AppLog.log("approval", "收到审批请求 sid=" + r.id.take(8) + " id=" + ev.data.optString("request_id", "").take(12))
+        // 通知正文也用中文：服务端 description 是英文 pattern key（如 recursive delete），
+        // 只在展示层翻（见 ApprovalZh.kt），不改回执、不改落盘。
         notifyNeedAction(r.id, "需要你确认",
-            ev.data.optString("description", "").ifEmpty { ev.data.optString("command", "") })
+            approvalDescZh(ev.data.optString("description", "").ifEmpty { ev.data.optString("command", "") }))
         placeApproval(r, ev.data)
     }
 
@@ -3086,13 +3089,63 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (rid.isEmpty() || chs.isEmpty()) return
         val cur = r.messages.value
         if (cur.any { it.approval?.requestId == rid && it.approval?.resolved?.isEmpty() == true }) return
-        val card = ApprovalCard(rid, cmd, desc, chs)
-        val list = cur.toMutableList()
+        // 「本次任务全部批准」开着且就是本轮：不弹卡片等人点，直接回执「允许一次」，
+        // 但**留一张灰卡片**说明这条被自动批了（留痕，不是静默放行）。
+        val armed = autoApproveRun[r.id]
+        if (armed != null) {
+            if (r.runId.isEmpty() || armed != r.runId) {
+                // 换轮了（或本轮已收尾）：本次任务的口径到此为止，关掉，恢复逐个询问。
+                disarmAutoApprove(r.id)
+            } else if (cur.none { it.approval?.requestId == rid }) {
+                hangApprovalCard(r, ApprovalCard(rid, cmd, desc, chs, resolved = APPROVAL_AUTO))
+                autoApproveReply(r, rid)
+                return
+            }
+        }
+        hangApprovalCard(r, ApprovalCard(rid, cmd, desc, chs))
+    }
+
+    /** 卡片落位：挂到当前助手气泡上，没有就新起一条（位置与去重规则同 [placeClarify]）。 */
+    private fun hangApprovalCard(r: SessionRuntime, card: ApprovalCard) {
+        val list = r.messages.value.toMutableList()
         var i = list.indexOfLast { it.role == "assistant" && it.pending }
         if (i < 0) i = list.indexOfLast { it.role == "assistant" }
         if (i >= 0) list[i] = list[i].copy(approval = card)
         else list.add(Msg("assistant", "", pending = true, ts = stamp(), startedAt = turnStart(r), approval = card))
         setMsgs(r, list)
+    }
+
+    /**
+     * 「本次任务全部批准」下的自动回执：直接回 choice=once。
+     *
+     * 为什么是 once 而不是 session/always：once 不落任何白名单——本次任务的放行决定只活在
+     * App 这一侧（`autoApproveRun`），服务端不知道有这回事，所以不会留下跨会话/永久的后门，
+     * 也不会把 pattern 写进 approvals.allow。
+     *
+     * 回执没送到（网络/5xx）就把那张留痕卡片改回「等你点」，**绝不装成已批准**；
+     * 服务端说 404/409（本轮已收尾）就标失效。
+     */
+    private fun autoApproveReply(r: SessionRuntime, requestId: String) {
+        val a = api ?: return
+        val rid = r.runId
+        if (rid.isEmpty()) return
+        val msgId = r.messages.value.lastOrNull { it.approval?.requestId == requestId }?.id ?: return
+        AppLog.log("approval", "自动批准 sid=" + r.id.take(8) + " id=" + requestId.take(12))
+        viewModelScope.launch(Dispatchers.IO) {
+            val code = a.respondApproval(rid, requestId, "once")
+            if (code in 200..299) return@launch
+            withContext(Dispatchers.Main) {
+                val cur = r.messages.value.toMutableList()
+                val k = cur.indexOfFirst { it.id == msgId }
+                if (k < 0) return@withContext
+                val cc = cur[k].approval ?: return@withContext
+                if (cc.resolved != APPROVAL_AUTO) return@withContext
+                val gone = receiptGone(code)
+                cur[k] = cur[k].copy(approval = if (gone) cc.copy(expired = true) else cc.copy(resolved = ""))
+                setMsgs(r, cur)
+                if (!gone) flashNote(r, "自动批准没送出去，这条改回等你点")
+            }
+        }
     }
 
     /**
@@ -3225,6 +3278,87 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             delay(ms)
             val cur = runtimes[sid] ?: return@launch
             if (cur.retryNote.value == text) cur.retryNote.value = ""
+        }
+    }
+
+    /**
+     * 「本次任务全部批准」的武装状态：sid → 被批准的 runId。
+     *
+     * 为什么要绑 runId 而不是只记一个布尔：口径是**本次任务**（这一轮）。绑上 runId 后，
+     * 哪怕哪条收尾路径漏了清理，下一轮（新 runId）也不会被自动放行——安全默认。
+     * 内存态、不落盘：App 重启即失效，用户重新点一次即可。
+     */
+    private val autoApproveRun = ConcurrentHashMap<String, String>()
+
+    /**
+     * 界面提示条用：哪些会话当前处于「本次任务全部批准」。
+     * StateFlow 只为触发重组，真实判据在 [autoApproveRun]。
+     */
+    private val _autoApproveActive = MutableStateFlow<Set<String>>(emptySet())
+    val autoApproveActive: StateFlow<Set<String>> = _autoApproveActive.asStateFlow()
+
+    private fun armAutoApprove(sid: String, rid: String) {
+        autoApproveRun[sid] = rid
+        _autoApproveActive.value = autoApproveRun.keys.toSet()
+        AppLog.log("approval", "本次任务全部批准已开 sid=" + sid.take(8) + " run=" + rid.take(12))
+    }
+
+    /**
+     * 关掉「本次任务全部批准」。三处会调：用户点「恢复逐个询问」、换轮（runId 变了）、本轮收尾。
+     * 没武装过时是空操作，不会重复提示。
+     */
+    fun disarmAutoApprove(sid: String = _currentId.value, notify: Boolean = false) {
+        if (autoApproveRun.remove(sid) == null) return
+        _autoApproveActive.value = autoApproveRun.keys.toSet()
+        AppLog.log("approval", "本次任务全部批准已关 sid=" + sid.take(8))
+        if (notify) flashNote(rt(sid), "已恢复逐个询问：后续敏感操作会再问你")
+    }
+
+    /**
+     * 卡片上的「全部批准」：① 本条 + 当前还挂着的审批一起解掉（服务端 `all`），
+     * ② 武装本轮——本轮后续的审批请求直接在客户端回执「允许一次」，不再弹卡片等人点，
+     * 但**每条都会在会话里留一张灰卡片**（`resolved="auto"`），不是静默放行。
+     *
+     * 口径只到本轮结束：doneOk/failPending/用户点停止都会关掉，下一轮重新问。
+     */
+    fun approveAllForTask(msgId: Long) {
+        val a = api ?: return
+        val sid = _currentId.value
+        val r = rt(sid)
+        val rid = r.runId
+        if (rid.isEmpty()) return
+        val list = r.messages.value.toMutableList()
+        val i = list.indexOfFirst { it.id == msgId }
+        if (i < 0) return
+        val card = list[i].approval ?: return
+        if (card.resolved.isNotEmpty()) return
+        if (!receiptInFlight.add(msgId)) return
+        r.retryNote.value = "正在送达回执…"
+        viewModelScope.launch(Dispatchers.IO) {
+            val code = a.respondApproval(rid, card.requestId, "once", resolveAll = true)
+            withContext(Dispatchers.Main) {
+                receiptInFlight.remove(msgId)
+                when {
+                    code in 200..299 -> {
+                        armAutoApprove(sid, rid)
+                        val cur = r.messages.value.toMutableList()
+                        val k = cur.indexOfFirst { it.id == msgId }
+                        if (k >= 0) {
+                            val cc = cur[k].approval
+                            if (cc != null && cc.resolved.isEmpty()) {
+                                cur[k] = cur[k].copy(approval = cc.copy(resolved = "all"))
+                                setMsgs(r, cur)
+                            }
+                        }
+                        flashNote(r, "本次任务已全部批准：本轮后续敏感操作不再问你")
+                    }
+                    receiptGone(code) -> {
+                        expireCard(r, msgId, true)
+                        flashNote(r, "这条审批已失效（本轮已结束或已被处理），已收起")
+                    }
+                    else -> r.retryNote.value = "回执没送到：本轮可能已收尾，可重试"
+                }
+            }
         }
     }
 
@@ -3999,6 +4133,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.retryNote.value = ""
         r.busy.value = false
         r.runId = ""
+        // 翻历史取回结果也等于本轮收尾：本次任务的「全部批准」关掉。
+        disarmAutoApprove(sid)
         prefs.removeActiveRun(sid)
         updateRunService()
         refreshFromServerFor(sid)
@@ -4048,6 +4184,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val rid = r.runId.ifEmpty { pendingStop }
         AppLog.log("stop", "用户停止 sid=" + sid.take(8) + " run=" + rid.take(12))
         r.finished = true
+        // 用户主动停止：本次任务的「全部批准」也到此为止（后面再问就重新等他点）。
+        disarmAutoApprove(sid)
         // 标记「已请求停止」：run 还没建好时 rid 为空，光置 finished 挡不住已在飞行的
         // startRun 请求——它返回后据这个标记补发 stopRun（见 startRunWith）。
         r.stopRequested = true
@@ -4138,6 +4276,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun failPending(sid: String) {
         val r = rt(sid)
+        // 本轮收尾：本次任务的「全部批准」到此为止（下一轮重新问）。
+        disarmAutoApprove(sid)
         r.recoveryJob?.cancel()
         clearStaleCards(r)
         finishPending(r)
@@ -4156,6 +4296,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun doneOk(sid: String) {
         val r = rt(sid)
+        // 本轮收尾：本次任务的「全部批准」到此为止（下一轮重新问）。
+        disarmAutoApprove(sid)
         r.autoContinue = 0
         r.recoveryJob?.cancel()
         r.retryNote.value = ""
