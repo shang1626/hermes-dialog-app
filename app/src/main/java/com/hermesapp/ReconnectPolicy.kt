@@ -32,6 +32,18 @@ object ReconnectPolicy {
     const val STREAM_DEAD_AFTER_MS = 45_000L
 
     /**
+     * 会话列表（`GET /api/sessions`）的轮询节拍，单位是 2 秒心跳的 tick 数。
+     * 有任务在跑时 30 秒一轮（在跑的状态不能滞后），空闲时 120 秒一轮。
+     * 2026-10-13 省电：这一项原来固定 30 秒一轮、响应 167 KB，实测 11.5 MB/小时
+     * （手机上第二大的一笔）；响应侧另有 compact=1 补丁把它压到约 17 KB。
+     */
+    const val SESSIONS_SYNC_TICKS_ACTIVE = 15
+    const val SESSIONS_SYNC_TICKS_IDLE = 60
+
+    fun sessionsSyncTicks(hasActiveRuns: Boolean): Int =
+        if (hasActiveRuns) SESSIONS_SYNC_TICKS_ACTIVE else SESSIONS_SYNC_TICKS_IDLE
+
+    /**
      * 看门狗重起流的节流间隔：同一会话最多这么久重起一次。
      * 重起本身是幂等的（新流会掐掉旧流并按代际号作废旧回调），节流只为别刷日志、别白打请求。
      */
