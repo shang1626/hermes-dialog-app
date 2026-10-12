@@ -74,10 +74,10 @@ internal fun jobZhNote(name: String): String {
             return "一次性任务：把 mem0 夜间安装验收报告的摘要（版本、记忆完整性、结论）投进收件箱，跑完即止。"
         "vision-restart-verify" ->
             return "重启后自动体检：确认网关已起来、视觉补丁已加载、平台连接与三路记忆信号正常；有异常才出报告。"
-        "峰谷密钥自动切换" ->
-            return "按时间自动切换 FreeLLMAPI 的密钥：工作日 9-12 点、14-18 点（高峰）关掉两把 opencode-go（key47、key48）、启用 ds.example.com；其余时段含周末反过来。每 5 分钟核对一次。"
+        "上游优先级自动切换" ->
+            return "每 5 分钟核对上游优先级：优先用 ClinePass；它用不了就切两把 opencode-go，赶上高峰（工作日 9-12 点、14-18 点）则改用 ds.example.com；切走后每 5 小时重试一次 ClinePass。"
         "FreeLLMAPI密钥用途守卫" ->
-            return "每 30 分钟核对 FreeLLMAPI 的密钥用途：两把 opencode-go 都只准 deepseek-v4.1-flash、硅基流动只做 bge-m3 嵌入，发现越权启用或作用域被放宽就立刻收回并通知你；正常时静默。"
+            return "每 30 分钟核对 FreeLLMAPI 的密钥用途：ClinePass 只准 cline-pass/deepseek-v4.1-flash、两把 opencode-go 只准 deepseek-v4.1-flash、硅基流动只做 bge-m3 嵌入，发现越权启用或作用域被放宽就立刻收回并通知你；正常时静默。"
     }
     val n = name.lowercase()
     return when {
