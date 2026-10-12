@@ -764,7 +764,11 @@ fun DrawerPanel(
             }
             Spacer(Modifier.height(G.x2))
             OutlinedButton(
-                onClick = { vm.newConversation(); onClose() },
+                // 「新对话」在**任何页面**都要当场跳进对话窗口：以前只 newConversation()+收抽屉，
+                // 人在设置/状态/任务页点它，会话确实建了、抽屉也收了，但人还留在原页面（看着就是
+                // 「点了没反应」）。会话行点击（line 937）本来就是 switchSession+onTab(0)，
+                // 这里补齐同一套（onTab 自身会收抽屉，不用再 onClose）。
+                onClick = { vm.newConversation(); onTab(0) },
                 shape = RoundedCornerShape(Rad.pill),
                 border = BorderStroke(1.dp, c.accent.copy(alpha = 0.55f)),
                 contentPadding = PaddingValues(vertical = 6.dp),

@@ -512,25 +512,31 @@ class HermesApi(
      * 审批回执：POST /v1/runs/{id}/approval，choice ∈ once/session/always/deny。
      * 返回 HTTP 状态码（-1 = 网络/异常）。
      *
+     * [resolveAll] = true 时带上 `all`：服务端（`_handle_run_approval` 的 `resolve_all`）会
+     * 把该会话**当前还挂着的审批一次全解**，用于卡片上的「全部批准」。
+     *
      * 为什么要返回码而不是布尔：404/409 是**终局**（服务端已经不在等这条审批：本轮结束、
      * 审批超时静默放行、或已被别处回答），界面必须把卡片收起来；其余（-1 网络、5xx）
      * 才是「可重试」。旧实现只回布尔，两种情况混成一个「回执没送到」，卡片就永远杵在那
      * （2026-10-11 实测：用户点确认/拒绝反复 409，提示条既不消也点不动）。
      */
-    fun respondApproval(runId: String, requestId: String, choice: String): Int = runCatching {
-        val body = JSONObject().put("choice", choice)
-        if (requestId.isNotEmpty()) body.put("request_id", requestId)
-        val t0 = System.currentTimeMillis()
-        client.newCall(
-            base("/v1/runs/" + runId + "/approval").post(body.toString().toRequestBody(jsonType)).build()
-        ).execute().use { resp ->
-            val text = if (resp.isSuccessful) "" else resp.body?.string().orEmpty()
-            AppLog.log("receipt", "审批回执 run=" + runId.take(12) + " choice=" + choice +
-                " -> " + resp.code + " " + (System.currentTimeMillis() - t0) + "ms" +
-                (if (text.isEmpty()) "" else " body=" + text.take(160)))
-            resp.code
-        }
-    }.getOrDefault(-1)
+    fun respondApproval(runId: String, requestId: String, choice: String, resolveAll: Boolean = false): Int =
+        runCatching {
+            val body = JSONObject().put("choice", choice)
+            if (requestId.isNotEmpty()) body.put("request_id", requestId)
+            if (resolveAll) body.put("all", true)
+            val t0 = System.currentTimeMillis()
+            client.newCall(
+                base("/v1/runs/" + runId + "/approval").post(body.toString().toRequestBody(jsonType)).build()
+            ).execute().use { resp ->
+                val text = if (resp.isSuccessful) "" else resp.body?.string().orEmpty()
+                AppLog.log("receipt", "审批回执 run=" + runId.take(12) + " choice=" + choice +
+                    (if (resolveAll) " all=1" else "") +
+                    " -> " + resp.code + " " + (System.currentTimeMillis() - t0) + "ms" +
+                    (if (text.isEmpty()) "" else " body=" + text.take(160)))
+                resp.code
+            }
+        }.getOrDefault(-1)
 
     // ---------- 定时任务（服务端 /api/jobs） ----------
 
