@@ -43,6 +43,33 @@ object ReconnectPolicy {
     fun sessionsSyncTicks(hasActiveRuns: Boolean): Int =
         if (hasActiveRuns) SESSIONS_SYNC_TICKS_ACTIVE else SESSIONS_SYNC_TICKS_IDLE
 
+    /** 增量窗口的常规大小（服务端原始行，含工具行）。 */
+    const val SYNC_TAIL_ROWS = 40
+
+    /** 本地落后服务端超过这么多行时，不再拼窗口、直接整份拉。 */
+    const val SYNC_MAX_TAIL_ROWS = 400
+
+    /**
+     * 这次同步该向服务端要多少**原始行**；返回 0 = 整份拉。
+     *
+     * 铁律（2026-10-13 用户明确要求）：**本地绝不能比服务端少**。所以窗口不是固定 40 行，
+     * 而是「常规 40 行 + 本地落后服务端的行数」—— 落后多少就把多少补进窗口里，本地缺、
+     * 只在服务端的内容一定落在窗口内；落后超过 [SYNC_MAX_TAIL_ROWS] 就直接整份拉。
+     *
+     * @param serverRows 服务端该会话的 message_count（含工具行）；<0 = 未知（那就整份拉）
+     * @param localRows  本地原始行代理，见 [localRawRows]
+     * @param localEmpty 本地这个会话一条内容都没有（首次加载）
+     */
+    fun syncFetchRows(serverRows: Int, localRows: Int, localEmpty: Boolean): Int {
+        if (localEmpty || serverRows < 0) return 0
+        val gap = (serverRows - localRows).coerceAtLeast(0)
+        if (gap > SYNC_MAX_TAIL_ROWS) return 0
+        return SYNC_TAIL_ROWS + gap
+    }
+
+    /** 本地原始行代理：服务端把每个工具调用也存成一行，App 侧对应的是过程轨迹的行数。 */
+    fun localRawRows(messageCount: Int, traceLines: Int): Int = messageCount + traceLines.coerceAtLeast(0)
+
     /**
      * 看门狗重起流的节流间隔：同一会话最多这么久重起一次。
      * 重起本身是幂等的（新流会掐掉旧流并按代际号作废旧回调），节流只为别刷日志、别白打请求。
