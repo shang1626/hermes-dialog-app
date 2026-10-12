@@ -143,6 +143,41 @@ fun ChatScreen(
                 )
             }
         }
+
+        // 「这条语音还在排队等」提示条：前一条（尤其手动重播的长语音）没播完时，
+        // 新任务的自动播报不会马上响，用户看到的现象就是「任务完成了却没自动播报」。
+        // 等超过 VoiceQueueTip.WAIT_NOTICE_MS 才出现——正常十几秒的语音播完就轮到了，不打扰。
+        // 秒数要自己走：状态不变就不会重组，所以等的时候每秒推一次重组。
+        val vWait by StreamVoicePlayer.waitingSince.collectAsStateWithLifecycle()
+        var vTick by remember { mutableStateOf(0L) }
+        LaunchedEffect(vWait) {
+            while (vWait > 0L) {
+                delay(1000)
+                vTick = System.currentTimeMillis()
+            }
+        }
+        val vNow = if (vTick > 0L) vTick else System.currentTimeMillis()
+        if (VoiceQueueTip.shouldShow(vWait, vNow)) {
+            Row(
+                Modifier.fillMaxWidth()
+                    .background(c.warn.copy(alpha = 0.12f))
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.VolumeUp,
+                    contentDescription = null,
+                    tint = c.warn,
+                    modifier = Modifier.size(15.dp)
+                )
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    VoiceQueueTip.text((vNow - vWait) / 1000L),
+                    color = c.text, fontSize = T.sub, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
+                )
+            }
+        }
         // 子任务汇总面板已挪进顶部栏本身（App.kt 的 TopBar），不在这里再放一份。
         //
         // 待处理卡片置顶提示：审批/澄清的卡片原来是嵌在助手气泡里的，长对话时埋在中间

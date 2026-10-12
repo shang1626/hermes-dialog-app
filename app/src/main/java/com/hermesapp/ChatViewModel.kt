@@ -1809,7 +1809,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         if (role != "user" && role != "assistant") continue
                         val content = o.optString("content", "")
                         if (content.isEmpty()) continue
-                        out.add(Msg(role, content, pending = false, ts = parseTs(o.optString("timestamp", ""))))
+                        // run_id（服务端把本轮 run id 盖在助手消息行上，本地补丁 voice-msg-runid）：
+                        // 带上它，从服务端历史同步下来的回复也能出播放按钮（原来只有
+                        // App 当场收过 run.completed 的那条才有 runId，所以「有时候按钮不见了」）。
+                        out.add(Msg(role, content, pending = false,
+                            ts = parseTs(o.optString("timestamp", "")),
+                            runId = o.optString("run_id", "")))
                     }
                     return out
                 }

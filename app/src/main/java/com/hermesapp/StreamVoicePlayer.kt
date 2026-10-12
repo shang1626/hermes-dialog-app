@@ -86,6 +86,35 @@ object StreamVoicePlayer {
             if (key.isEmpty() || sid.isNullOrEmpty()) null else sid to title.orEmpty()
     }
 
+    /**
+     * 排队中的语音「开始等」的墙钟时间；0 = 没在等（队列空 / 已经轮到自己）。
+     *
+     * 为什么要暴露它：前一条是长语音或用户手动重播时，新任务的语音要排到它后面，
+     * 这段时间里用户看到的现象就是「任务完成了却没自动播报」（2026-10-13 上报：
+     * 07:25 手动重播的那条 201.6 秒，07:26 的新任务一直等到它播完才响）。
+     * 聊天页据此在等超过 VoiceQueueTip.WAIT_NOTICE_MS 后给一句说明。
+     */
+    private val _waitingSince = MutableStateFlow(0L)
+    val waitingSince: StateFlow<Long> = _waitingSince.asStateFlow()
+
+    /** 有没有「已经有数据、正在排队等」的条目（还没数据的等在写文件，不算）。 */
+    private fun hasWaiting(): Boolean =
+        order.any { k -> val it = items[k]; it != null && it.file.length() > 0L }
+
+    /**
+     * pump 被挡回去时记等待起点；没人在等就清零。
+     *
+     * 判据 = 「有数据在排队」而不是「谁在挡」：挡的可能是外部播放器（手动重播 / 老附件），
+     * 也可能是同一队列里前一条长语音 —— 两种情况用户看到的现象一样（任务完成了没响）。
+     */
+    private fun noteWaiting() {
+        if (hasWaiting()) {
+            if (_waitingSince.value == 0L) _waitingSince.value = System.currentTimeMillis()
+        } else if (_waitingSince.value != 0L) {
+            _waitingSince.value = 0L
+        }
+    }
+
     private val dropped = ConcurrentHashMap.newKeySet<String>()
 
     /**
@@ -116,6 +145,42 @@ object StreamVoicePlayer {
     }
 
     /**
+     * 「这份文件收完了」的标记文件，内容 = 收尾那一刻的字节数。
+     *
+     * 为什么要它：本机 mp3 是边收边写的，被「跳过 / 让位 / 手动重播」摘掉的条目
+     * 后面的块写不进来，文件是截断的。光看「文件存在且非空」会把截断文件当成能播的，
+     * 重播就少一截（2026-10-13 实测少 11 块 ≈ 12 秒，而服务端留档是完整的）。
+     * 标记与文件长度一致（VoiceCacheMark.usable）才算本机这份可用。
+     */
+    fun completeMarker(ctx: Context, runId: String): File =
+        File(voiceFile(ctx, runId).parentFile, runId + ".mp3.done")
+
+    /** 本机这份语音是不是「完整收到过」——标记里的字节数与文件长度一致才算。 */
+    fun localComplete(ctx: Context, runId: String): Boolean {
+        if (runId.isEmpty()) return false
+        val f = voiceFile(ctx, runId)
+        if (!f.isFile) return false
+        val marked = runCatching { completeMarker(ctx, runId).readText().trim().toLong() }
+            .getOrDefault(0L)
+        return VoiceCacheMark.usable(marked, f.length())
+    }
+
+    /** 收尾时盖章（音频流正常结束、条目还在）。 */
+    private fun markComplete(ctx: Context, it: Item) {
+        runCatching {
+            val len = it.file.length()
+            if (it.runId.isEmpty() || len <= 0L) return
+            completeMarker(ctx, it.runId).writeText(len.toString())
+        }
+    }
+
+    /** 条目被摘掉 / 停止时撤章：本机这份从此只当半成品，重播会重新向服务端取。 */
+    private fun clearComplete(ctx: Context?, runId: String) {
+        if (ctx == null || runId.isEmpty()) return
+        runCatching { completeMarker(ctx, runId).delete() }
+    }
+
+    /**
      * 收到 audio.start：建文件、入队。
      * 不再掐掉别人——前面有语音在播就排队等，保证同一时刻只响一条。
      * sid/title = 这条语音归属的会话，仅用于界面提示「正在播放：X 的语音」。
@@ -127,6 +192,7 @@ object StreamVoicePlayer {
         try {
             val f = voiceFile(ctx, runId)
             runCatching { f.delete() }              // 清上一轮残留，避免先播旧字节
+            clearComplete(ctx, runId)               // 连带撤掉「收完了」标记，重新计
             f.createNewFile()
             val it = Item(key, runId, f)
             it.sid = sid
@@ -173,6 +239,8 @@ object StreamVoicePlayer {
     /** 收到 audio.end：标记写完；轮到它时 pump 会起播（数据源读到末尾自然收尾）。 */
     fun end(ctx: Context, key: String) {
         items[key]?.ended = true
+        // 收尾时盖章：本机这份 mp3 从此可以被重播直接使用（长度对得上才算完整，见 VoiceCacheMark）。
+        items[key]?.let { markComplete(ctx, it) }
         // 收尾时把「丢了多少块、是谁摘的」一次说清：有这条，下次上报就能直接定案。
         val lost = droppedBlocks.remove(key) ?: 0
         if (lost > 0) {
@@ -188,9 +256,9 @@ object StreamVoicePlayer {
      */
     @Synchronized
     private fun pump() {
-        if (activeKey.isNotEmpty()) return
-        if (VoicePlayer.nowPlaying.value.isNotEmpty()) return        // 老附件路径在响
-        if (VoiceReplayPlayer.nowPlaying.value.isNotEmpty()) return  // 手动重播在响
+        if (activeKey.isNotEmpty()) { noteWaiting(); return }
+        if (VoicePlayer.nowPlaying.value.isNotEmpty()) { noteWaiting(); return }        // 老附件路径在响
+        if (VoiceReplayPlayer.nowPlaying.value.isNotEmpty()) { noteWaiting(); return }  // 手动重播在响
         val ctx = appCtx ?: return
         while (true) {
             val k = order.peekFirst() ?: return
@@ -206,12 +274,14 @@ object StreamVoicePlayer {
                     removalReason[k] = "空音频"
                     order.removeFirst()
                     items.remove(k)
+                    clearComplete(ctx, it.runId)
                     closeItem(it)
                     continue
                 }
                 return                   // 还没数据，等下一块
             }
             activeKey = k
+            _waitingSince.value = 0L
             setPlaying(k, it.sid, it.title)
             onMain { startOnMain(ctx, k) }
             return
@@ -249,6 +319,8 @@ object StreamVoicePlayer {
             runCatching { old?.stop() }
             runCatching { old?.release() }
         }
+        // 不撤「收完了」标记：标记只表示「这份文件收全过」，收全过的文件被摘掉也还是完整的。
+        // 中途被摘的那条从来没盖过章，重播自然会去服务端取完整留档。
         it?.let { closeItem(it) }
     }
 
@@ -396,6 +468,7 @@ object StreamVoicePlayer {
         order.clear()
         activeKey = ""
         setPlaying("", null, null)
+        _waitingSince.value = 0L     // 队列清空 = 没人在等，顶部提示条同步收掉
         onMain {
             for (p in olds) {
                 runCatching { p?.stop() }
