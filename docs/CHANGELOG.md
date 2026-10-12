@@ -1,3 +1,14 @@
+## 2.200 — versionCode 211
+
+**为什么会有这一版**：省流量/省电。用服务端访问日志实测了你手机 8 小时的请求账（8082 次、55 MB/小时），其中两笔占了 89%：会话正文全量拉取 37.5 MB/小时、会话列表 200 条 11.5 MB/小时。这一版把这两笔压下来，外加把「检查更新」的公网往返从 30 秒一次降到 10 分钟一次。在线探针按你的要求**保持 5 秒不动**。
+
+- **会话正文改增量拉**：本地已有记录时只拉服务端末尾 40 行（实测同一会话：全量 581KB~1.81MB，末尾 40 行 112~196KB，省 87%）。全量只在「本地还没有内容」时用；末尾窗口正好落在一轮中间（这一轮原始行超 40 条）时自动退回全量再拉一次，不会漏最终正文。预期 37.5 MB/小时 → 约 5 MB/小时。
+- **会话列表精简 + 降频**：列表请求带 `compact=1`（服务端配套补丁 `apply_app_sessions_compact_patch.py`），只回 App 真正读的 5 个字段（id/title/active_run/last_active/is_internal_child）——实测 167,965 B → 约 17 KB；轮询节拍从固定 30 秒改成「有任务在跑 30 秒 / 空闲 120 秒」。预期 11.5 MB/小时 → 约 1 MB/小时。
+- **检查更新 30 秒 → 10 分钟**：实测 3 小时 285 次公网往返，降到约 6 次/小时；代价是发新版后角标最多晚 10 分钟亮起。
+- 判据抽成纯函数 `ReconnectPolicy.sessionsSyncTicks`（15 / 60 个 2 秒 tick），单测钉住。
+
+（改 app/src/main/java/com/hermesapp/ChatViewModel.kt / ReconnectPolicy.kt / net/HermesApi.kt、app/src/test/java/com/hermesapp/ReconnectPolicyTest.kt、app/build.gradle.kts、docs/CHANGELOG.md；服务端另有补丁 `apply_app_sessions_compact_patch.py`，需重启网关生效）
+
 ## 2.199 — versionCode 210
 
 **为什么会有这一版**：长任务跑着的时候，「正在执行」会永久停住不再汇报。真机现场（10-13 01:44–01:50，会话 abed0444 / run_fe095bac）：01:44:11 收到最后一个事件之后，那条 SSE 流既没有事件、也没有 onClosed/onError 回调——是一条**半死的流**（连接对象还在、回调永不再响）；App 只在自己切前后台时才会去掐假死流（25 秒体检），用户一直停在 App 里就永远等不到，界面上「正在执行」停住六分钟，最后是用户切了一下前台才被接回。同时服务端那边没有任何「谁在跑」的数据源，客户端一旦丢了标记就再也发现不了在跑的轮次。
