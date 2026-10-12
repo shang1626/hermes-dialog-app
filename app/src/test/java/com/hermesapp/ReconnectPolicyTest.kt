@@ -121,4 +121,67 @@ class ReconnectPolicyTest {
         assertEquals(10, ReconnectPolicy.localRawRows(10, 0))
         assertEquals(10, ReconnectPolicy.localRawRows(10, -5))    // 负数兜底
     }
+
+    // ---- 重连提示的自动清理（2026-10-13 现场：那行提示一直钉在会话上方）------------------
+
+    /** 真机上出现过的各类重连提示（都经 helper 构造，保证清理判据认得出）。 */
+    private val reconnectingNotes = listOf(
+        ReconnectPolicy.noteReconnecting(),                                    // 看门狗重起流
+        ReconnectPolicy.noteReconnecting("：" + "未知"),                        // onError 带原因
+        ReconnectPolicy.noteReconnecting("，8 秒后重试（4/8）"),                  // 退避链
+        ReconnectPolicy.noteReconnecting("，正在从服务端取回结果…"),              // 翻历史
+        ReconnectPolicy.noteForegroundReconnect(),                             // 回前台掐假死流
+    )
+
+    @Test
+    fun watchdog_restart_note_disappears_once_stream_recovers() {
+        // 看门狗重起流：把 autoContinue 归零 + 写下「连接中断，正在重连…」。
+        // 流恢复后收到的第一个真实事件必须让这行提示消失——否则它会一直钉在会话上方。
+        val note = ReconnectPolicy.noteReconnecting()
+        assertTrue(ReconnectPolicy.shouldClearNoteOnEvent(note, "message.delta", 0))
+        assertTrue(ReconnectPolicy.shouldClearNoteOnEvent(note, "tool.completed", 0))
+        assertTrue(ReconnectPolicy.shouldClearNoteOnEvent(note, "run.completed", 0))
+        assertTrue(ReconnectPolicy.shouldClearNoteOnEvent(ReconnectPolicy.noteForegroundReconnect(), "tool.completed", 0))
+    }
+
+    @Test
+    fun every_reconnecting_note_is_recognized() {
+        // 五种真实文案都必须被判为「重连类」，否则它逃出自动清理（本次缺陷的成因就是文案与判据脱钩）
+        reconnectingNotes.forEach { assertTrue(it, ReconnectPolicy.isReconnectingNote(it)) }
+        // 终态提示故意不属于这一类：它要一直留到用户下一次发消息
+        assertFalse(ReconnectPolicy.isReconnectingNote("本轮连接中断：重试 8 次仍未取回结果"))
+    }
+
+    @Test
+    fun backoff_chain_still_clears_its_note() {
+        assertTrue(
+            ReconnectPolicy.shouldClearNoteOnEvent(
+                ReconnectPolicy.noteReconnecting("，1 秒后重试（1/8）"), "message.delta", 1,
+            )
+        )
+    }
+
+    @Test
+    fun replay_truncated_never_clears_the_note() {
+        // 它是服务端在说「断线期间的事件补不回来了」，不是「流已恢复」
+        reconnectingNotes.forEach {
+            assertFalse(it, ReconnectPolicy.shouldClearNoteOnEvent(it, "replay.truncated", 1))
+        }
+    }
+
+    @Test
+    fun unrelated_notes_survive_a_healthy_stream() {
+        // 别的语义的提示不能被顺手清掉：回执失败、排队、本地拒绝、终态失败、澄清等待…
+        listOf(
+            "",
+            "插话已送达，本轮会读到",
+            "插话没送达：本轮可能已收尾，这句话没赶上",
+            "回执没送到：本轮可能已收尾，可重试",
+            "本会话还在跑另一轮，等它结束再确认这条",
+            "附件过大（a.pdf），未发送",
+            "本轮连接中断：重试 8 次仍未取回结果",
+            "这一轮还没取回结果，切回前台会自动再试",
+            "停止请求没送达，服务端可能仍在跑（再点一次停止会重试这条）",
+        ).forEach { assertFalse(it, ReconnectPolicy.shouldClearNoteOnEvent(it, "message.delta", 0)) }
+    }
 }
