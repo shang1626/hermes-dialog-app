@@ -1,3 +1,13 @@
+## 2.199 — versionCode 210
+
+**为什么会有这一版**：长任务跑着的时候，「正在执行」会永久停住不再汇报。真机现场（10-13 01:44–01:50，会话 abed0444 / run_fe095bac）：01:44:11 收到最后一个事件之后，那条 SSE 流既没有事件、也没有 onClosed/onError 回调——是一条**半死的流**（连接对象还在、回调永不再响）；App 只在自己切前后台时才会去掐假死流（25 秒体检），用户一直停在 App 里就永远等不到，界面上「正在执行」停住六分钟，最后是用户切了一下前台才被接回。同时服务端那边没有任何「谁在跑」的数据源，客户端一旦丢了标记就再也发现不了在跑的轮次。
+
+- **断流自愈看门狗（每 2 秒，纯读内存、零新增请求）**：本轮还在跑、手上却没有一条活着的流（没有流 / 流已取消 / 流静默超过 45 秒——服务端每 10 秒必发心跳帧，45 秒＝连丢四拍）→ 立刻重起流，并把退避计数归零、作废历史轮询，让流式续接优先。判据抽成纯函数 `ReconnectPolicy.streamNeedsRestart`，单测钉住四个方向（没流 / 被取消 / 静默超阈值 / 边界与空闲不误判）。这条兜住的是「断流后重连链的**三个已知静默出口**」：流代际号把回调作废、同会话探测单飞位没释放、退避 8 次用尽转翻历史后不起任何任务——以后新加的静默出口也自动被兜住。
+- **单飞位泄漏加固**：`maybeContinue` 里那次探测原来是「先探测、后释放单飞位」，探测抛异常就永久泄漏，该会话之后每次重连都被入口的 CAS 挡回（守卫本身成了泄漏源）。改成 `try/finally` 无条件释放，异常按「探不出来」继续退避，不再静默死掉。
+- **消费服务端的 `active_run`**：配合服务端补丁 `apply_app_active_run_patch.py`，`GET /api/sessions` 每行带上「该会话当下还活着的 run_id」，App 的 `reconcileServerRuns` 从此真的能接管「别的端起的 / 本机丢了标记的」正在跑的轮次（此前这个字段服务端根本不发，日志里恒为「服务端在跑=0」）。
+
+（改 app/src/main/java/com/hermesapp/ChatViewModel.kt / RuntimeHub.kt / ReconnectPolicy.kt、app/src/test/java/com/hermesapp/ReconnectPolicyTest.kt、app/build.gradle.kts、docs/CHANGELOG.md、docs/INTERNALS.md；服务端另有补丁 `apply_app_active_run_patch.py`，需重启网关生效）
+
 ## 2.198 — versionCode 209
 
 **为什么会有这一版**：FreeLLMAPI 侧把 opencode-go 两把 key 指定的模型从旧名 `deepseek-flash` 换成现名 `deepseek-v4.1-flash`（面板「每把 key 的模型白名单」+ 该端点上启用的模型行一起换，旧名行删除），峰谷定时任务照旧只认 key 编号、逻辑不变。App 里「FreeLLMAPI密钥用途守卫」这条任务的备注还写着旧名，随这一版改成新名。
