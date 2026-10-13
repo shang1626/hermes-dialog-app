@@ -171,6 +171,29 @@ class VoiceQueueTipTest {
         assertEquals(1, VoiceQueueTip.waitingCount(keys, "C") { bytes[it] ?: 0L })   // 只剩 A 有数据且在等
     }
 
+    /**
+     * 真机 2.204 日志里的一次**真排队**（17:31 / 17:33 那两段）：这次不是残留，是该亮的场景。
+     * 2.205 的预期行为 = A 在播、B 有数据排后面 -> 置位并在 30 秒后显示；A 播完 B 起播 -> 收掉。
+     */
+    @Test
+    fun real_queue_two_case_tip_turns_on_then_off() {
+        val m = NewWaitingModel()
+        val a = "stream:run_8783a268"
+        val b = "stream:run_df0a9f87"
+        m.begin(a, 0L)
+        m.append(a, 6480L, 2_000L)                 // 17:30:10 A 起播
+        assertEquals(0L, m.waitingSince)           // 队里只有 A 自己 -> 不亮
+        m.begin(b, 55_000L)                        // 17:31:03 B 入队 队列=2
+        assertEquals(0L, m.waitingSince)           // B 还没数据，不算在等
+        m.append(b, 6480L, 57_000L)                // ~17:31:05 B 首块到 -> 真排队
+        assertEquals(57_000L, m.waitingSince)
+        assertTrue(VoiceQueueTip.shouldShow(m.waitingSince, 57_000L + 30_000L))   // ~17:31:35 提示出现
+        m.end(a, 167_000L)                         // 17:32:55 A 播完
+        m.append(b, 20_000L, 167_000L)             // B 起播（队里只剩它）
+        assertEquals(0L, m.waitingSince)           // 轮到自己 -> 提示收掉
+        assertFalse(VoiceQueueTip.shouldShow(m.waitingSince, 167_000L + 251_000L))
+    }
+
     @Test
     fun waiting_since_is_written_and_cleared_by_one_rule() {
         val t = 5_000L
