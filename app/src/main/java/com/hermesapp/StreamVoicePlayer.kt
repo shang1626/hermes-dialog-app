@@ -93,26 +93,49 @@ object StreamVoicePlayer {
      * 这段时间里用户看到的现象就是「任务完成了却没自动播报」（2026-10-13 上报：
      * 07:25 手动重播的那条 201.6 秒，07:26 的新任务一直等到它播完才响）。
      * 聊天页据此在等超过 VoiceQueueTip.WAIT_NOTICE_MS 后给一句说明。
+     *
+     * 写入与清理都只走 refreshWaiting()，判据是 VoiceQueueTip.shouldTrackWaiting
+     * （有人在响 + 后面确实有人等）—— 这条提示曾经在队列播空后永久残留（见 refreshWaiting 注释）。
      */
     private val _waitingSince = MutableStateFlow(0L)
     val waitingSince: StateFlow<Long> = _waitingSince.asStateFlow()
 
-    /** 有没有「已经有数据、正在排队等」的条目（还没数据的等在写文件，不算）。 */
-    private fun hasWaiting(): Boolean =
-        order.any { k -> val it = items[k]; it != null && it.file.length() > 0L }
+    /** 外部播放器（手动重播 / 老附件）在响吗。 */
+    private fun externalPlaying(): Boolean =
+        VoicePlayer.nowPlaying.value.isNotEmpty() || VoiceReplayPlayer.nowPlaying.value.isNotEmpty()
 
     /**
-     * pump 被挡回去时记等待起点；没人在等就清零。
+     * 「排队等待提示」的唯一写入/清理入口：队列或播放状态一变就重算一遍。
      *
-     * 判据 = 「有数据在排队」而不是「谁在挡」：挡的可能是外部播放器（手动重播 / 老附件），
-     * 也可能是同一队列里前一条长语音 —— 两种情况用户看到的现象一样（任务完成了没响）。
+     * 为什么必须集中在同一处：旧实现的「写」看的是「队列里有没有带数据的条目」——
+     * 正在响的那条自己也被算了进去，于是任意一条超过 30 秒的单条语音都会点亮提示；
+     * 而「清」只在「轮到自己起播」与「按停止」两条路上做，队列播空走的是
+     * `order.peekFirst() ?: return` 那条 return，谁也不清 —— 2026-10-13 上报：
+     * 17:16:23 起播、17:18:01 播完（队列剩=0），到 17:20 顶部仍显示「已等 251 秒」。
+     * 现在写与清共用 VoiceQueueTip.shouldTrackWaiting 一个判据：有人在响 + 后面真有人等，
+     * 否则一律归零。
      */
-    private fun noteWaiting() {
-        if (hasWaiting()) {
-            if (_waitingSince.value == 0L) _waitingSince.value = System.currentTimeMillis()
-        } else if (_waitingSince.value != 0L) {
-            _waitingSince.value = 0L
-        }
+    @Synchronized
+    private fun refreshWaiting() {
+        val playing = activeKey.isNotEmpty() || externalPlaying()
+        val waiting = if (playing) {
+            VoiceQueueTip.waitingCount(order.toList(), activeKey) { k ->
+                items[k]?.file?.length() ?: 0L
+            }
+        } else 0
+        val next = VoiceQueueTip.nextWaitingSince(
+            _waitingSince.value,
+            VoiceQueueTip.shouldTrackWaiting(playing, waiting),
+            System.currentTimeMillis()
+        )
+        if (next == _waitingSince.value) return
+        _waitingSince.value = next
+        AppLog.log(
+            "voice",
+            if (next == 0L) "排队等待提示收掉（已无人在等）队列=" + order.size +
+                " 在播=" + activeKey.isNotEmpty() + " 外部在响=" + externalPlaying()
+            else "排队等待提示置位（有人在响且后面有人等）队列=" + order.size
+        )
     }
 
     private val dropped = ConcurrentHashMap.newKeySet<String>()
@@ -251,14 +274,25 @@ object StreamVoicePlayer {
     }
 
     /**
-     * 队列推进：没有别的语音在响时，让队首那条「已有数据」的起播。
-     * 只在这里起播，保证同一时刻只有一条出声。
+     * 队列推进 + 等待提示重算。
+     *
+     * 重算钉在这里的 wrapper 上，而不是散在各条 return 里：pump 有四个出口
+     * （已有人在响 / 队列空 / 下一条还没数据 / 起播），旧实现只在其中两处碰过等待状态，
+     * 「队列空」那条出口没人清，提示就永久残留。
      */
     @Synchronized
     private fun pump() {
-        if (activeKey.isNotEmpty()) { noteWaiting(); return }
-        if (VoicePlayer.nowPlaying.value.isNotEmpty()) { noteWaiting(); return }        // 老附件路径在响
-        if (VoiceReplayPlayer.nowPlaying.value.isNotEmpty()) { noteWaiting(); return }  // 手动重播在响
+        pumpQueue()
+        refreshWaiting()
+    }
+
+    /**
+     * 队首那条「已有数据」的起播——只在这里起播，保证同一时刻只有一条出声。
+     */
+    private fun pumpQueue() {
+        if (activeKey.isNotEmpty()) return
+        if (VoicePlayer.nowPlaying.value.isNotEmpty()) return        // 老附件路径在响
+        if (VoiceReplayPlayer.nowPlaying.value.isNotEmpty()) return  // 手动重播在响
         val ctx = appCtx ?: return
         while (true) {
             val k = order.peekFirst() ?: return
@@ -281,7 +315,6 @@ object StreamVoicePlayer {
                 return                   // 还没数据，等下一块
             }
             activeKey = k
-            _waitingSince.value = 0L
             setPlaying(k, it.sid, it.title)
             onMain { startOnMain(ctx, k) }
             return
@@ -322,6 +355,7 @@ object StreamVoicePlayer {
         // 不撤「收完了」标记：标记只表示「这份文件收全过」，收全过的文件被摘掉也还是完整的。
         // 中途被摘的那条从来没盖过章，重播自然会去服务端取完整留档。
         it?.let { closeItem(it) }
+        refreshWaiting()
     }
 
     /** 跳过当前这条（从队列摘掉），接着播下一条。提示条上的「跳过」用它。 */
@@ -367,6 +401,7 @@ object StreamVoicePlayer {
             }
             closeItem(it)
         }
+        refreshWaiting()
     }
 
     /**
