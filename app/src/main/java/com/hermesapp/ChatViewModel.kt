@@ -4036,18 +4036,41 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (r.finished) return
         if (r.recoveryJob?.isActive == true) return
         val startedAt = r.startedAt
-        fun note() {
-            val mins = if (startedAt > 0) (System.currentTimeMillis() - startedAt) / 60_000L else 0L
-            r.retryNote.value = if (mins > 0) "这一轮还在服务器上跑（已 $mins 分钟），跑完自动取回"
-            else "这一轮还在服务器上跑，跑完自动取回"
+
+        // 提示语分两段写：探测前只说「正在确认」，服务端确认真在跑之后才说「还在跑」。
+        //
+        // 原来一进函数就喊「这一轮还在服务器上跑（已 N 分钟），跑完自动取回」，再等一个
+        // 轮询间隔（20 秒）才第一次探测。但 404 最常见的成因根本不是「还在跑」，恰恰是
+        // 「这一轮刚跑完」——服务端清扫器回收的是**已结束**那条 run 的传输层。真机日志
+        // （2026-10-14）：00:49:38 这一轮已完成，00:50:57 用户切回 App 拿到 404，于是界面报
+        // 「还在服务器上跑（已 26 分钟）」，而结果其实就在服务端等着取（用户当场报障）。
+        // 现在：进函数先探一次（不等间隔），探测前那句不含结论。
+        r.retryNote.value = ReconnectPolicy.LIVE_RUN_CONFIRMING_NOTE
+
+        fun noteRunning(payload: org.json.JSONObject?) {
+            val elapsed = if (startedAt > 0) System.currentTimeMillis() - startedAt else 0L
+            val ev = payload?.optString("last_event", "").orEmpty()
+            val age = lastEventAgeMs(payload)
+            r.retryNote.value = ReconnectPolicy.liveRunNote(elapsed, ev, age)
+            // 把「界面此刻给用户看了什么」落进日志：这句提示原来是纯 UI 状态、日志里查不到，
+            // 复盘「当时到底显示的还在跑还是已结束」只能靠猜。
+            AppLog.log("retry", "状态轮询：服务端确认仍在跑 已" + (elapsed / 60_000L) + "分 · last_event=" + ev +
+                " · 服务端最后事件=" + (if (age < 0) "未知" else (age / 1000L).toString() + "秒前") + " run=" + rid.take(12))
         }
-        note()
+
         r.recoveryJob = RuntimeHub.scope.launch(Dispatchers.IO) {
             var elapsed = 0L
             var misses = 0
+            var firstProbe = true
             while (elapsed < LIVE_STATUS_POLL_WINDOW_MS) {
-                delay(LIVE_STATUS_POLL_INTERVAL_MS)
-                elapsed += LIVE_STATUS_POLL_INTERVAL_MS
+                // 第一次探测立刻做：404 常常恰恰发生在「这一轮刚结束」的那一分钟里，
+                // 先等一个间隔（20 秒）再问，就是把已经拿得到的结果按住不显示。
+                if (firstProbe) {
+                    firstProbe = false
+                } else {
+                    delay(LIVE_STATUS_POLL_INTERVAL_MS)
+                    elapsed += LIVE_STATUS_POLL_INTERVAL_MS
+                }
                 if (!r.busy.value || r.finished) return@launch
                 val gen = r.sendGen
                 val st = try {
@@ -4072,11 +4095,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             startHistoryRecovery(sid, rid)
                             return@launch
                         }
+                        // 探不出来 ≠ 已结束，也 ≠ 还在跑：提示照实说，别留上一句「还在跑」在屏幕上。
+                        r.retryNote.value = ReconnectPolicy.liveRunUnreachableNote(misses, LIVE_STATUS_POLL_MAX_MISSES)
                     }
                     is HermesApi.RunStatus.Known -> {
                         misses = 0
                         if (st.status in RUNNING_STATES) {
-                            note()
+                            noteRunning(st.payload)
                         } else {
                             AppLog.log("retry", "状态轮询：这一轮已结束（" + st.status + "），接回产出 run=" + rid.take(12))
                             finishRecoveredTurn(sid, rid, st.payload)
@@ -4096,6 +4121,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             r.recoveryJob = null
             giveUpRecovery(sid, "等 2 小时仍未取回结果，可稍后再看")
         }
+    }
+
+    /**
+     * run 状态里的 `updated_at` 距现在多少毫秒；<0 = 负载没带这个字段（老服务端 / 异常体）。
+     *
+     * 它是服务端「最后一次有动静」的时刻（每次工具/生命周期事件都会刷新），提示里那句
+     * 「最后一个工具步骤在 N 分钟前」就是拿它算的。注意 `updated_at` 是秒（浮点），
+     * 不是毫秒——直接当毫秒用会把时间算到 1970 年。
+     */
+    private fun lastEventAgeMs(payload: org.json.JSONObject?): Long {
+        val ts = payload?.optDouble("updated_at", 0.0) ?: 0.0
+        if (ts <= 0.0) return -1L
+        return System.currentTimeMillis() - (ts * 1000.0).toLong()
     }
 
     /** 退避等待（委托 ReconnectPolicy，便于单测）。 */

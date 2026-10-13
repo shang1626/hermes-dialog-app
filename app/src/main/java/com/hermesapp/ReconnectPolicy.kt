@@ -125,9 +125,41 @@ object ReconnectPolicy {
     /** 构造「回到前台，正在重连…」。 */
     fun noteForegroundReconnect(): String = FOREGROUND_RECONNECT_NOTE_PREFIX + "…"
 
+    /**
+     * 状态轮询兜底那三句提示的定稿文案 / 公共前缀。
+     *
+     * 三句都要登记进 [STALE_WHEN_STREAM_RECOVERS] 才清得掉，所以**构造文案只走本节的函数**，
+     * 别在别处手写这几个字（手写就等于让它逃出自动清理——重连提示就是这么出过一次缺陷）。
+     * 声明位置必须在 [STALE_WHEN_STREAM_RECOVERS] **之前**：`const val` 参与对象初始化顺序，
+     * 写在后面会让那张表报「Variable must be initialized」。
+     *
+     * `LIVE_RUN_CONFIRMING_NOTE` 是「探测结果还没出来」那一刻显示的：只描述正在做什么，
+     * **不含任何结论**——404 的成因不止一种，其中最常见的一种恰恰是「这一轮刚跑完」。
+     */
+    const val LIVE_RUN_CONFIRMING_NOTE = "正在向服务器确认这一轮的状态…"
+    const val LIVE_RUN_RUNNING_NOTE_PREFIX = "这一轮还在服务器上跑"
+    const val LIVE_RUN_UNREACHABLE_NOTE_PREFIX = "暂时问不到这一轮的状态"
+
     /** 这行提示是不是在讲「当下正在重连」——流一恢复它就不成立。 */
-    fun isReconnectingNote(note: String): Boolean =
-        note.startsWith(RECONNECTING_NOTE_PREFIX) || note.startsWith(FOREGROUND_RECONNECT_NOTE_PREFIX)
+    fun isReconnectingNote(note: String): Boolean = STALE_WHEN_STREAM_RECOVERS.any { note.startsWith(it) }
+
+    /**
+     * 「流一接上就不该再留在屏幕上」的提示前缀。
+     *
+     * 除了两种重连文案，还包括状态轮询兜底那几句（正在确认 / 还在服务器上跑 / 暂时问不到状态）：
+     * 它们同样只在「流接不上」时成立。**为什么必须并进来**——回前台会把 `autoContinue` 归零
+     * （见 `onAppForeground`），此后新接上的流收到真实事件时 `shouldClearNoteOnEvent` 的两个
+     * 条件（退避计数非零、提示属重连类）就都不成立，那行提示会永久钉在会话上方。本仓这类
+     * 「写入者与清理者判据不一致」的残留已复发过两次（重连提示、语音排队提示），所以新写的
+     * 每一句状态提示都要在这里登记。
+     */
+    private val STALE_WHEN_STREAM_RECOVERS = listOf(
+        RECONNECTING_NOTE_PREFIX,
+        FOREGROUND_RECONNECT_NOTE_PREFIX,
+        LIVE_RUN_CONFIRMING_NOTE,
+        LIVE_RUN_RUNNING_NOTE_PREFIX,
+        LIVE_RUN_UNREACHABLE_NOTE_PREFIX,
+    )
 
     /**
      * 收到一个真实事件后，这行提示该不该清掉。
@@ -142,4 +174,49 @@ object ReconnectPolicy {
         if (eventName == "replay.truncated") return false
         return autoContinue != 0 || isReconnectingNote(note)
     }
+
+    // ---- 「这一轮还在服务端跑」这句提示（2026-10-14 现场：已完成被说成还在跑）------------------
+    // 三句文案与其前缀常量声明在文件上方（[STALE_WHEN_STREAM_RECOVERS] 之前，初始化顺序所限）。
+
+    /**
+     * 状态轮询兜底时那句提示：把「已跑多久」和「服务端做到哪一步了」一起给出来。
+     *
+     * 两条口径写在文案里，因为用户对它们的读法完全不同：
+     * ① 时长答「跑了多久」，只靠本地锚点；
+     * ② **服务端最后一次有动静是什么时候**答「在算还是卡住了」——本地掐表答不了这个，
+     *    只有服务端状态里的时间戳能答。
+     *
+     * @param elapsedMs      本轮已跑毫秒数（0 = 起点未知，只报「还在跑」）
+     * @param lastEvent      服务端 run 状态的 `last_event`（事件名，可能为空）
+     * @param lastEventAgeMs 现在距服务端 `updated_at` 的毫秒数；<0 = 不知道
+     */
+    fun liveRunNote(elapsedMs: Long, lastEvent: String, lastEventAgeMs: Long): String {
+        val mins = elapsedMs / 60_000L
+        val head = if (mins > 0) LIVE_RUN_RUNNING_NOTE_PREFIX + "（已 $mins 分钟）" else LIVE_RUN_RUNNING_NOTE_PREFIX
+        return head + liveRunDetail(lastEvent, lastEventAgeMs) + "，跑完自动取回"
+    }
+
+    /**
+     * 「做到哪一步了」这半句。
+     *
+     * 只用服务端真给得出的东西，且**宁可少说**：`updated_at` 只在工具事件与状态变更上刷新，
+     * 流式正文（message.delta）不经状态写入，所以它代表的是「最后一个工具步骤」而不是
+     * 「最后收到一个字」——长回答期间的静默是正常的，不能读成卡住，因此这里只讲工具步骤。
+     * 认不出来（事件名不在表里 / 没有时间戳）就一个字都不加，别编。
+     */
+    fun liveRunDetail(lastEvent: String, lastEventAgeMs: Long): String = when {
+        lastEvent == "approval.request" -> "，服务端在等你确认一条审批"
+        lastEvent == "clarify.request" -> "，服务端在等你回答一个问题"
+        lastEvent == "run.stopping" -> "，正在停止这一轮"
+        lastEvent.startsWith("tool.") -> when {
+            lastEventAgeMs < 0L -> ""
+            lastEventAgeMs < 60_000L -> "，刚刚还有工具步骤在跑"
+            else -> "，最后一个工具步骤在 " + (lastEventAgeMs / 60_000L) + " 分钟前"
+        }
+        else -> ""
+    }
+
+    /** 网络探不出状态时那句：说实话（问不到 ≠ 已结束），并给出已试次数。 */
+    fun liveRunUnreachableNote(misses: Int, maxMisses: Int): String =
+        LIVE_RUN_UNREACHABLE_NOTE_PREFIX + "（第 $misses/$maxMisses 次，多半是网络不通），继续试"
 }
