@@ -154,3 +154,4 @@ App 私有目录 `filesDir`，纯 JSON，不碰服务端库：
 - **release 签 debug 密钥**：换机器构建必须带同一份 `/root/.android/debug.keystore`，否则装不上
 - **`Keys.kt` 里有真实密钥**：文档和提交信息里都不要抄，要看直接开文件
 - **`local.properties` / `dist/` / `build/` 都在 .gitignore**：不是漏提交，是故意的
+- **每条「状态提示」的写入者与清理者必须是同一个判据**：提示描述的是一种状态（「正在重连」「这条语音在排队等」），只要写它的条件和清它的条件不是同一处算出来的，状态不成立时就没人清，提示会永久钉在屏幕上。两次真实故障都是这一条：重连提示靠退避计数清（写它的路径把它归零了，2.202 修）、语音排队提示只在「轮到自己起播」与「按停止」两处清（队列播空走的是另一条 return，2.205 修）。做法：把一个纯函数（`ReconnectPolicy.shouldClearNoteOnEvent` / `VoiceQueueTip.shouldTrackWaiting`）同时用于写入与清理，重算点挂在**唯一的推进函数**上（如 pump 的 wrapper），别散在各条 return 里；并且提示涉及「排队」时，正在播的那条**不算在等**。

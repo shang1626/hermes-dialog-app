@@ -30,9 +30,40 @@ object VoiceQueueTip {
     const val WAIT_NOTICE_MS = 30_000L
 
     /**
+     * 队列里「已经收到数据、排在别人后面」的条目数 —— 正在响的那条不算（它就是前面那条）。
+     *
+     * queuedKeys = 队列里的条目（含正在响的那条：它一直留在队里，直到播完才被摘）；
+     * activeKey = 正在响的那条；bytesOf = 取某条已收到的字节数（0 表示还没数据，不算在等）。
+     */
+    fun waitingCount(queuedKeys: List<String>, activeKey: String, bytesOf: (String) -> Long): Int =
+        queuedKeys.count { it != activeKey && bytesOf(it) > 0L }
+
+    /**
+     * 该不该记「有人在排队等」：有人正在出声 **且** 后面确实有人等着，两条同时成立才算。
+     *
+     * 判据必须与清理判据是同一个函数（见 nextWaitingSince）。2026-10-13 上报的缺陷就是
+     * 「写」看的是「队列里有没有带数据的条目」—— 把正在响的那条自己也算了进去，
+     * 于是任意一条超过 30 秒的单条语音都会把提示点亮；而「清」只在「轮到自己起播」与
+     * 「按停止」两条路上发生，队列播空走的是另一条 return，没人清：
+     * 17:16:23 起播、17:18:01 播完（队列剩=0），到 17:20 顶部仍显示「已等 251 秒」，
+     * 而当时已经没有任何可播的语音。
+     */
+    fun shouldTrackWaiting(someonePlaying: Boolean, waitingCount: Int): Boolean =
+        someonePlaying && waitingCount > 0
+
+    /**
+     * 等待起点的唯一写入路径：不该等 -> 归零；该等且还没记 -> 记现在；本来就该等 -> 保持原值。
+     * 保持原值让「已等 N 秒」在队列前移时连续，不被重置。
+     */
+    fun nextWaitingSince(current: Long, shouldTrack: Boolean, now: Long): Long = when {
+        !shouldTrack -> 0L
+        current > 0L -> current
+        else -> now
+    }
+
+    /**
      * 该不该显示「这条语音还在排队等」。
      *
-     * waitingSince = 开始等待的墙钟时间（0 = 没在等，或已经轮到自己了）。
      * 阈值的意义：前一条是长语音或用户手动重播时，新任务要等它播完才响，
      * 这段时间里用户看到的现象就是「任务完成了但没自动播报」，需要被解释。
      */
