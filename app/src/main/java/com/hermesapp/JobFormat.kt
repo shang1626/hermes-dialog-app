@@ -75,7 +75,7 @@ internal fun jobZhNote(name: String): String {
         "vision-restart-verify" ->
             return "重启后自动体检：确认网关已起来、视觉补丁已加载、平台连接与三路记忆信号正常；有异常才出报告。"
         "上游优先级自动切换" ->
-            return "每 5 分钟核对上游优先级：优先用 ClinePass；它用不了就切两把 opencode-go，赶上高峰（工作日 9-12 点、14-18 点）则改用 ds.example.com；切走后每 5 小时重试一次 ClinePass。"
+            return "每 5 分钟核对上游优先级：始终优先 ClinePass；它连试 5 次都不行就换下一腿（低谷段换两把 opencode-go，高峰段换 ds.example.com），两条腿都不行同样用 ds；被判不行的腿 5 小时后再试。高峰段（工作日 9-12 点、14-18 点）opencode-go 绝不启用。"
         "FreeLLMAPI密钥用途守卫" ->
             return "每 30 分钟核对 FreeLLMAPI 的密钥用途：ClinePass 只准 cline-pass/deepseek-v4.1-flash、两把 opencode-go 只准 deepseek-v4.1-flash、硅基流动只做 bge-m3 嵌入，发现越权启用或作用域被放宽就立刻收回并通知你；正常时静默。"
     }
