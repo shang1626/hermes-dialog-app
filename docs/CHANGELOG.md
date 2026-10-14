@@ -1,3 +1,16 @@
+## 2.209 — versionCode 220
+
+**为什么会有这一版**：你要求「每轮开始都要有召回多少条记忆的显式」。查下来：服务端**每轮都在算、都在打印**，App 却一个字看不到 —— 断点在服务端一条流 + App 一个分支，两处都补。
+
+- **服务端每轮确实在发（逐条实证）**：`journalctl -u hermes-gateway` 里可见 `👁️ Hindsight — recalled 20 memories`（22:10:57）、`recalled 13`（22:15:59）、`recalled 12`（22:16:24）、`recalled 16`（22:26:29）、`recalled 11`（22:31:52）。
+- **断点一（服务端，须重启网关）**：App 走的 `/v1/runs` 那条流创建 agent 时只挂了 `stream_delta_callback`（正文）与 `tool_progress_callback`（工具），**没有挂 `status_callback`** —— 状态只到 CLI/journald，压根不进 SSE。对照：OpenAI 兼容那条流早就有这个回调，注释写明目的是「让客户端看到流为什么静默，而不是一条死连接」。已用本地补丁 `apply_run_status_stream_patch` 补上（事件名沿用既有 `hermes.status`，字段 kind + text），机制级用例验过：事件入队、字段齐全、无订阅/空文本/异常三条路径都静默不抛。
+- **断点二（App）**：事件分发里没有 `hermes.status` 分支。已补：命中召回指示 → 写 `Msg.recall`；其余 lifecycle 状态（上游等待 / 自动恢复倒计时 / 模型切换）→ 落进可折叠的「过程」，前缀「· 服务端：」。
+- **显示口径**：每轮助手气泡**正文之前**显式一行「👁️ 本轮召回 N 条记忆」（`RecallNote` 把服务端英文原句压成中文；`recalled relevant memory` 这类没有离散条数的说成「召回了相关记忆（条数不详）」；非召回类状态返回 null，绝不被当成召回量）。
+- **它是「非正文载荷」，按老规矩四处一起管**：`Msg.recall` 落盘（`SessionStore` 存/读都带上）、空壳丢弃判据带上它（免得只有召回行 + 正文还没到的气泡被滤掉）、服务端刷新合并时本地那份不被覆盖（合并命中时保留本地行，服务端没有这个字段）。
+- **回归用例**：新增 `RecallNoteTest`（5 条，输入直接取上面 journald 的原文，含「别把上游等待当召回量」的反向对照）；全量单测 **308 项通过（debug / release 两个变体各 154 项，failures=0 errors=0）**。
+- **验收标准（可逐轮对账）**：同一时刻 journald 里的 `recalled N memories` 与 App 显示的 N 必须相等，连测 3 轮。实测对账走 App 上报日志（`~/.hermes/cache/applog/` 里搜「本轮召回提示已挂到气泡」）与 journald 两条线。
+- **服务端要重启网关才生效**（这是首次把状态转发进这条流）；App 侧不需要改任何设置。
+
 ## 2.208 — versionCode 219
 
 **为什么会有这一版**：你报「我前面 4 条会话都没有了」。查你 10-14 11:37 上报的日志（vivo V2183A）——4 条会话不是被删，是本地索引文件被写成了空数组（26 字节）。
