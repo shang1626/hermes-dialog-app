@@ -21,8 +21,8 @@ android {
         applicationId = "com.hermesapp"
         minSdk = 26
         targetSdk = 34
-        versionCode = 217
-        versionName = "2.206"
+        versionCode = 219
+        versionName = "2.208"
 
         // 敏感值由 local.properties 注入，源码零真值。
         // R20 起：口令与 API 密钥**不再编进包里**（旧版这三样明文字符串躺在 classes.dex 里，
@@ -87,5 +87,8 @@ dependencies {
 
     // Unit tests (stage 2). Pure JVM, no device/emulator needed.
     testImplementation("junit:junit:4.13.2")
+    // JVM 单测里 android.jar 的 org.json 是桩（方法直接抛 "Stub!"），要真解析索引用例
+    // （SessionStoreIndexRecoveryTest）就得把真正的 org.json 放到测试类路径上。
+    testImplementation("org.json:json:20240303")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
 }

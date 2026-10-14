@@ -103,6 +103,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = Prefs(app)
     private var store = SessionStore(app, prefs.profile)
 
+    /**
+     * 会话索引是否已经读进内存（bootstrapSessions 结束前置位）。
+     *
+     * 为什么要这道门：启动时 UI 会先把「上次停留的会话」恢复出来，走的是 switchSession →
+     * saveCurrentAsync → saveIndexAsync；而索引是异步读的（Dispatchers.IO）。读盘慢过 300ms
+     * 去抖窗口时，落盘那一刻 `_sessions.value` 还是空的，索引文件就被写成空数组 ——
+     * 2026-10-14 事故：4 条会话从侧边栏消失，索引只剩 26 字节。
+     * 索引没读完之前一次都不许写盘（那时也没有「变更」可写），读完才放开。
+     */
+    @Volatile private var indexReady = false
+
     init {
         // 留一行证据：同一个进程里 ViewModel 重建会打多行，
         // 用于确认「切后台回来进度丢」是不是被系统重建引起。
@@ -886,7 +897,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 " 保留=" + kept.size + " 移除=" + removed)
             if (removed > 0) {
                 _sessions.value = kept
-                saveIndexAsync(debounceMs = 0L)
+                // 清到一条不剩也是合法的「全部删掉」，显式允许写空。
+                saveIndexAsync(debounceMs = 0L, allowEmpty = kept.isEmpty())
                 if (kept.none { it.id == _currentId.value }) selectNextOrEmpty()
             }
         } catch (e: Exception) {
@@ -940,11 +952,24 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * 索引落盘：异步 +（默认）300ms 去抖。
      * debounceMs = 0 用于「必须尽快落盘」的场合（新建会话、归档、删除）。
      */
-    private fun saveIndexAsync(debounceMs: Long = 300L) {
+    private fun saveIndexAsync(debounceMs: Long = 300L, allowEmpty: Boolean = false) {
+        // 索引还没读完之前一律不落盘（见 indexReady 注释）：此刻内存里的列表是空的，
+        // 写下去就是把磁盘上那份索引抹成空数组 —— 2026-10-14 事故的根因路径。
+        if (!indexReady) {
+            AppLog.log("store", "索引未就绪，跳过落盘（防启动竞态写空）条数=" + _sessions.value.size +
+                " allowEmpty=" + allowEmpty)
+            return
+        }
         indexSaveJob?.cancel()
         indexSaveJob = RuntimeHub.scope.launch(Dispatchers.IO) {
             if (debounceMs > 0) delay(debounceMs)
-            store.saveIndex(_sessions.value)
+            // 去抖窗口内列表可能又变过，落盘前再判一次（与 SessionStore 内的闸门同源）。
+            if (!indexWriteAllowed(indexReady, _sessions.value.size, store.lastKnownCount, allowEmpty)) {
+                AppLog.err("store", "跳过落盘：磁盘上还有 " + store.lastKnownCount + " 条、本次 " +
+                    _sessions.value.size + " 条（allowEmpty=" + allowEmpty + "）", null)
+                return@launch
+            }
+            store.saveIndex(_sessions.value, allowEmpty)
         }
     }
 
@@ -1092,7 +1117,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         prefs.removePendingTitle(id)
         val list = _sessions.value.filter { it.id != id }.toMutableList()
         _sessions.value = list
-        saveIndexAsync(debounceMs = 0L)
+        // 删掉最后一个会话时列表就是空的，这是真·清空，显式放行（否则闸门会拒绝写盘，
+        // 磁盘上那条已删的会话会在下次启动时被 .bak 恢复回来）。
+        saveIndexAsync(debounceMs = 0L, allowEmpty = list.isEmpty())
         RuntimeHub.scope.launch(Dispatchers.IO) { runCatching { store.deleteMessages(id) } }
         if (id == _currentId.value) selectNextOrEmpty()
     }
@@ -1122,7 +1149,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
         val prefsCleared = prefs.clearAllSessionState()
         _sessions.value = emptyList()
-        saveIndexAsync(debounceMs = 0L)
+        // 「清空全部对话」是唯一该把索引写成空的用户动作之一 —— 显式放行闸门。
+        saveIndexAsync(debounceMs = 0L, allowEmpty = true)
         // 走与单条删除同一条落地路径：_sessions 已空，它会清掉当前会话指针并进入空态。
         selectNextOrEmpty()
         prefs.pendingOpenSession = ""
@@ -1200,8 +1228,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (i < 0) return
         val old = list[i]
         val title = if (old.title == "新对话" && !firstUserText.isNullOrBlank()) {
-            val t = firstUserText.replace(Regex("\\s+"), " ").trim()
-            if (t.length > 20) t.take(20) + "…" else t
+            // 标题推导统一走 deriveTitle（与「索引为空时按消息文件重建列表」同一口径）。
+            deriveTitle(firstUserText)
         } else old.title
         list[i] = old.copy(title = title, updatedAt = stamp())
         _sessions.value = list
@@ -1211,48 +1239,86 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun bootstrapSessions(profileSessionId: String?) {
-        store = SessionStore(getApplication(), prefs.profile)
-        // 启动体检：把本机到底存了哪些会话文件钉进日志。
-        AppLog.log("store", "启动体检 profile=" + prefs.profile + " " + store.diagSummary() +
-            " 上次会话=" + (profileSessionId ?: "无"))
-        val idx = store.loadIndex()
-        AppLog.log("store", "启动读索引 条数=" + idx.size)
-        if (idx.isEmpty()) {
-            val migrated = store.migrateLegacy(profileSessionId ?: "")
-            if (migrated == null) {
-                // 无历史会话：进入空态，首次输入再建会话
-                AppLog.log("store", "启动分支=空态（索引为空且无旧格式文件可迁移）")
-                _currentId.value = ""
-                prefs.sessionId = null
-                _sessions.value = emptyList()
+        try {
+            store = SessionStore(getApplication<Application>(), prefs.profile)
+            // 启动体检：把本机到底存了哪些会话文件钉进日志。
+            AppLog.log("store", "启动体检 profile=" + prefs.profile + " " + store.diagSummary() +
+                " 上次会话=" + (profileSessionId ?: "无"))
+            val idx = store.loadIndex()
+            AppLog.log("store", "启动读索引 条数=" + idx.size)
+            // ① 索引一条都没有 → 按目录里的正文文件整份重建（事故恢复的第一道）。
+            var list = idx.toMutableList()
+            if (shouldRebuildIndexFromFiles(idx.size, store.messageFileCount())) {
+                val rebuilt = store.rebuildFromMessageFiles()
+                if (rebuilt.isNotEmpty()) {
+                    AppLog.log("store", "启动分支=按消息文件重建 条数=" + rebuilt.size)
+                    list = rebuilt
+                }
+            }
+            // ② 索引里缺行、但那些会话的正文文件还在 → 补回列表。
+            //    事故现场的形状就是这一条：索引被写空后 App 又建了当前会话，索引里只剩 1 条，
+            //    4 条老会话的正文一直躺在目录里（"索引为空才重建"对非空索引不生效）。
+            val orphans = store.recoverOrphanSessions(list.map { it.id }.toSet())
+            if (orphans.isNotEmpty()) {
+                AppLog.log("store", "启动分支=补回索引外的会话 条数=" + orphans.size +
+                    " 合计=" + (list.size + orphans.size))
+                list = (list + orphans).toMutableList()
+            }
+            if (list.isEmpty()) {
+                val migrated = store.migrateLegacy(profileSessionId ?: "")
+                if (migrated == null) {
+                    // 无历史会话：进入空态，首次输入再建会话
+                    AppLog.log("store", "启动分支=空态（索引为空且无旧格式文件可迁移）")
+                    _currentId.value = ""
+                    prefs.sessionId = null
+                    _sessions.value = emptyList()
+                    return
+                }
+                AppLog.log("store", "启动分支=迁移旧格式 会话=" + migrated.id.take(8))
+                _currentId.value = migrated.id
+                prefs.sessionId = migrated.id
+                _sessions.value = listOf(migrated)
+                ensureLoaded(migrated.id)
                 return
             }
-            AppLog.log("store", "启动分支=迁移旧格式 会话=" + migrated.id.take(8))
-            _currentId.value = migrated.id
-            prefs.sessionId = migrated.id
-            _sessions.value = listOf(migrated)
-            ensureLoaded(migrated.id)
-            return
+            // 排序：只要用户手动排过（存在非 0 的 order），就按 order 升序（手动顺序）；
+            // 否则回落到按最近更新时间降序——同时把当前顺序钉成 order（1..N），
+            // 作为手动排序的起点，免得第一次上/下移时整表乱跳。
+            val manual = list.any { it.order > 0L }
+            if (manual) {
+                // 补回来的会话没有手排位次：排到现有序列末尾，别插进用户自己排好的顺序里。
+                var next = list.maxOfOrNull { it.order } ?: 0L
+                for (m in list) if (m.order <= 0L) m.order = ++next
+                list.sortBy { it.order }
+            } else {
+                list.sortByDescending { it.updatedAt }
+            }
+            // 恢复过（重建 / 补回）就立刻把索引写回去：下次启动直读，也把 .bak 顶成这份正确的。
+            if (list.size != idx.size) {
+                store.saveIndex(list)
+                AppLog.log("store", "启动恢复后写回索引 条数=" + list.size)
+            }
+            // 优先恢复上次停留的会话（prefs.sessionId）；找不到才回退到最近更新的未归档会话。
+            val preferred = profileSessionId?.takeIf { it.isNotEmpty() }
+                ?.let { pid -> list.firstOrNull { it.id == pid && !it.archived } }
+            val target = preferred ?: list.firstOrNull { !it.archived } ?: list.first()
+            AppLog.log("store", "启动分支=恢复列表 条数=" + list.size +
+                " 已归档=" + list.count { it.archived } +
+                " 命中上次会话=" + (preferred != null) + " 当前=" + target.id.take(8))
+            _currentId.value = target.id
+            prefs.sessionId = target.id
+            _sessions.value = list
+            AppLog.log("store", "刷新列表 条数=" + list.size + " 已归档=" + list.count { it.archived } +
+                " 当前=" + target.id.take(8))
+            ensureLoaded(target.id)
+            prewarmRecentSessions()
+        } catch (e: Exception) {
+            // 启动失败也不能把 indexReady 卡在 false —— 否则这一进程里任何索引变更都写不出去。
+            AppLog.err("store", "启动读取会话列表失败（按空列表继续）", e)
+        } finally {
+            // 只有走到这里才说明「磁盘上的索引已经读进内存」，此时才允许落盘。
+            indexReady = true
         }
-        // 排序：只要用户手动排过（存在非 0 的 order），就按 order 升序（手动顺序）；
-        // 否则回落到按最近更新时间降序——同时把当前顺序钉成 order（1..N），
-        // 作为手动排序的起点，免得第一次上/下移时整表乱跳。
-        val manual = idx.any { it.order > 0L }
-        val list = if (manual) idx.sortedBy { it.order } else idx.sortedByDescending { it.updatedAt }
-        // 优先恢复上次停留的会话（prefs.sessionId）；找不到才回退到最近更新的未归档会话。
-        val preferred = profileSessionId?.takeIf { it.isNotEmpty() }
-            ?.let { pid -> list.firstOrNull { it.id == pid && !it.archived } }
-        val target = preferred ?: list.firstOrNull { !it.archived } ?: list.first()
-        AppLog.log("store", "启动分支=恢复列表 条数=" + list.size +
-            " 已归档=" + list.count { it.archived } +
-            " 命中上次会话=" + (preferred != null) + " 当前=" + target.id.take(8))
-        _currentId.value = target.id
-        prefs.sessionId = target.id
-        _sessions.value = list
-        AppLog.log("store", "刷新列表 条数=" + list.size + " 已归档=" + list.count { it.archived } +
-            " 当前=" + target.id.take(8))
-        ensureLoaded(target.id)
-        prewarmRecentSessions()
     }
 
     // ---------- 连接 ----------
