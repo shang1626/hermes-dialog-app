@@ -1222,6 +1222,12 @@ fun Bubble(
                 }
                 // 子任务进度不在这里逐条显示了：已统一汇总到对话窗口顶部的面板
                 // （顶栏的 SubagentChip），消息再长也在同一处看。
+                // 本轮开始时的记忆召回量：服务端 hermes.status 事件带来的每轮一行提示，
+                // 显式放在正文之前（用户 2026-10-14 要求「每轮开始都要有召回多少条记忆的显式」）。
+                if (!isUser && m.recall.isNotEmpty()) {
+                    Text(m.recall, color = c.accent, fontSize = T.micro, lineHeight = 15.sp)
+                    Spacer(Modifier.height(6.dp))
+                }
                 if (m.text.isNotEmpty() || (m.pending && m.trace.isEmpty())) {
                     // 正文走 Markdown 渲染：管道表格画成网格，URL 可点开浏览器；其余按等宽原文
                     RichText(

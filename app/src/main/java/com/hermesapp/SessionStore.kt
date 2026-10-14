@@ -488,11 +488,13 @@ class SessionStore(private val dir: File, private val profile: String) {
                         ))
                     }
                 }
-                // 只要还有正文 / 工具轨迹 / 图片 / 附件 / 待办卡片 / 子任务进度，这条就得留住。
+                // 只要还有正文 / 工具轨迹 / 图片 / 附件 / 待办卡片 / 子任务进度 / 召回提示，这条就得留住。
                 // 待办卡片气泡的正文可能是空的（服务端还没产出内容），只查正文与轨迹的
                 // 老条件会把整条丢掉——重开 App 那张等你点的卡片就没了。
+                val recall = o.optString("recall", "")
                 if (text.isEmpty() && trace.isEmpty() && imgs.isEmpty() && files.isEmpty() &&
-                    approval == null && clarify == null && usage == null && subs.isEmpty()) continue
+                    approval == null && clarify == null && usage == null && subs.isEmpty() &&
+                    recall.isEmpty()) continue
                 // 投递状态：老消息没有这个键 → 保持 null（界面不显示角标，不报错）。
                 val rc = o.optJSONObject("receipt")?.let { ro ->
                     val arts = mutableListOf<String>()
@@ -530,6 +532,7 @@ class SessionStore(private val dir: File, private val profile: String) {
                         clarify = clarify,
                         usage = usage,
                         subagents = subs,
+                        recall = recall,
                         // 进行中气泡的计时起点：不读回来的话，重开 App 后实时耗时会从 0 重新算。
                         startedAt = o.optLong("startedAt", 0L),
                         runId = o.optString("runId", ""),
@@ -553,7 +556,8 @@ class SessionStore(private val dir: File, private val profile: String) {
             // 带审批/澄清卡片的必须留下，否则重开 App 卡片就没了。
             val clean = list.filter {
                 !(it.pending && it.text.isEmpty() && it.trace.isEmpty() &&
-                    it.approval == null && it.clarify == null && it.subagents.isEmpty())
+                    it.approval == null && it.clarify == null && it.subagents.isEmpty() &&
+                    it.recall.isEmpty())
             }
             // 超上限直接裁到最近 max 条：本地只保留最近窗口（服务端存全量历史）。
             // 原来会把被裁掉的头部另存成归档文件，但归档查看入口已移除、无人再读，
@@ -623,6 +627,8 @@ class SessionStore(private val dir: File, private val profile: String) {
                 }
                 // 进行中气泡的计时起点也要落盘，否则 App 退出重进后计时从 0 重新开始。
                 if (m.startedAt > 0) o.put("startedAt", m.startedAt)
+                // 本轮召回提示：不落盘的话，重开 App / 切会话回来这一行就没了。
+                if (m.recall.isNotEmpty()) o.put("recall", m.recall)
                 // 投递状态**一律**落盘，含 sending / queued（F03）。
                 // 旧实现故意过滤掉这两个状态，理由是「重启后那个 POST 已经没了，留着会一直转圈」；
                 // 代价是重启后那条消息的回执、幂等键、附件清单全丢——用户再也认不出

@@ -31,6 +31,12 @@ data class Msg(
     val clarify: ClarifyCard? = null,
     /** 子任务进度（delegate_task 派出的子代理），按开始顺序排列。 */
     val subagents: List<SubagentLine> = emptyList(),
+    /**
+     * 本轮开始时的记忆召回提示（服务端 `hermes.status` 事件，如「👁️ 本轮召回 12 条记忆」）。
+     * 空表示本轮没拿到指示（寒暄轮 / 旧网关 / 服务端补丁未打）。界面显式放在正文之前。
+     * 必须落盘：重开 App、切会话回来这一行要还在（与 usage/subagents 同一条规矩）。
+     */
+    val recall: String = "",
     /** 稳定唯一 id：给 LazyColumn 做 key，避免滑动时整列重组。 */
     val id: Long = nextMsgId(),
     /** 投递状态：只有用户消息有；老消息/服务端拉回的消息为 null。 */

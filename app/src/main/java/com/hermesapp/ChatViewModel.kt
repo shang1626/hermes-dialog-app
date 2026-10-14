@@ -2671,7 +2671,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (i < 0) return
         val m = list[i]
         if (m.text.isEmpty() && m.trace.isEmpty() && m.approval == null && m.clarify == null &&
-            m.usage == null && m.subagents.isEmpty()
+            m.usage == null && m.subagents.isEmpty() && m.recall.isEmpty()
         ) {
             list.removeAt(i)
             setMsgs(r, list)
@@ -3837,6 +3837,27 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     // 入攒帧缓冲，由 StreamDeltaCoalescer 按帧放送（避免一大块一大块地跳）。
                     "message.delta" -> r.coalescer?.append(ev.data.optString("delta", ""))
                     "message.interim" -> {}
+                    // 服务端把 agent 的 lifecycle 状态转发进这条流了（服务端补丁 apply_run_status_stream_patch）：
+                    // 召回指示 → 每轮固定一行（正文之前显式显示，用户 2026-10-14 要求）；
+                    // 其它状态（上游等待 / 自动恢复倒计时 / 模型切换）→ 落进可折叠的「过程」，
+                    // 让流静默时有据可查，不占正文、不打扰。
+                    "hermes.status" -> {
+                        val stTxt = ev.data.optString("text", "").trim()
+                        if (stTxt.isNotEmpty()) {
+                            val recall = RecallNote.line(stTxt)
+                            if (recall != null) {
+                                attachRecall(r, recall)
+                            } else {
+                                val msgs = r.messages.value.toMutableList()
+                                val pi = msgs.indexOfLast { it.role == "assistant" && it.pending }
+                                if (pi >= 0) {
+                                    msgs[pi] = msgs[pi].copy(trace = msgs[pi].trace + "· 服务端：" + stTxt + "\n")
+                                    setMsgs(r, msgs)
+                                }
+                                AppLog.log("stream", "服务端状态：" + stTxt.take(120))
+                            }
+                        }
+                    }
                     "tool.started" -> {}
                     "tool.completed" -> {
                         r.coalescer?.flushNow()
@@ -4400,6 +4421,30 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val i = list.indexOfLast { it.role == "assistant" && it.pending }
         if (i >= 0) list[i] = list[i].copy(trace = list[i].trace + d)
         else list.add(Msg("assistant", "", pending = true, ts = stamp(), startedAt = turnStart(r), trace = d))
+        setMsgs(r, list)
+    }
+
+    /**
+     * 把「本轮召回 N 条记忆」写到当前这一轮的助手气泡上（每轮一行，界面里放在正文之前）。
+     *
+     * 三条纪律（用户 2026-10-14 要求「每轮开始都要有召回多少条记忆的显式」）：
+     * ① 只在**进行中**的气泡上写；没有就退到最近一条助手消息，都没有才新建占位气泡——
+     *    召回事件比正文先到是常态，不能因为它先到就丢掉；
+     * ② 同一句不重复写（断流重连时服务端会把 backlog 重放一遍，否则重复挂）；
+     * ③ 落盘由 `Msg.recall` 随消息走（SessionStore 存/读都带上），重开 App 这一行还在。
+     */
+    private fun attachRecall(r: SessionRuntime, line: String) {
+        if (line.isEmpty()) return
+        val list = r.messages.value.toMutableList()
+        var i = list.indexOfLast { it.role == "assistant" && it.pending }
+        if (i < 0) i = list.indexOfLast { it.role == "assistant" }
+        if (i >= 0) {
+            if (list[i].recall == line) return
+            list[i] = list[i].copy(recall = line)
+        } else {
+            list.add(Msg("assistant", "", pending = true, ts = stamp(), startedAt = turnStart(r), recall = line))
+        }
+        AppLog.log("stream", "本轮召回提示已挂到气泡：" + line)
         setMsgs(r, list)
     }
 

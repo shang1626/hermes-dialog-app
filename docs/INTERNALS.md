@@ -21,6 +21,7 @@ DESIGN.md 讲「有哪些文件」，这份讲「运行时到底怎么跑、哪�
 |---|---|
 | `message.delta` | 追加到当前 assistant 气泡正文（`appendDelta`） |
 | `message.interim` | 忽略 |
+| `hermes.status` | 服务端 agent 的 lifecycle 状态（补丁 `apply_run_status_stream_patch` 转发）：召回指示 → 写到 `Msg.recall`（界面显式一行，正文之前）；其余状态 → 追加到 `trace`，前缀「· 服务端：」 |
 | `tool.started` | 忽略（只在完成时记一行） |
 | `tool.completed` | 追加工具轨迹行到 `trace`（界面默认折叠） |
 | `tool.failed` | 同上，前缀 ✗ |
