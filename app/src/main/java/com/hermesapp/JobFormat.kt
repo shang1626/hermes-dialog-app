@@ -82,7 +82,7 @@ internal fun jobZhNote(name: String): String {
         "browser-chain-check" ->
             return "每 15 分钟查浏览器链路三件事：Chromium 二进制在不在、google-chrome 包装脚本的指向对不对、守护进程有没有僵死；发现问题就自愈，正常时静默。"
         "Hindsight 每日巡检" ->
-            return "每天 09:20 给记忆服务做体检：健康、写入、抽取、中文召回、零事实文档共 5 条断言，全绿静默，有异常才出报告。"
+            return "每天 08:00 给记忆服务做体检：健康、写入、抽取、中文召回、零事实文档共 5 条断言，全绿静默，有异常才出报告。"
         "Hindsight回填保活" ->
             return "每 10 分钟看一眼历史回放有没有活干；有活且允许就拉起回填单元，平时完全静默。"
         "Hindsight回填验收" ->
