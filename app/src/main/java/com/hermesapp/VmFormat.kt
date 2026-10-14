@@ -155,6 +155,20 @@ internal fun oneLine(s: String, n: Int): String {
 internal fun normalizeTitle(raw: String): String = raw.replace(TITLE_WS, " ").trim()
 
 /**
+ * 会话标题：取首条用户消息的前 20 字（超长截断加省略号），没有可用文本时给「新对话」。
+ *
+ * 唯一的标题推导口径，三处必须共用同一份：① 用户首次发消息时的 `touchSession`；
+ * ② 启动时索引为空、按消息文件重建列表（SessionStore.rebuildFromMessageFiles）；
+ * ③ 索引里的标题缺失时的回落。各写一遍必然漂移 —— 重建出来的标题会和正常路径不一样。
+ */
+internal fun deriveTitle(firstUserText: String?): String {
+    if (firstUserText.isNullOrBlank()) return "新对话"
+    val t = firstUserText.replace(TITLE_WS, " ").trim()
+    if (t.isEmpty()) return "新对话"
+    return if (t.length > 20) t.take(20) + "…" else t
+}
+
+/**
  * 标题里的空白（含 U+00A0 不换行空格、U+3000 全角空格）。
  * Java 正则的 `\s` 默认只认 ASCII 空白，而服务端 `sanitize_title` 用的是 Python 的 `\s`（含
  * 全部 Unicode 空白）—— 只写 `\s` 会让「带全角空格的标题」两边不一致：本地显示两个词中间

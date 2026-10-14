@@ -36,9 +36,14 @@ data class GlobalHit(
  *   sessions_<profile>.json          会话索引
  *   chat_<profile>_<sessionId>.json  单个会话的消息
  */
-class SessionStore(ctx: Context, private val profile: String) {
+class SessionStore(private val dir: File, private val profile: String) {
 
-    private val dir: File = ctx.filesDir
+    /**
+     * 设备上的正式入口：目录固定是 App 私有 filesDir。
+     * 另开一个「目录入参」的主构造器是为了让纯 JVM 单测能用 TemporaryFolder 真跑
+     * 索引读写（2026-10-14 事故的回归用例就是这么跑的）。
+     */
+    constructor(ctx: Context, profile: String) : this(ctx.filesDir, profile)
 
     /** 索引文件格式版本：改了字段结构就 +1，读到旧值按旧格式解析。 */
     private val SCHEMA_INDEX = 2
@@ -51,6 +56,16 @@ class SessionStore(ctx: Context, private val profile: String) {
      * 用户看到的就是「装了旧包之后历史结构被改坏」。
      */
     private var loadedIndexSchema: Int = SCHEMA_INDEX
+
+    /**
+     * 本进程最近一次读到 / 写下的索引条数。
+     *
+     * 唯一用途：给「不许把非空索引写成空」这道闸门提供依据（见 [indexWriteAllowed] 与
+     * [saveIndex]）。2026-10-14 事故：启动竞态把内存里的空列表写盘，4 条会话的索引被
+     * 覆盖成 26 字节的空数组，侧边栏当场清空。
+     */
+    var lastKnownCount: Int = 0
+        private set
 
     private fun indexFile() = File(dir, "sessions_$profile.json")
 
@@ -203,19 +218,22 @@ class SessionStore(ctx: Context, private val profile: String) {
                     parseArr(bak.readText())
                 } else throw e
             }
-            for (i in 0 until arr.length()) {
-                val o = arr.optJSONObject(i) ?: continue
-                val id = o.optString("id", "")
-                if (id.isEmpty()) continue
-                out.add(
-                    SessionMeta(
-                        id = id,
-                        title = o.optString("title", "新对话"),
-                        updatedAt = o.optLong("updatedAt", 0L),
-                        archived = o.optBoolean("archived", false),
-                        order = o.optLong("order", 0L),
-                    )
-                )
+            fillMetas(out, arr)
+            // 主文件是「解析得出、但一条都没有」的合法空索引时，再看一眼上一份备份。
+            // 索引被写空大多不是用户清空，而是写盘竞态（2026-10-14 事故：启动时「恢复上次
+            // 会话」走的 switchSession 比 bootstrapSessions 先落盘，把 26 字节的
+            // {"schema":2,"sessions":[]} 写了上去，侧边栏 4 条会话当场消失）。
+            // 备份里还有条目就用它恢复 —— 用户看到的是「历史还在」，而不是「全没了」。
+            if (out.isEmpty()) {
+                val bak = File(dir, f.name + ".bak")
+                if (bak.exists()) {
+                    val bakArr = runCatching { parseArr(bak.readText()) }.getOrNull()
+                    if (bakArr != null && bakArr.length() > 0) {
+                        AppLog.log("store", "主索引为空（" + f.length() + "B），改用备份恢复 " +
+                            bakArr.length() + " 条")
+                        fillMetas(out, bakArr)
+                    }
+                }
             }
         } catch (e: Exception) {
             // 原来整段 runCatching 把解析异常静默吞掉、当成空索引返回——
@@ -224,10 +242,124 @@ class SessionStore(ctx: Context, private val profile: String) {
             AppLog.err("store", "读索引失败（按空列表处理）profile=" + profile +
                 " 文件=" + f.name + " 字节=" + f.length(), e)
         }
+        lastKnownCount = out.size
         return out
     }
 
-    fun saveIndex(list: List<SessionMeta>) {
+    /** 把一份索引 JSON 数组灌进 out（主文件与备份两条来源共用）。 */
+    private fun fillMetas(out: MutableList<SessionMeta>, arr: JSONArray) {
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val id = o.optString("id", "")
+            if (id.isEmpty()) continue
+            out.add(
+                SessionMeta(
+                    id = id,
+                    title = o.optString("title", "新对话"),
+                    updatedAt = o.optLong("updatedAt", 0L),
+                    archived = o.optBoolean("archived", false),
+                    order = o.optLong("order", 0L),
+                )
+            )
+        }
+    }
+
+    /**
+     * 索引丢了、但消息文件还在时，按目录里的 `chat_<profile>_*.json` 把会话列表重建出来。
+     *
+     * 为什么需要这一层（2026-10-14 事故的第二道网）：索引被写空、备份又被后续写盘顶掉时，
+     * 光靠 `.bak` 已经救不回来；而正文文件 chat_<profile>_<id>.json 一直在目录里躺着
+     * （事故时 4 个、365992B，一条没丢）。索引为空就按这些文件重建，标题取首条用户消息、
+     * 时间取文件 mtime —— 会话就能回到侧边栏，之后再正常与服务端对齐最新内容。
+     * 不碰服务端、不新建行，只恢复本机原本就有的会话。
+     */
+    fun rebuildFromMessageFiles(): MutableList<SessionMeta> {
+        val out = mutableListOf<SessionMeta>()
+        for (f in messageFiles()) {
+            val n = f.name
+            val id = n.substring("chat_${profile}_".length, n.length - ".json".length)
+            if (id.isEmpty()) continue
+            out.add(
+                SessionMeta(
+                    id = id,
+                    title = firstUserTitle(f),
+                    updatedAt = f.lastModified(),
+                    archived = false,
+                    order = 0L,
+                )
+            )
+        }
+        out.sortByDescending { it.updatedAt }
+        lastKnownCount = out.size
+        AppLog.log("store", "按消息文件重建索引 profile=" + profile + " 会话=" + out.size)
+        return out
+    }
+
+    /** 目录里的正式会话消息文件（排除原子写留下的 .bak/.tmp 与旧版归档副本）。 */
+    private fun messageFiles(): List<File> {
+        val prefix = "chat_${profile}_"
+        val files = runCatching { dir.listFiles() }.getOrNull() ?: return emptyList()
+        return files.filter { f ->
+            val n = f.name
+            f.isFile && n.startsWith(prefix) && n.endsWith(".json") &&
+                !n.endsWith(".bak") && !n.endsWith(".tmp") && !n.endsWith(".archive.json") &&
+                n.length > prefix.length + ".json".length
+        }
+    }
+
+    /** 本机有几个会话正文文件（索引为空时判断能不能重建）。 */
+    fun messageFileCount(): Int = messageFiles().size
+
+    /**
+     * 索引里没有、但目录里还有正文文件的会话 —— 补回列表用。
+     *
+     * 2026-10-14 事故现场就是这个形状：索引先被写空，App 又顺手建了当前会话，于是索引里
+     * 只剩 1 条（147 字节），而那 4 条老会话的 `chat_friend_*.json` 一直躺在目录里。
+     * 索引「非空」时「索引为空才重建」那条规则不会触发，所以这里按「文件有、索引没有」
+     * 逐个补回来。只认真有正文（≥1 条消息）的文件，避免把原子写残留当会话。
+     *
+     * 与「清空全部对话」不冲突：那条路径会把消息文件一起删掉，没有文件自然补不回。
+     */
+    fun recoverOrphanSessions(knownIds: Set<String>): MutableList<SessionMeta> {
+        val out = mutableListOf<SessionMeta>()
+        val prefix = "chat_${profile}_"
+        for (f in messageFiles()) {
+            val n = f.name
+            val id = n.substring(prefix.length, n.length - ".json".length)
+            if (id.isEmpty() || id in knownIds) continue
+            if (messageCount(f) < 1) continue
+            out.add(SessionMeta(id, firstUserTitle(f), f.lastModified(), false, 0L))
+        }
+        out.sortByDescending { it.updatedAt }
+        if (out.isNotEmpty()) {
+            lastKnownCount = knownIds.size + out.size
+            AppLog.log("store", "索引外还有 " + out.size + " 个有正文的会话文件，补回列表")
+        }
+        return out
+    }
+
+    /** 该会话文件里有几条消息（解析不出按 0）。 */
+    private fun messageCount(f: File): Int = runCatching {
+        val raw = readMaybeMissing(f) ?: return@runCatching 0
+        JSONArray(raw).length()
+    }.getOrDefault(0)
+
+    /** 会话文件里第一条用户消息的正文 → 标题（与 touchSession 同一口径，走 [deriveTitle]）。 */
+    private fun firstUserTitle(f: File): String = runCatching {
+        val raw = readMaybeMissing(f) ?: return@runCatching "新对话"
+        val arr = JSONArray(raw)
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            if (o.optString("role", "") != "user") continue
+            val t = o.optString("text", "")
+            if (t.isBlank()) continue
+            return@runCatching deriveTitle(t)
+        }
+        "新对话"
+    }.getOrDefault("新对话")
+
+
+    fun saveIndex(list: List<SessionMeta>, allowEmpty: Boolean = false) {
         // 列表变更的唯一落盘点：每次写盘记写了几条、几条归档。
         // 用户报历史对话没了时，靠这串记录能看出是哪一次操作把列表写空的。
         val archivedCount = list.count { it.archived }
@@ -236,6 +368,15 @@ class SessionStore(ctx: Context, private val profile: String) {
         // 只读仍然能用；改标题/归档这类写操作在装上能理解该版本的 App 之前不会落盘。
         if (loadedIndexSchema > SCHEMA_INDEX) {
             AppLog.err("store", "索引版本 $loadedIndexSchema 高于本版 $SCHEMA_INDEX，拒绝写回以保住原件", null)
+            return
+        }
+        // 闸门：磁盘上还有 N 条、这次却要写 0 条，只有显式 allowEmpty（清空全部对话 /
+        // 删掉最后一个会话）才放行。2026-10-14 事故就是「启动竞态拿空列表落盘」写没了
+        // 4 条会话，这道闸门挡住任何将来新增调用者的同类误写。
+        if (!indexWriteAllowed(indexReady = true, listSize = list.size,
+                lastKnownCount = lastKnownCount, allowEmpty = allowEmpty)) {
+            AppLog.err("store", "拒绝把索引写成空（磁盘上还有 " + lastKnownCount + " 条）profile=" +
+                profile + " allowEmpty=" + allowEmpty, null)
             return
         }
         try {
@@ -255,6 +396,13 @@ class SessionStore(ctx: Context, private val profile: String) {
             // 一律按当前版本处理，向后兼容。
             val wrapper = JSONObject().put("schema", SCHEMA_INDEX).put("sessions", arr)
             writeAtomic(indexFile(), wrapper.toString())
+            lastKnownCount = list.size
+            // 显式清空（清空全部对话 / 删掉最后一个会话）：把上一份备份也丢掉。
+            // 否则下次启动 loadIndex 看到「主文件空、备份里还有 N 条」又会用 .bak 把它们
+            // 「恢复」回来——用户看到的是「清空过一阵又冒出来」，而且是些没有正文的空壳。
+            if (list.isEmpty() && allowEmpty) {
+                runCatching { File(dir, indexFile().name + ".bak").delete() }
+            }
             AppLog.log("store", "存索引 profile=" + profile + " 条数=" + list.size +
                 " 已归档=" + archivedCount + " schema=" + SCHEMA_INDEX)
         } catch (e: Exception) {
@@ -751,3 +899,30 @@ internal fun isClearableFileName(name: String, profile: String): Boolean {
     if (name.startsWith(q) && name.length > q.length) return true
     return name == "chat_$profile.json"
 }
+
+/**
+ * 索引落盘闸门：这次到底允不允许写盘（纯函数，单测钉住，见 IndexGuardTest）。
+ *
+ * 三条规则，按顺序：
+ *  1) 索引还没读完（indexReady = false）→ 一律不写。启动时内存里的会话列表还是空的，
+ *     任何一次落盘都可能把空列表写进索引文件 —— 2026-10-14 事故（侧边栏 4 条会话
+ *     一起消失、索引只剩 26 字节空数组）就是这么来的。
+ *  2) 磁盘上本来有 [lastKnownCount] 条、这次要写 0 条，且没有显式 allowEmpty → 拒绝。
+ *     只有「清空全部对话」「删掉最后一个会话」这类真·清空才传 allowEmpty = true。
+ *  3) 其余情况放行。
+ */
+internal fun indexWriteAllowed(indexReady: Boolean, listSize: Int,
+                               lastKnownCount: Int, allowEmpty: Boolean): Boolean {
+    if (!indexReady) return false
+    if (listSize == 0 && !allowEmpty && lastKnownCount > 0) return false
+    return true
+}
+
+/**
+ * 索引一条都没有、但目录里还有消息文件时，该不该按消息文件把列表重建回来。
+ *
+ * 两个条件必须同时满足：索引为空（否则列表本来就该来自索引，不该被文件结果盖掉）、
+ * 消息文件 > 0（一条正文都没有时重建只会得到空列表，不如照原样走空态）。
+ */
+internal fun shouldRebuildIndexFromFiles(indexEntryCount: Int, messageFileCount: Int): Boolean =
+    indexEntryCount == 0 && messageFileCount > 0
