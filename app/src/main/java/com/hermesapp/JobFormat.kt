@@ -23,6 +23,7 @@ internal fun jobZhName(name: String): String {
         "patch-registry-audit" -> return "补丁登记巡检"
         "mem0-night-acceptance" -> return "记忆库夜间验收"
         "vision-restart-verify" -> return "重启后自检"
+        "browser-chain-check" -> return "浏览器链路自检"
     }
     // 精确表认不出时按关键词兜底：别的档案（friend）和以后新加的任务都能自动出中文，
     // 不用每加一个任务改一次代码。顺序有讲究：watchdog 必须排在 watch 前面。
@@ -63,7 +64,7 @@ internal fun jobZhNote(name: String): String {
         "gradle-idle-reaper" ->
             return "每 15 分钟收掉空闲的编译进程，回收内存；正在编译时不动。"
         "apk-keep-30" ->
-            return "每 15 分钟清一次安装包：只保留最近 30 个，防止旧版本堆满磁盘。"
+            return "每天凌晨 04:00 清一次安装包：只保留最近 30 个，防止旧版本堆满磁盘。"
         "friend-nightly-memory-refactor" ->
             return "每天凌晨自动整理记忆：做容量体检，把待落盘的内容并进记忆文件，超限就压缩。"
         "ds-upstream-watch" ->
@@ -78,6 +79,18 @@ internal fun jobZhNote(name: String): String {
             return "每 5 分钟核对上游优先级：始终优先 ClinePass；它连试 5 次都不行就换下一腿（低谷段换两把 opencode-go，高峰段换 ds.99801889.xyz），两条腿都不行同样用 ds；被判不行的腿 5 小时后再试。高峰段（工作日 9-12 点、14-18 点）opencode-go 绝不启用。"
         "FreeLLMAPI密钥用途守卫" ->
             return "每 30 分钟核对 FreeLLMAPI 的密钥用途：ClinePass 只准 cline-pass/deepseek-v4.1-flash、两把 opencode-go 只准 deepseek-v4.1-flash、硅基流动只做 bge-m3 嵌入，发现越权启用或作用域被放宽就立刻收回并通知你；正常时静默。"
+        "browser-chain-check" ->
+            return "每 15 分钟查浏览器链路三件事：Chromium 二进制在不在、google-chrome 包装脚本的指向对不对、守护进程有没有僵死；发现问题就自愈，正常时静默。"
+        "Hindsight 每日巡检" ->
+            return "每天 09:20 给记忆服务做体检：健康、写入、抽取、中文召回、零事实文档共 5 条断言，全绿静默，有异常才出报告。"
+        "Hindsight回填保活" ->
+            return "每 10 分钟看一眼历史回放有没有活干；有活且允许就拉起回填单元，平时完全静默。"
+        "Hindsight回填验收" ->
+            return "每 20 分钟盯历史回放是否全部灌完，灌完才出一次验收报告。"
+        "归纳时间窗管制" ->
+            return "每 10 分钟按高峰/低谷开关记忆归纳：高峰段关、低谷段开。"
+        "归纳完成通知" ->
+            return "每 10 分钟盯记忆归纳有没有追平，追平后连查 3 次才通知一次。"
     }
     val n = name.lowercase()
     return when {
