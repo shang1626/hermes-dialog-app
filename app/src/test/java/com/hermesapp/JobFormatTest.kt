@@ -78,7 +78,7 @@ class JobFormatTest {
 
     @Test
     fun Hindsight与归纳相关任务的备注带关键频率与断言() {
-        assertTrue(jobZhNote("Hindsight 每日巡检").contains("08:00"))
+        assertTrue(jobZhNote("Hindsight 每日巡检").contains("07:00"))
         assertTrue(jobZhNote("Hindsight 每日巡检").contains("5 条断言"))
         assertTrue(jobZhNote("Hindsight回填保活").contains("每 10 分钟"))
         assertTrue(jobZhNote("Hindsight回填验收").contains("每 20 分钟"))
