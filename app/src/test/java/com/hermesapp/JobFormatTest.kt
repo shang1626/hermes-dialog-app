@@ -10,8 +10,10 @@ import org.junit.Test
  *
  * 用户反复报「任务页又有英文了 / 卡片上没有『这是干嘛的』那一句」——根因都是
  * 服务端加了任务，App 的 JobFormat.kt 没跟上。名单取 2026-10-15 审计时的实况
- * （default 12 条 + friend 1 条）；服务端以后再加任务，把名字补进 ROSTER 并补
- * 翻译即可，补充之前这里会直接转红。
+ * （default 13 条 + friend 1 条，含当日 20:06 新建的 FreeLLMAPI 看门狗）；服务端以后
+ * 再加任务，把名字补进 ROSTER 并补翻译即可，补充之前这里会直接转红。
+ * 备注里的优先级/频率是脚本实况的影子副本：脚本改了（例：优先腿从 ClinePass 改成
+ * Command Go 最优先）必须同步改备注与这里的断言，否则测试会把错误文案钉死。
  */
 class JobFormatTest {
 
@@ -23,6 +25,7 @@ class JobFormatTest {
         "patch-registry-audit",
         "上游优先级自动切换",
         "FreeLLMAPI密钥用途守卫",
+        "FreeLLMAPI 看门狗",
         "Hindsight 每日巡检",
         "Hindsight回填保活",
         "Hindsight回填验收",
@@ -69,11 +72,25 @@ class JobFormatTest {
     }
 
     @Test
-    fun 上游优先级备注写始终优先ClinePass并含换腿冷却() {
+    fun 上游优先级备注写CommandGo最优先并含换腿冷却() {
         val note = jobZhNote("上游优先级自动切换")
-        assertTrue(note, note.contains("始终优先 ClinePass"))
+        assertTrue(note, note.contains("Command Go"))
+        assertTrue(note, note.contains("最优先"))
         assertTrue(note, note.contains("5 小时"))
         assertTrue(note, note.contains("高峰段"))
+        assertFalse("备注又写回「始终优先 ClinePass」了，与脚本实况（Command Go 最优先）不符：$note",
+            note.contains("始终优先"))
+    }
+
+    @Test
+    fun 守卫与看门狗备注覆盖CommandGo与四个探测目标() {
+        val guard = jobZhNote("FreeLLMAPI密钥用途守卫")
+        assertTrue(guard, guard.contains("Command Go"))
+        assertTrue(guard, guard.contains("bge-m3"))
+        val wd = jobZhNote("FreeLLMAPI 看门狗")
+        assertTrue(wd, wd.contains("4 个目标"))
+        assertTrue(wd, wd.contains("两次"))
+        assertTrue(wd, wd.contains("收件箱"))
     }
 
     @Test
