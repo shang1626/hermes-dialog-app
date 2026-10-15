@@ -76,7 +76,7 @@ internal fun jobZhNote(name: String): String {
         "vision-restart-verify" ->
             return "重启后自动体检：确认网关已起来、视觉补丁已加载、平台连接与三路记忆信号正常；有异常才出报告。"
         "上游优先级自动切换" ->
-            return "每 5 分钟核对上游优先级：Command Go（key52，走自写桥 3159）最优先；它连试 5 次都不行才换 ClinePass（key51，中转 3158），再不行低谷段换两把 opencode-go（key47/48，中转 3157），高峰段直接换 ds.99801889.xyz；都到头就兜底 ds，避免一条腿都不剩。被判定不可用的腿 5 小时后自动再试。高峰段（工作日 9-12 点、14-18 点）opencode-go 绝不启用、也不去探测。"
+            return "每 5 分钟核对上游优先级：Command Go（key52，走自写桥 3159）最优先；它连试 5 次都不行也先不判死 —— 30 分钟后复查一轮（这 30 分钟由下一腿顶着），复查仍不行才判不可用、停 5 小时再试；换腿顺序 ClinePass（key51，中转 3158）→ 低谷段两把 opencode-go（key47/48，中转 3157）→ 兜底 ds.99801889.xyz。高峰段（工作日 9-12 点、14-18 点）opencode-go 绝不启用、也不去探测。"
         "FreeLLMAPI密钥用途守卫" ->
             return "每 30 分钟核对 FreeLLMAPI 的密钥用途：Command Go 只准 deepseek/deepseek-v4.1-flash、ClinePass 只准 cline-pass/deepseek-v4.1-flash、两把 opencode-go 只准 deepseek-v4.1-flash、硅基流动只做 bge-m3 嵌入，发现越权启用或作用域被放宽就立刻收回并通知你；正常时静默。"
         "FreeLLMAPI 看门狗" ->

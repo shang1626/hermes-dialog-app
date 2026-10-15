@@ -72,10 +72,12 @@ class JobFormatTest {
     }
 
     @Test
-    fun 上游优先级备注写CommandGo最优先并含换腿冷却() {
+    fun 上游优先级备注写CommandGo最优先并含两轮复查() {
         val note = jobZhNote("上游优先级自动切换")
         assertTrue(note, note.contains("Command Go"))
         assertTrue(note, note.contains("最优先"))
+        assertTrue(note, note.contains("30 分钟"))
+        assertTrue(note, note.contains("复查"))
         assertTrue(note, note.contains("5 小时"))
         assertTrue(note, note.contains("高峰段"))
         assertFalse("备注又写回「始终优先 ClinePass」了，与脚本实况（Command Go 最优先）不符：$note",
