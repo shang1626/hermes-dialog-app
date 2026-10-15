@@ -76,9 +76,11 @@ internal fun jobZhNote(name: String): String {
         "vision-restart-verify" ->
             return "重启后自动体检：确认网关已起来、视觉补丁已加载、平台连接与三路记忆信号正常；有异常才出报告。"
         "上游优先级自动切换" ->
-            return "每 5 分钟核对上游优先级：始终优先 ClinePass；它连试 5 次都不行就换下一腿（低谷段换两把 opencode-go，高峰段换 ds.example.com），两条腿都不行同样用 ds；被判不行的腿 5 小时后再试。高峰段（工作日 9-12 点、14-18 点）opencode-go 绝不启用。"
+            return "每 5 分钟核对上游优先级：Command Go（key52，走自写桥 3159）最优先；它连试 5 次都不行才换 ClinePass（key51，中转 3158），再不行低谷段换两把 opencode-go（key47/48，中转 3157），高峰段直接换 ds.example.com；都到头就兜底 ds，避免一条腿都不剩。被判定不可用的腿 5 小时后自动再试。高峰段（工作日 9-12 点、14-18 点）opencode-go 绝不启用、也不去探测。"
         "FreeLLMAPI密钥用途守卫" ->
-            return "每 30 分钟核对 FreeLLMAPI 的密钥用途：ClinePass 只准 cline-pass/deepseek-v4.1-flash、两把 opencode-go 只准 deepseek-v4.1-flash、硅基流动只做 bge-m3 嵌入，发现越权启用或作用域被放宽就立刻收回并通知你；正常时静默。"
+            return "每 30 分钟核对 FreeLLMAPI 的密钥用途：Command Go 只准 deepseek/deepseek-v4.1-flash、ClinePass 只准 cline-pass/deepseek-v4.1-flash、两把 opencode-go 只准 deepseek-v4.1-flash、硅基流动只做 bge-m3 嵌入，发现越权启用或作用域被放宽就立刻收回并通知你；正常时静默。"
+        "FreeLLMAPI 看门狗" ->
+            return "每 5 分钟探 4 个目标：FreeLLMAPI 本体 + 三条中转（3157/3158/3159）；同一轮连探两次都不通才算故障，自动重启对应服务并把动作推进收件箱；连动 3 次仍不恢复就停手叫你；109 上多个目标同时不通只告警不动手。正常时静默。"
         "browser-chain-check" ->
             return "每 15 分钟查浏览器链路三件事：Chromium 二进制在不在、google-chrome 包装脚本的指向对不对、守护进程有没有僵死；发现问题就自愈，正常时静默。"
         "Hindsight 每日巡检" ->
