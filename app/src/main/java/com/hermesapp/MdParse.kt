@@ -123,7 +123,9 @@ fun parseMdBlocks(src: String): List<MdBlock> {
         val pending = StringBuilder()
         fun flushPending() {
             val t = pending.toString().trim('\n')
-            if (t.isNotEmpty()) out.add(MdBlock.Para(t))
+            // 超长段落先截断再交给渲染层：真事故里一条 20 万字的 JSON 气泡把首屏主线程拖死，
+            // 这里兜底（合法长文也不会超过这个量级，超过的部分本来也没人读）。
+            if (t.isNotEmpty()) out.add(MdBlock.Para(capPara(t)))
             pending.setLength(0)
         }
         for (line in raw.split("\n")) {

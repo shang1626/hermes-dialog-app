@@ -224,6 +224,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 顶栏 CPU% 的刷新周期（用户定版 2026-10-11：8 秒一次，且只要前台就刷新，与所在页面无关）。 */
     private val CPU_REFRESH_MS = 8_000L
     private var cpuTicker: Job? = null
+    /** 主线程卡顿看门狗：每秒打点（见 startStallWatch）。 */
+    private val STALL_TICK_MS = 1_000L
+    /** 两次打点间隔超过它就认为主线程被拖住了（正常主线程空闲时几乎为 0）。 */
+    private val STALL_WARN_MS = 2_500L
+    /** 同一个卡顿别刷屏：两条之间至少隔这么久。 */
+    private val STALL_LOG_GAP_MS = 10_000L
+    private var stallWatch: Job? = null
 
     private val _statusSections = MutableStateFlow<List<StatusSection>>(emptyList())
     val statusSections = _statusSections.asStateFlow()
@@ -716,7 +723,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.loading = true
         val t0 = System.currentTimeMillis()
         RuntimeHub.scope.launch(Dispatchers.IO) {
-            val msgs = runCatching { store.loadMessages(id) }.getOrDefault(emptyList())
+            val msgs = sanitizeLoadedMessages(runCatching { store.loadMessages(id) }.getOrDefault(emptyList()))
             val cost = System.currentTimeMillis() - t0
             withContext(Dispatchers.Main.immediate) {
                 if (r.dead) { r.loading = false; return@withContext }
@@ -1355,6 +1362,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         StreamVoicePlayer.rate = p.voiceRate
         pingLoop()
         startCpuLoop()
+        startStallWatch()
         refreshStatus()
         refreshFromServer()
         fetchCapabilities()
@@ -1873,7 +1881,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         val o = a0.optJSONObject(i) ?: continue
                         val role = o.optString("role", "assistant")
                         if (role != "user" && role != "assistant") continue
-                        val content = o.optString("content", "")
+                        val content = contentText(o)
                         if (content.isEmpty()) continue
                         // run_id（服务端把本轮 run id 盖在助手消息行上，本地补丁 voice-msg-runid）：
                         // 带上它，从服务端历史同步下来的回复也能出播放按钮（原来只有
@@ -2022,6 +2030,37 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             while (isActive) {
                 if (AppForeground.isForeground) refreshCpuOnce()
                 delay(CPU_REFRESH_MS)
+            }
+        }
+    }
+
+    /**
+     * 主线程卡顿看门狗（2.215）：每秒打一次点，两次之间超过阈值就记一条。
+     *
+     * 为什么要它：用户报「App 卡死」时，日志会在卡死那一步**直接断掉**——因为所有周期循环
+     * （心跳/CPU/同步）都挂在主线程派发器上，主线程被拖住就什么都写不出来，事后只能靠猜。
+     * 这条循环量的是「主线程被占了多久」，卡完立刻落一行（含堆内存与本机堆），下次再卡就
+     * 有实据可查，不用再猜是渲染、GC 还是内存杀进程。
+     *
+     * 只在 App 在前台时记：后台被系统冻结/回收不是 bug，那种几万毫秒的「卡顿」是假信号。
+     */
+    private fun startStallWatch() {
+        if (stallWatch?.isActive == true) return
+        stallWatch = RuntimeHub.scope.launch {
+            var last = android.os.SystemClock.uptimeMillis()
+            var lastLog = 0L
+            while (isActive) {
+                delay(STALL_TICK_MS)
+                val now = android.os.SystemClock.uptimeMillis()
+                val gap = now - last
+                last = now
+                if (!AppForeground.isForeground) continue
+                if (gap < STALL_WARN_MS || now - lastLog < STALL_LOG_GAP_MS) continue
+                lastLog = now
+                val rt = Runtime.getRuntime()
+                AppLog.log("perf", "主线程卡顿 " + gap + "ms 堆=" + (rt.totalMemory() - rt.freeMemory()) / 1048576 +
+                    "MB 本机堆=" + android.os.Debug.getNativeHeapAllocatedSize() / 1048576 +
+                    "MB 会话消息=" + runCatching { rt(_currentId.value).messages.value.size }.getOrDefault(-1))
             }
         }
     }
@@ -4886,6 +4925,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         runFlagsTicker = null
         cpuTicker?.cancel()
         cpuTicker = null
+        stallWatch?.cancel()
+        stallWatch = null
         super.onCleared()
     }
 
