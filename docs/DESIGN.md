@@ -54,6 +54,10 @@ MainActivity (App.kt)
 - **后台运行可关**：关闭则不起前台服务、彻底无通知，任务仍在服务端跑，重开 App 拉结果。
 - **原生 EditText 桥**：中文输入法符号问题用 AndroidView 包原生 EditText 解决，不用 Compose 的 TextField 直接收中文。
 
+## 语音生成与重播
+
+StreamVoicePlayer.generatingRuns 暴露当前仍在收音频的 run 集合；气泡未起播时显示「语音生成中」，正在播放时保留停止按钮。VoiceReplayReadiness 是单测共用的就绪判据。手动重播下载成功后才让流式播放器让位并撤掉对应队列项，失败不撤队列并恢复推进。
+
 ## 数据安全
 
 纯客户端，不碰服务端数据库。本地数据在 App 私有目录（SharedPreferences + filesDir），卸载即清。

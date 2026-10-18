@@ -554,6 +554,11 @@ fun VoiceReplayMiniButton(runId: String, inlineTarget: String = "", modifier: Mo
     val streamPlaying = runId.isNotEmpty() && streamNow == "stream:" + runId
     val isThis = runId.isNotEmpty() && playing == runId
     val active = isThis || inlinePlaying || streamPlaying
+    val generatingRuns by StreamVoicePlayer.generatingRuns.collectAsStateWithLifecycle()
+    if (!active && runId in generatingRuns) {
+        Text("语音生成中", color = c.dim, fontSize = 10.sp, modifier = modifier)
+        return
+    }
     Icon(
         imageVector = if (active) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
         contentDescription = if (active) "停止播放" else "播放语音",
