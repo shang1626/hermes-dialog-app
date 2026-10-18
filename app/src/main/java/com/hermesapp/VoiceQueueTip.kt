@@ -7,6 +7,10 @@ package com.hermesapp
  * 「播放按钮点了没声 / 重播少一截」与「任务完成了却没有自动播报」，
  * 必须有可回归的单测钉住，不能只靠真机手感。
  */
+object VoiceReplayReadiness {
+    fun generating(hasStream: Boolean, ended: Boolean): Boolean = hasStream && !ended
+}
+
 object VoiceCacheMark {
 
     /**

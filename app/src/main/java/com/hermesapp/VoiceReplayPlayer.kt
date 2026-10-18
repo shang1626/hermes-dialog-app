@@ -56,6 +56,10 @@ object VoiceReplayPlayer {
     /** 界面播放按钮：同一个 run 正在播就停掉，否则播它。 */
     fun toggle(ctx: Context, runId: String) {
         if (runId.isEmpty()) return
+        if (StreamVoicePlayer.isGenerating(runId) && _nowPlaying.value != runId) {
+            android.widget.Toast.makeText(ctx, "语音生成中，稍后会自动播放", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
         if (_nowPlaying.value == runId) {
             stop()
             return
@@ -65,13 +69,8 @@ object VoiceReplayPlayer {
 
     /** 取字节（本机留档优先）→ 落盘 → 播放；先置状态，界面立刻切成「停止」。 */
     private fun play(ctx: Context, runId: String) {
-        // 互斥：点重播先让流式自动播报让位（正在播的那条停下、排队的保留）。
-        // 然后取消这条 run 自己的流式排队项——用户已经手动放了它，留着会再播一遍。
-        StreamVoicePlayer.yieldAndDrop()
-        StreamVoicePlayer.cancelRun(runId)
-        // 同上：先标「在播」再停对方，防队列抢跑。
+        // 下载成功前保留自动队列；准备好后才让位，避免 404 把自动播报也撤掉。
         _nowPlaying.value = runId
-        VoicePlayer.stop()
         val myGen = ++gen
         Thread {
             try {
@@ -89,6 +88,7 @@ object VoiceReplayPlayer {
                     // 的另一条）的状态：清掉就会出现「B 还在响、界面却显示没在播」
                     //（F16，本机已复现：stale-failure.nowPlaying= 而 audible=true）。
                     synchronized(lock) { if (myGen == gen) _nowPlaying.value = "" }
+                    StreamVoicePlayer.resumeQueue()
                     return@Thread
                 }
                 // 取回来的才落盘，供下次离线重播；同时盖章（这份长度就是完整长度）。
@@ -103,11 +103,18 @@ object VoiceReplayPlayer {
                     AppLog.log("voice", "重播放弃（已被停止/切换取代）run=" + runId.take(12))
                     return@Thread
                 }
+                synchronized(lock) {
+                    if (myGen != gen) return@Thread
+                    StreamVoicePlayer.yieldAndDrop()
+                    StreamVoicePlayer.cancelRun(runId)
+                    VoicePlayer.stop()
+                }
                 startPlayback(ctx, runId, bytes, myGen)
             } catch (e: Exception) {
                 AppLog.err("voice", "重播失败 run=" + runId.take(12), e)
                 // 同上：迟到线程不许动别人的「在播」标记（F16）。
                 synchronized(lock) { if (myGen == gen) _nowPlaying.value = "" }
+                StreamVoicePlayer.resumeQueue()
             }
         }.start()
     }

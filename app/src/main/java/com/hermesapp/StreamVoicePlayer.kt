@@ -70,6 +70,17 @@ object StreamVoicePlayer {
     private val _nowPlaying = MutableStateFlow("")
     val nowPlaying: StateFlow<String> = _nowPlaying.asStateFlow()
 
+    private val _generatingRuns = MutableStateFlow<Set<String>>(emptySet())
+    val generatingRuns: StateFlow<Set<String>> = _generatingRuns.asStateFlow()
+
+    fun isGenerating(runId: String): Boolean = runId in _generatingRuns.value
+
+    private fun refreshGenerating() {
+        _generatingRuns.value = items.values.filter {
+            VoiceReplayReadiness.generating(true, it.ended)
+        }.map { it.runId }.filter { it.isNotEmpty() }.toSet()
+    }
+
     /**
      * 正在播的语音属于哪个会话（会话 id to 标题）；null = 没在播。
      *
@@ -117,6 +128,7 @@ object StreamVoicePlayer {
      */
     @Synchronized
     private fun refreshWaiting() {
+        refreshGenerating()
         val playing = activeKey.isNotEmpty() || externalPlaying()
         val waiting = if (playing) {
             VoiceQueueTip.waitingCount(order.toList(), activeKey) { k ->
@@ -222,6 +234,7 @@ object StreamVoicePlayer {
             it.title = title
             it.raf = RandomAccessFile(f, "rw")
             items[key] = it
+            refreshGenerating()
             order.addLast(key)
             AppLog.log("voice", "语音入队 key=" + key + " 文件=" + f.absolutePath + " 队列=" + order.size)
         } catch (e: Exception) {
@@ -262,6 +275,7 @@ object StreamVoicePlayer {
     /** 收到 audio.end：标记写完；轮到它时 pump 会起播（数据源读到末尾自然收尾）。 */
     fun end(ctx: Context, key: String) {
         items[key]?.ended = true
+        refreshGenerating()
         // 收尾时盖章：本机这份 mp3 从此可以被重播直接使用（长度对得上才算完整，见 VoiceCacheMark）。
         items[key]?.let { markComplete(ctx, it) }
         // 收尾时把「丢了多少块、是谁摘的」一次说清：有这条，下次上报就能直接定案。
@@ -284,6 +298,7 @@ object StreamVoicePlayer {
     private fun pump() {
         pumpQueue()
         refreshWaiting()
+        refreshGenerating()
     }
 
     /**
@@ -500,6 +515,7 @@ object StreamVoicePlayer {
             it.raf = null
         }
         items.clear()
+        refreshGenerating()
         order.clear()
         activeKey = ""
         setPlaying("", null, null)
