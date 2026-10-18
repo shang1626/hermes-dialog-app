@@ -33,7 +33,7 @@ internal suspend fun fetchRunSummary(a: HermesApi, jobId: String): String {
         for (i in 0 until msgs.length()) {
             val o = msgs.optJSONObject(i) ?: continue
             if (o.optString("role", "") != "assistant") continue
-            val c = o.optString("content", "")
+            val c = contentText(o)
             if (c.isNotBlank()) text = c
         }
         val one = text.replace(Regex("\\s+"), " ").trim()
@@ -55,7 +55,9 @@ internal fun historyRows(a: HermesApi, sid: String): List<HistRow> {
         val o = arr.optJSONObject(i) ?: continue
         val role = o.optString("role", "")
         if (role != "user" && role != "assistant") continue
-        out.add(HistRow(role, o.optString("content", ""), o.optString("id", i.toString())))
+        // content 可能是字符串，也可能是「分块数组」（带图的消息）——一律走 contentText 投影，
+        // 绝不能 optString：数组会被序列化成含 base64 的 JSON 文本（20 万字气泡，卡死首屏）。
+        out.add(HistRow(role, contentText(o), o.optString("id", i.toString())))
     }
     return out
 }

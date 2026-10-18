@@ -11,6 +11,9 @@ package com.hermesapp
  */
 internal const val REWRITTEN_ROW_WINDOW_MS = 120_000L
 
+/** 正文归一：空白折叠 + 去首尾（两侧比对与去重共用同一口径）。 */
+internal fun normText(s: String): String = s.trim().replace(Regex("\\s+"), " ")
+
 /**
  * 匹配分数里的「配上一对」奖励（R07）。取值远大于任何时间差（窗口 120s = 120000ms），
  * 保证「多配上一对」永远优先于「总时间差更小」——贪心错配的根因正是把后者放到了前面。
@@ -67,7 +70,8 @@ internal fun answerSignature(rows: List<HistRow>, anchor: Int): String? {
  */
 internal fun mergeByUserAnchor(local: List<Msg>, srv: List<Msg>): List<Msg> {
     fun isUser(m: Msg) = m.role == "user"
-    fun norm(s: String) = s.trim().replace(Regex("\\s+"), " ")
+    // 归一口径统一走 normText（去重/比对共用），别在这里另写一套。
+    fun norm(s: String) = normText(s)
 
     // 各自切块：head = 第一条用户消息之前的行；随后每个用户消息带一个 tail
     //（其后、下一条用户消息之前的助手/系统行）。
