@@ -31,6 +31,7 @@ class JobFormatTest {
         "Hindsight回填验收",
         "归纳时间窗管制",
         "browser-chain-check",
+        "tokengo 编译产物巡检",
         "归纳完成通知",
         "ds-upstream-watch",
     )

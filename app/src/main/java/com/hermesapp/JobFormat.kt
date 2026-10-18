@@ -24,6 +24,7 @@ internal fun jobZhName(name: String): String {
         "mem0-night-acceptance" -> return "记忆库夜间验收"
         "vision-restart-verify" -> return "重启后自检"
         "browser-chain-check" -> return "浏览器链路自检"
+        "tokengo 编译产物巡检" -> return "编译产物巡检"
     }
     // 精确表认不出时按关键词兜底：别的档案（friend）和以后新加的任务都能自动出中文，
     // 不用每加一个任务改一次代码。顺序有讲究：watchdog 必须排在 watch 前面。
@@ -75,6 +76,8 @@ internal fun jobZhNote(name: String): String {
             return "一次性任务：把 mem0 夜间安装验收报告的摘要（版本、记忆完整性、结论）投进收件箱，跑完即止。"
         "vision-restart-verify" ->
             return "重启后自动体检：确认网关已起来、视觉补丁已加载、平台连接与三路记忆信号正常；有异常才出报告。"
+        "tokengo 编译产物巡检" ->
+            return "每天上午 9 点看一次开发机的编译产物（target/debug）：超过 6 GB 就清掉，只动调试版产物，release 与面板产物不碰；清理时才留一条记录，平时静默。"
         "上游优先级自动切换" ->
             return "每 5 分钟核对上游优先级：Command Go（key52，走自写桥 3159）最优先；它连试 5 次都不行也先不判死 —— 30 分钟后复查一轮（这 30 分钟由下一腿顶着），复查仍不行才判不可用、停 5 小时再试；换腿顺序 ClinePass（key51，中转 3158）→ 低谷段两把 opencode-go（key47/48，中转 3157）→ 兜底 ds.example.com。高峰段（工作日 9-12 点、14-18 点）opencode-go 绝不启用、也不去探测。"
         "FreeLLMAPI密钥用途守卫" ->
