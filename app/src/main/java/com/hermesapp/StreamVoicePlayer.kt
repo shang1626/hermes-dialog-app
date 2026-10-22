@@ -40,6 +40,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * 直接 new ExoPlayer 会抛异常并被 catch 吞掉 -> 全程无声。所以播放器操作统一 post 到主线程，
  * 文件读写留在原线程。
  */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 object StreamVoicePlayer {
 
     /** 一条任务的语音流：文件、写句柄、收尾标志。多个任务各持一份，互不覆盖。 */

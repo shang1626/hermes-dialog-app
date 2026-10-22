@@ -45,9 +45,8 @@ jobs:
       - name: Assemble release
         run: gradle assembleRelease --no-daemon --stacktrace
 
-      # 全量 lint 先做软门禁：只报不阻断，观察一轮再收紧。
-      - name: Lint (soft gate)
-        continue-on-error: true
+      # Lint errors block publishing; warnings remain visible in the report.
+      - name: Lint
         run: gradle lint --no-daemon
 
       - name: Upload APK

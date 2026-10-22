@@ -110,6 +110,6 @@ object CrashLog {
 
     private fun appVersion(ctx: Context): String = runCatching {
         val pi = ctx.packageManager.getPackageInfo(ctx.packageName, 0)
-        pi.versionName + " (" + pi.longVersionCode + ")"
+        pi.versionName + " (" + androidx.core.content.pm.PackageInfoCompat.getLongVersionCode(pi) + ")"
     }.getOrDefault("?")
 }
