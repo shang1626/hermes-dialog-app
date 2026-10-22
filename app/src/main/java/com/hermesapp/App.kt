@@ -803,13 +803,16 @@ fun DrawerPanel(
             HorizontalDivider(color = c.card)
             Spacer(Modifier.height(G.x2))
 
-            // 会话列表标题行
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    if (showArchived) "已归档" else "历史对话",
-                    color = c.dim, fontSize = T.sub
-                )
-                Spacer(Modifier.weight(1f))
+            // 标题与工具分行，恢复入口与排序并排，不再单独占行。
+            Text(
+                if (showArchived) "已归档" else "历史对话",
+                color = c.dim, fontSize = T.sub
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 if (sortMode) {
                     // 排序模式：只剩一个「完成」出口，收起箭头回到常规视图。
                     Text(
@@ -817,6 +820,11 @@ fun DrawerPanel(
                         modifier = Modifier.clickable { sortMode = false }
                     )
                 } else {
+                    Text(
+                        "恢复", color = c.accent, fontSize = T.sub,
+                        modifier = Modifier.clickable(onClick = vm::openHistoryRestore)
+                            .padding(vertical = 12.dp)
+                    )
                     Text(
                         "排序", color = c.accent, fontSize = T.sub,
                         modifier = Modifier.clickable {
@@ -851,9 +859,6 @@ fun DrawerPanel(
                 }
             }
 
-            TextButton(onClick = vm::openHistoryRestore, modifier = Modifier.fillMaxWidth()) {
-                Text("从服务器选择恢复…", color = c.accent, fontSize = T.sub)
-            }
 
             // 清空全部对话的二次确认。文案把「清掉什么、什么不动、在跑的任务怎么办」讲全，
             // 免得用户点了才知道后果：四个数字口径与 ViewModel.clearAllConversations 一致。
