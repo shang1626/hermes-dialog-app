@@ -70,6 +70,10 @@ stop persists pause before advancing callbacks, resume persists unpause before s
 Legacy messages without stable IDs remain manually recoverable, not auto-sent.
 See `AUDIT-FIRST-BATCH-20261022.md` for evidence and validation boundaries.
 
+## 历史区紧凑布局
+
+历史标题、恢复、排序、搜索和更多共用单行，不再添加第二排工具栏或等宽描边按钮。排序模式用“完成”保持相同宽度；归档与清空放在更多菜单，清空仍二次确认。仅调整呈现，不改恢复和存储逻辑。
+
 ## 数据安全
 
 纯客户端，不碰服务端数据库。本地数据在 App 私有目录（SharedPreferences + filesDir），卸载即清。

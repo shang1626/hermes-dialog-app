@@ -815,11 +815,25 @@ fun DrawerPanel(
                     color = c.text, fontSize = T.sub, fontWeight = T.bold,
                     modifier = Modifier.weight(1f)
                 )
-                IconButton(onClick = vm::toggleGlobalSearch) {
+                Text(
+                    "恢复", color = c.accent, fontSize = T.sub,
+                    maxLines = 1,
+                    modifier = Modifier.clickable(onClick = vm::openHistoryRestore)
+                        .padding(horizontal = 6.dp, vertical = 10.dp)
+                )
+                Text(
+                    if (sortMode) "完成" else "排序",
+                    color = c.accent, fontSize = T.sub, maxLines = 1,
+                    modifier = Modifier.clickable {
+                        if (!sortMode && showArchived) showArchived = false
+                        sortMode = !sortMode
+                    }.padding(horizontal = 6.dp, vertical = 10.dp)
+                )
+                IconButton(onClick = vm::toggleGlobalSearch, modifier = Modifier.size(40.dp)) {
                     Icon(Icons.Outlined.Search, contentDescription = "搜索历史对话", tint = c.dim)
                 }
                 Box {
-                    IconButton(onClick = { historyMenu = true }) {
+                    IconButton(onClick = { historyMenu = true }, modifier = Modifier.size(40.dp)) {
                         Icon(Icons.Outlined.MoreVert, contentDescription = "更多历史操作", tint = c.dim)
                     }
                     DropdownMenu(expanded = historyMenu, onDismissRequest = { historyMenu = false }) {
@@ -835,28 +849,6 @@ fun DrawerPanel(
                         }
                     }
                 }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OutlinedButton(
-                    onClick = vm::openHistoryRestore,
-                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, c.dim.copy(alpha = 0.25f)),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                ) { Text("恢复", color = c.accent, fontSize = T.sub) }
-                OutlinedButton(
-                    onClick = {
-                        if (!sortMode && showArchived) showArchived = false
-                        sortMode = !sortMode
-                    },
-                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, c.dim.copy(alpha = 0.25f)),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                ) { Text(if (sortMode) "完成排序" else "排序", color = c.accent, fontSize = T.sub) }
             }
             Spacer(Modifier.height(G.x2))
 
