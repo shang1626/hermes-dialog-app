@@ -109,8 +109,15 @@ internal fun mergeByUserAnchor(local: List<Msg>, srv: List<Msg>): List<Msg> {
     run {
         val n = lUsers.size
         val m = sUsers.size
-        val normSrv = Array(m) { norm(sUsers[it].text) }
-        val normLoc = Array(n) { norm(lUsers[it].text) }
+        // Display text omits quotes and attachment-only placeholders; compare the sent payload.
+        // Old quoted rows may lack a receipt, but retain the exact quote prefix.
+        fun anchorText(row: Msg): String {
+            val wire = row.receipt?.rawText
+            if (!wire.isNullOrBlank()) return norm(wire)
+            return norm(if (row.quote.isNotEmpty()) "> " + row.quote + "\n" + row.text else row.text)
+        }
+        val normSrv = Array(m) { anchorText(sUsers[it]) }
+        val normLoc = Array(n) { anchorText(lUsers[it]) }
         fun tsDiff(li: Int, sj: Int): Long {
             val a = lUsers[li]; val b = sUsers[sj]
             if (a.ts <= 0 || b.ts <= 0) return 0L
