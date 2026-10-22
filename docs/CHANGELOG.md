@@ -1,3 +1,13 @@
+## 2.217 — versionCode 228 (candidate)
+
+- Stop invalidates old streams; quote and attachment history match transmitted text.
+- Persist queue identity, idempotency keys and pause state across restart.
+- Isolate credentials and local data by server/account; explicit credential removal.
+- Add opt-in remote history recovery without automatic bulk import.
+- Respect notification mute and permissions; enforce update integrity and size limits.
+- Local acceptance: 207 standard tests, 225 including audit tests; lint passes.
+- Candidate only: device migration/audio/network acceptance pending; global update manifest unchanged.
+
 ## 2.216 — versionCode 227
 
 - 修复语音尚未生成时点击重播会先撤掉自动播放队列的问题：收到完整音频后才切换播放器；下载失败保留并恢复自动队列。
