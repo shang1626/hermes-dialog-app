@@ -30,6 +30,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Menu
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
@@ -746,6 +748,7 @@ fun DrawerPanel(
     val currentId by vm.currentId.collectAsStateWithLifecycle()
     val updateBadge by vm.updateBadge.collectAsStateWithLifecycle()
     val runFlags by vm.runFlags.collectAsStateWithLifecycle()
+    var historyMenu by remember { mutableStateOf(false) }
     var showArchived by remember { mutableStateOf(false) }
     // 排序模式：默认关，标题行点「排序」才在每行右侧露出上/下移箭头。
     // 目的是把常驻的排序控件收进一个入口，平时列表干净。
@@ -803,62 +806,59 @@ fun DrawerPanel(
             HorizontalDivider(color = c.card)
             Spacer(Modifier.height(G.x2))
 
-            // 标题与工具分行，恢复入口与排序并排，不再单独占行。
-            Text(
-                if (showArchived) "已归档" else "历史对话",
-                color = c.dim, fontSize = T.sub
-            )
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                if (sortMode) {
-                    // 排序模式：只剩一个「完成」出口，收起箭头回到常规视图。
-                    Text(
-                        "完成", color = c.accent, fontSize = T.sub,
-                        modifier = Modifier.clickable { sortMode = false }
-                    )
-                } else {
-                    Text(
-                        "恢复", color = c.accent, fontSize = T.sub,
-                        modifier = Modifier.clickable(onClick = vm::openHistoryRestore)
-                            .padding(vertical = 12.dp)
-                    )
-                    Text(
-                        "排序", color = c.accent, fontSize = T.sub,
-                        modifier = Modifier.clickable {
-                            if (showArchived) showArchived = false
-                            sortMode = true
-                        }
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        "搜索", color = c.accent, fontSize = T.sub,
-                        modifier = Modifier.clickable { vm.toggleGlobalSearch() }
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        if (showArchived) "返回" else "已归档",
-                        color = c.accent, fontSize = T.sub,
-                        modifier = Modifier.clickable { showArchived = !showArchived }
-                    )
-                    // 清空全部：列表空着不给入口（空按钮没意义）。放在整行最右、与
-                    // 「排序/搜索/已归档」隔开，用告警色——它是这里唯一的破坏性动作，
-                    // 不该混在日常控件里被顺手点到，所以点它只开确认弹窗。
-                    if (sessions.isNotEmpty()) {
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            "清空", color = c.bad, fontSize = T.sub,
-                            modifier = Modifier.clickable {
-                                AppLog.log("ui", "点清空全部对话(待确认) 本地条数=" + sessions.size)
-                                clearAllConfirm = true
-                            }
+                Text(
+                    if (showArchived) "已归档" else "历史对话",
+                    color = c.text, fontSize = T.sub, fontWeight = T.bold,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(onClick = vm::toggleGlobalSearch) {
+                    Icon(Icons.Outlined.Search, contentDescription = "搜索历史对话", tint = c.dim)
+                }
+                Box {
+                    IconButton(onClick = { historyMenu = true }) {
+                        Icon(Icons.Outlined.MoreVert, contentDescription = "更多历史操作", tint = c.dim)
+                    }
+                    DropdownMenu(expanded = historyMenu, onDismissRequest = { historyMenu = false }) {
+                        DropdownMenuItem(
+                            text = { Text(if (showArchived) "返回历史对话" else "查看已归档") },
+                            onClick = { historyMenu = false; showArchived = !showArchived; sortMode = false }
                         )
+                        if (sessions.isNotEmpty()) {
+                            DropdownMenuItem(
+                                text = { Text("清空本机记录", color = c.bad) },
+                                onClick = { historyMenu = false; clearAllConfirm = true }
+                            )
+                        }
                     }
                 }
             }
-
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = vm::openHistoryRestore,
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, c.dim.copy(alpha = 0.25f)),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                ) { Text("恢复", color = c.accent, fontSize = T.sub) }
+                OutlinedButton(
+                    onClick = {
+                        if (!sortMode && showArchived) showArchived = false
+                        sortMode = !sortMode
+                    },
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, c.dim.copy(alpha = 0.25f)),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                ) { Text(if (sortMode) "完成排序" else "排序", color = c.accent, fontSize = T.sub) }
+            }
+            Spacer(Modifier.height(G.x2))
 
             // 清空全部对话的二次确认。文案把「清掉什么、什么不动、在跑的任务怎么办」讲全，
             // 免得用户点了才知道后果：四个数字口径与 ViewModel.clearAllConversations 一致。
