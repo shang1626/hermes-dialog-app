@@ -1,0 +1,10 @@
+allprojects {
+    afterEvaluate { p ->
+        if (p.path == ':app') {
+            p.layout.buildDirectory.set(new File('/root/.hermes/cache/scratch/hermes-notification-update-build'))
+            p.android.testOptions.unitTests.includeAndroidResources = true
+            p.android.sourceSets.test.java.srcDir(p.file('src/auditTest/java'))
+            p.dependencies.add('testImplementation', 'org.robolectric:robolectric:4.14.1')
+        }
+    }
+}

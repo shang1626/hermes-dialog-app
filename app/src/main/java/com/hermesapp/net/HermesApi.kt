@@ -20,6 +20,8 @@ import java.util.concurrent.TimeUnit
 import okhttp3.Dns
 import okhttp3.Protocol
 
+/** Update downloads have a hard cap even when Content-Length is absent. */
+private const val MAX_APK_BYTES = 100L * 1024 * 1024
 /** 单个附件下载上限：超过直接拒绝（服务端下行上限 50MB，这里留一倍余量）。 */
 private const val MAX_MEDIA_BYTES = 100L * 1024 * 1024
 /** 留档语音的上限（R16）：语音/音频都该有边界，旧代码在这条路上没有任何限制。 */
@@ -694,7 +696,7 @@ class HermesApi(
      * 两条纪律（修「内置下载完提示已安装相同版本」）：
      * 1. 文件名带版本号、先写 .part 再改名、交付前清掉目录里其它旧包——
      *    原来固定写 hermes-update.apk 且装完不删，某次下载写失败后安装器打开的还是旧包。
-     * 2. [expectMd5] 非空时下完核对指纹，对不上直接丢弃，绝不把残包交给安装器。
+     * 2. [expectMd5] 必须为合法 MD5，下载有硬上限；不匹配绝不交给安装器。
      */
     fun downloadApk(
         url: String,
@@ -703,6 +705,26 @@ class HermesApi(
         expectMd5: String,
         onProgress: (Long, Long) -> Unit,
     ): File? {
+        return downloadApkChecked(url, ctx, versionName, expectMd5, 0L, onProgress)
+    }
+
+    /** Manifest-aware entry point; callers should pass the complete update metadata. */
+    fun downloadApk(info: UpdateInfo, ctx: Context, onProgress: (Long, Long) -> Unit): File? {
+        if (info.size <= 0 || info.size > MAX_APK_BYTES) {
+            AppLog.log("update", "Invalid update manifest size=${info.size}")
+            return null
+        }
+        return downloadApkChecked(info.url, ctx, info.versionName, info.md5, info.size, onProgress)
+    }
+
+    private fun downloadApkChecked(
+        url: String, ctx: Context, versionName: String, expectMd5: String,
+        expectedSize: Long, onProgress: (Long, Long) -> Unit,
+    ): File? {
+        if (!expectMd5.matches(Regex("[0-9a-fA-F]{32}"))) {
+            AppLog.log("update", "Missing or malformed update digest; refusing download")
+            return null
+        }
         val req = Request.Builder().url(url).get().build()
         client.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) {
@@ -710,53 +732,61 @@ class HermesApi(
                 return null
             }
             val body = resp.body ?: return null
-            val total = body.contentLength()
+            val declared = body.contentLength()
+            if (declared > MAX_APK_BYTES ||
+                (expectedSize > 0 && declared >= 0 && declared != expectedSize)) {
+                AppLog.log("update", "Invalid update response size=$declared manifest=$expectedSize")
+                return null
+            }
+            val total = if (expectedSize > 0) expectedSize else declared
+            val limit = if (expectedSize > 0) expectedSize else MAX_APK_BYTES
             val dir = File(ctx.getExternalFilesDir(null), "apk")
-            dir.mkdirs()
+            if (!dir.isDirectory && !dir.mkdirs()) return null
             val safeVer = versionName.replace(Regex("[^0-9A-Za-z._-]"), "_")
             val part = File(dir, "hermes-" + safeVer + ".apk.part")
             val f = File(dir, "hermes-" + safeVer + ".apk")
-            runCatching { f.delete() }
             runCatching { part.delete() }
-            AppLog.log("update", "开始下载 " + f.name + " 期望大小=" + total + " 期望md5=" + expectMd5)
-            var done = 0L
-            body.byteStream().use { input ->
-                part.outputStream().use { out ->
-                    val buf = ByteArray(64 * 1024)
-                    while (true) {
-                        val n = input.read(buf)
-                        if (n <= 0) break
-                        out.write(buf, 0, n)
-                        done += n
-                        onProgress(done, total)
+            AppLog.log("update", "开始下载 " + f.name + " 期望大小=" + total)
+            try {
+                var done = 0L
+                body.byteStream().use { input ->
+                    part.outputStream().use { out ->
+                        val buf = ByteArray(64 * 1024)
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n < 0) break
+                            if (n == 0) continue
+                            if (done > limit - n) {
+                                AppLog.log("update", "Update exceeds size limit=$limit")
+                                return null
+                            }
+                            out.write(buf, 0, n)
+                            done += n
+                            onProgress(done, total)
+                        }
                     }
                 }
-            }
-            // 长度对不上 = 残包（链路中途被掐），丢弃。
-            if (total > 0 && done != total) {
-                AppLog.log("update", "大小不符，丢弃 done=" + done + " total=" + total)
-                runCatching { part.delete() }
-                return null
-            }
-            if (expectMd5.isNotEmpty()) {
+                if ((declared >= 0 && done != declared) ||
+                    (expectedSize > 0 && done != expectedSize) || done == 0L) {
+                    AppLog.log("update", "Update length mismatch: actual=$done http=$declared manifest=$expectedSize")
+                    return null
+                }
                 val got = md5(part)
                 if (!got.equals(expectMd5, ignoreCase = true)) {
                     AppLog.log("update", "md5 不符，丢弃 got=" + got + " 期望=" + expectMd5)
-                    runCatching { part.delete() }
                     return null
                 }
-            } else {
-                AppLog.log("update", "version.json 未给 md5，只核对了大小")
-            }
-            if (!part.renameTo(f)) {
-                AppLog.log("update", "重命名失败 " + part.name)
+                if (!part.renameTo(f)) {
+                    AppLog.log("update", "重命名失败 " + part.name)
+                    return null
+                }
+                runCatching { dir.listFiles()?.forEach { if (it.name != f.name) it.delete() } }
+                AppLog.log("update", "下载完成 " + f.name + " size=" + done)
+                return f
+            } finally {
+                // Also covers read failures, cancellation and progress callback exceptions.
                 runCatching { part.delete() }
-                return null
             }
-            // 清掉目录里其它旧包：安装器扫到旧包正是「已安装相同版本」的来源。
-            runCatching { dir.listFiles()?.forEach { if (it.name != f.name) it.delete() } }
-            AppLog.log("update", "下载完成 " + f.name + " size=" + done)
-            return f
         }
     }
 
