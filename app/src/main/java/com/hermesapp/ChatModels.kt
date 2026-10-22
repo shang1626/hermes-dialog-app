@@ -60,6 +60,9 @@ data class Msg(
     companion object {
         private val counter = java.util.concurrent.atomic.AtomicLong(0)
         fun nextMsgId(): Long = counter.incrementAndGet()
+        internal fun reserveMsgId(id: Long) {
+            counter.updateAndGet { current -> maxOf(current, id) }
+        }
     }
 }
 
@@ -106,8 +109,8 @@ data class Receipt(
          */
         const val STEER_FAILED = "steer_failed"
         /**
-         * 未发送：入队时状态是 QUEUED，但 **App 重启后内存里的待发队列已丢**，这条永远不会
-         * 自动发出去。读盘时把 QUEUED 归到这一档，别继续显示「排队中」（那是句假话），
+         * 未发送：读盘时找不到稳定 ID 与原幂等键匹配的有效队列项，不能自动发出。
+         * 包括缺少稳定 ID 的旧消息、丢失附件或队列文件等情况。
          * 界面上给「重新发送 / 知道了」两个出口。
          */
         const val NOT_SENT = "not_sent"

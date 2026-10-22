@@ -58,6 +58,18 @@ MainActivity (App.kt)
 
 StreamVoicePlayer.generatingRuns 暴露当前仍在收音频的 run 集合；气泡未起播时显示「语音生成中」，正在播放时保留停止按钮。VoiceReplayReadiness 是单测共用的就绪判据。手动重播下载成功后才让流式播放器让位并撤掉对应队列项，失败不撤队列并恢复推进。
 
+## Message reliability (audit first batch)
+
+SSE callbacks validate both stream and send generations; stop invalidates both
+before cancelling transport. Normal completion alone does not invalidate trailing
+audio. History matching compares the transmitted receipt text before display text.
+
+Messages persist stable IDs and idempotency keys. Queue recovery requires a matching
+stored ID/key and valid attachment files. Queue storage records its paused state;
+stop persists pause before advancing callbacks, resume persists unpause before send.
+Legacy messages without stable IDs remain manually recoverable, not auto-sent.
+See `AUDIT-FIRST-BATCH-20261022.md` for evidence and validation boundaries.
+
 ## 数据安全
 
 纯客户端，不碰服务端数据库。本地数据在 App 私有目录（SharedPreferences + filesDir），卸载即清。

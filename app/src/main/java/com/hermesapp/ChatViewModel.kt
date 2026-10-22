@@ -757,6 +757,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun restoreQueue(id: String) {
         val r = rt(id)
         if (r.queue.isNotEmpty()) return
+        r.queuePaused.value = store.loadQueuePaused(id)
         val saved = runCatching { store.loadQueue(id) }.getOrDefault(emptyList())
         if (saved.isEmpty()) return
         val queued = saved.filter { item ->
@@ -2582,6 +2583,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val sid = _currentId.value
         if (sid.isEmpty()) return
         val r = rt(sid)
+        try {
+            store.saveQueue(sid, r.queue.toList(), paused = false)
+        } catch (e: Exception) {
+            r.retryNote.value = "队列状态保存失败，暂不发送，请稍后再试"
+            AppLog.err("queue", "继续队列落盘失败", e)
+            return
+        }
         r.queuePaused.value = false
         AppLog.log("queue", "继续队列 sid=" + sid.take(8) + " 待发=" + r.queue.size)
         drainQueue(sid)
@@ -3835,6 +3843,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // run.completed，正文、通知与语音都执行两遍（实测 2.81 回前台重复播报）。
         val gen = r.streamGen + 1
         r.streamGen = gen
+        val sendGen = r.sendGen
         r.call?.let { old -> if (!old.isCanceled()) { AppLog.log("stream", "重起流先掐旧流 run=" + rid.take(12)); old.cancel() } }
         r.lastEventAt = System.currentTimeMillis()   // 重新起流即重置活跃时间，避免刚连上就被判假死
         r.evCount = 0                                 // 本轮事件计数：流关闭时汇总，一眼看出事件到底到没到
@@ -3847,7 +3856,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             runId = rid,
             lastSeq = r.lastSeq,
             onEvent = { ev -> RuntimeHub.scope.launch {
-                if (gen != r.streamGen) return@launch   // 已被新流取代，作废
+                if (!r.acceptsStreamCallback(gen, sendGen)) return@launch   // 已被新流取代，作废
                 if (ev.id != null) r.lastSeq = ev.id
                 r.lastEventAt = System.currentTimeMillis()
                 val name = ev.event ?: ev.data.optString("event", "")
@@ -3976,14 +3985,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 }
             } },
             onClosed = { RuntimeHub.scope.launch {
-                if (gen != r.streamGen) return@launch   // 已被新流取代，作废
+                if (!r.acceptsStreamCallback(gen, sendGen)) return@launch   // 已被新流取代，作废
                 r.coalescer?.flushNow()
                 AppLog.log("stream", "流关闭 run=" + rid.take(12) + " busy=" + r.busy.value + " finished=" + r.finished + " lastSeq=" + r.lastSeq +
                     " 本轮共收事件=" + r.evCount + " 其中工具=" + r.toolCount)
                 if (r.busy.value && !r.finished) maybeContinue(sid)
             } },
             onError = { e -> RuntimeHub.scope.launch {
-                if (gen != r.streamGen) return@launch   // 已被新流取代，作废
+                if (!r.acceptsStreamCallback(gen, sendGen)) return@launch   // 已被新流取代，作废
                 AppLog.err("stream", "流出错 run=" + rid.take(12) + " busy=" + r.busy.value + " finished=" + r.finished +
                     " 本轮共收事件=" + r.evCount + " 其中工具=" + r.toolCount, e)
                 // 不再往正文塞「[连接断开]」——断流期间的提示统一走 retryNote（气泡上方一行），
@@ -4007,7 +4016,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             } },
             // 心跳等任何一行都刷新活跃时间：长工具执行期间只有心跳、没有真实事件，
             // 不刷就会让「回到前台」的 25 秒看门狗把健康流误判成假死（用户报的「一直在重连」）。
-            onActivity = { RuntimeHub.scope.launch { if (gen == r.streamGen) r.lastEventAt = System.currentTimeMillis() } }
+            onActivity = { RuntimeHub.scope.launch { if (r.acceptsStreamCallback(gen, sendGen)) r.lastEventAt = System.currentTimeMillis() } }
         )
     }
 
@@ -4411,6 +4420,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val a = api
         val rid = r.runId.ifEmpty { pendingStop }
         AppLog.log("stop", "用户停止 sid=" + sid.take(8) + " run=" + rid.take(12))
+        r.queuePaused.value = r.queue.isNotEmpty()
+        try {
+            store.saveQueue(sid, r.queue.toList(), paused = r.queuePaused.value)
+        } catch (e: Exception) {
+            r.retryNote.value = "队列暂停状态保存失败，重开后请先检查待发消息"
+            AppLog.err("queue", "停止时队列暂停落盘失败", e)
+        }
         r.finished = true
         // 用户主动停止：本次任务的「全部批准」也到此为止（后面再问就重新等他点）。
         disarmAutoApprove(sid)
@@ -4419,7 +4435,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.stopRequested = true
         // 把当前轮作废：万一还有一条 startRun 的同步请求在飞，它回来时轮次号对不上，
         // 只会补发 stop 收掉自己，不会重新接管会话（F04）。
-        r.sendGen++
+        r.invalidateTurnForStop()
         r.recoveryJob?.cancel()
         r.coalescer?.discard()
         if (a != null && rid.isNotEmpty()) viewModelScope.launch(Dispatchers.IO) {

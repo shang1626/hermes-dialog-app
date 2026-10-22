@@ -72,6 +72,16 @@ internal class SessionRuntime(val id: String) {
      * （两条流抢同一会话，F04）。现在每轮带号，迟到的响应先对号，对不上只补发 stop 收掉自己。
      */
     @Volatile var sendGen: Int = 0
+
+    /** Main-thread callback gate; completion must leave late audio eligible. */
+    fun acceptsStreamCallback(streamGeneration: Int, sendGeneration: Int): Boolean =
+        streamGeneration == streamGen && sendGeneration == sendGen
+
+    /** Invalidate queued SSE callbacks before cancelling the transport. */
+    fun invalidateTurnForStop() {
+        sendGen++
+        streamGen++
+    }
     /**
      * 未确认的停止意图（R08）：上一次对哪条 run 发了 stop 但**没得到确认**。
      * 非空表示「界面已显示停止、服务端可能仍在跑」，用户再点停止时对这条重试。

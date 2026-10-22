@@ -18,7 +18,7 @@ data class SessionMeta(
 
 /**
  * 跨会话搜索的一条命中。
- * text 存整条正文：跳到那个会话后靠它把这条从本地消息里认出来（消息 id 不落盘，不能靠 id 认）。
+ * text 存整条正文：跳到那个会话后靠它把这条从本地消息里认出来（兼容没有稳定 id 的旧消息）。
  */
 data class GlobalHit(
     val sessionId: String,
@@ -110,7 +110,9 @@ class SessionStore(private val dir: File, private val profile: String) {
         val raw = AtomicStore.readTextOrBackupOrNull(queueFile(id)) ?: return emptyList()
         if (raw.isBlank()) return emptyList()
         return runCatching {
-            val arr = JSONArray(raw)
+            val arr = if (raw.trimStart().startsWith("{")) {
+                JSONObject(raw).getJSONArray("items")
+            } else JSONArray(raw)
             (0 until arr.length()).mapNotNull { i ->
                 val o = arr.optJSONObject(i) ?: return@mapNotNull null
                 val msgId = o.optLong("msgId", -1L)
@@ -138,27 +140,46 @@ class SessionStore(private val dir: File, private val profile: String) {
         }.getOrDefault(emptyList())
     }
 
-    /** 写入待发队列；传空列表 = 删掉文件（队列已空）。 */
-    fun saveQueue(id: String, items: List<QueuedSend>) {
+    /** Legacy arrays have no pause bit: require explicit resume rather than risk sending after stop. */
+    fun loadQueuePaused(id: String): Boolean {
+        if (id.isEmpty()) return false
+        val raw = AtomicStore.readTextOrBackupOrNull(queueFile(id)) ?: return false
+        return runCatching {
+            if (raw.trimStart().startsWith("{")) JSONObject(raw).optBoolean("paused", true)
+            else JSONArray(raw).length() > 0
+        }.getOrDefault(true)
+    }
+
+    fun saveQueuePaused(id: String, paused: Boolean) = saveQueue(id, loadQueue(id), paused)
+
+    /** Writes preserve the pause bit unless the caller explicitly changes it. */
+    fun saveQueue(id: String, items: List<QueuedSend>, paused: Boolean = loadQueuePaused(id)) {
         if (id.isEmpty()) return
         val f = queueFile(id)
-        if (items.isEmpty()) {
-            runCatching { if (f.exists()) f.delete() }
-            return
+        synchronized(AtomicStore.lock) {
+            if (items.isEmpty() && !paused) {
+                // Removing only the main file resurrects the previous queue through .bak.
+                for (suffix in listOf("", ".bak", ".tmp")) {
+                    val target = File(f.parentFile, f.name + suffix)
+                    check(!target.exists() || target.delete()) { "Cannot clear queue: $target" }
+                }
+                return
+            }
+            val arr = JSONArray()
+            for (item in items) {
+                val o = JSONObject()
+                o.put("text", item.text)
+                o.put("msgId", item.msgId)
+                o.put("prior", item.priorUserCount)
+                o.put("idemKey", item.idemKey)
+                val fa = JSONArray()
+                item.files.forEach { file -> fa.put(file.absolutePath) }
+                o.put("files", fa)
+                arr.put(o)
+            }
+            AtomicStore.writeAtomic(f, JSONObject().put("schema", 1)
+                .put("paused", paused).put("items", arr).toString())
         }
-        val arr = JSONArray()
-        for (item in items) {
-            val o = JSONObject()
-            o.put("text", item.text)
-            o.put("msgId", item.msgId)
-            o.put("prior", item.priorUserCount)
-            o.put("idemKey", item.idemKey)
-            val fa = JSONArray()
-            item.files.forEach { file -> fa.put(file.absolutePath) }
-            o.put("files", fa)
-            arr.put(o)
-        }
-        AtomicStore.writeAtomic(f, arr.toString())
     }
     private fun legacyFile() = File(dir, "chat_$profile.json")
 
@@ -422,8 +443,15 @@ class SessionStore(private val dir: File, private val profile: String) {
                 val bak = File(dir, f.name + ".bak")
                 if (bak.exists()) JSONArray(bak.readText()) else throw e
             }
+            val queued = loadQueue(id)
+            // Reserve all persisted IDs before allocating any IDs for legacy rows.
+            for (i in 0 until arr.length()) {
+                Msg.reserveMsgId(arr.optJSONObject(i)?.optLong("id", 0L) ?: 0L)
+            }
+            queued.forEach { Msg.reserveMsgId(it.msgId) }
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
+                val storedId = o.optLong("id", 0L)
                 val text = o.optString("text", "")
                 val trace = o.optString("trace", "")
                 val imgs = mutableListOf<String>()
@@ -502,11 +530,14 @@ class SessionStore(private val dir: File, private val profile: String) {
                         for (k in 0 until aa.length()) aa.optString(k)?.takeIf { it.isNotEmpty() }?.let { arts.add(it) }
                     }
                     Receipt(
-                        // 读回时把「只在当次运行里有意义」的两个状态归位，否则重启后会一直
-                        // 转圈 / 一直显示「排队中」（F03）：
-                        //   sending → uncertain：那个 POST 早就没了，收没收不知道 → 结果未知
-                        //   queued  → not_sent ：内存里的待发队列重启即丢，它不会再自动发
-                        status = restartSafeStatus(ro.optString("status", Receipt.ACCEPTED)),
+                        // Only a stable ID plus the original key can authorize queue restoration.
+                        // Legacy rows must never be matched by text, position, or a newly allocated ID.
+                        status = ro.optString("status", Receipt.ACCEPTED).let { status ->
+                            val key = ro.optString("idemKey", "").ifBlank { o.optString("idemKey", "") }
+                            if (status == Receipt.QUEUED && storedId > 0 && key.isNotBlank() &&
+                                queued.any { it.msgId == storedId && it.idemKey == key }) Receipt.QUEUED
+                            else restartSafeStatus(status)
+                        },
                         runId = ro.optString("runId", ""),
                         note = ro.optString("note", ""),
                         rawText = ro.optString("rawText", text.trim()),
@@ -519,6 +550,8 @@ class SessionStore(private val dir: File, private val profile: String) {
                     Msg(
                         role = o.optString("role", "assistant"),
                         text = text,
+                        id = if (storedId > 0) storedId else Msg.nextMsgId(),
+                        idemKey = o.optString("idemKey", "").ifBlank { rc?.idemKey.orEmpty() },
                         pending = false,
                         ts = o.optLong("ts", 0L),
                         images = imgs,
@@ -566,6 +599,8 @@ class SessionStore(private val dir: File, private val profile: String) {
             val arr = JSONArray()
             for (m in tail) {
                 val o = JSONObject().put("role", m.role).put("text", m.text).put("ts", m.ts)
+                    .put("id", m.id)
+                if (m.idemKey.isNotEmpty()) o.put("idemKey", m.idemKey)
                 if (m.trace.isNotEmpty()) o.put("trace", m.trace)
                 if (m.runId.isNotEmpty()) o.put("runId", m.runId)
                 if (m.quote.isNotEmpty()) o.put("quote", m.quote)
@@ -633,7 +668,7 @@ class SessionStore(private val dir: File, private val profile: String) {
                 // 旧实现故意过滤掉这两个状态，理由是「重启后那个 POST 已经没了，留着会一直转圈」；
                 // 代价是重启后那条消息的回执、幂等键、附件清单全丢——用户再也认不出
                 // 「这条到底发出去没有」，也没法安全重发。现在改为**落盘 + 读回时归位**
-                // （restartSafeStatus：sending→uncertain、queued→not_sent），两者都不转圈、都带处置按钮。
+                // （sending→uncertain；queued 仅在稳定 ID 与原幂等键匹配队列时保留，否则→not_sent）。
                 m.receipt?.let { rc ->
                     val rj = JSONObject()
                         .put("status", rc.status)
