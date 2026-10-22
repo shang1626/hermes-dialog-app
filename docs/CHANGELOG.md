@@ -1,3 +1,9 @@
+## 2.218 — versionCode 229
+
+- 抽屉恢复入口缩为「恢复」，与排序并排；历史标题独立，移除单独占行的长按钮。
+- 正式纳入2.217候选版的停止、历史合并、队列恢复、身份隔离、通知及更新保护。
+- 用户反馈候选版使用正常；日志确认启动恢复会话、停止请求和语音起播。未把日志未覆盖的场景计为真机通过。
+
 ## 2.217 — versionCode 228 (candidate)
 
 - Stop invalidates old streams; quote and attachment history match transmitted text.
