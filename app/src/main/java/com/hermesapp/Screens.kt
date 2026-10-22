@@ -70,6 +70,57 @@ import coil.compose.AsyncImage
 import java.io.File
 import kotlinx.coroutines.delay
 
+/** Explicit selection only; opening this dialog never imports remote rows. */
+@Composable
+fun HistoryRestoreDialog(
+    state: HistoryRestoreState,
+    onDismiss: () -> Unit,
+    onRetry: () -> Unit,
+    onRestore: (Set<String>) -> Unit,
+) {
+    val c = LocalAppColors.current
+    var selected by remember(state.candidates) { mutableStateOf(emptySet<String>()) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = c.panel,
+        title = { Text("选择恢复服务端会话", color = c.text) },
+        text = {
+            Column {
+                Text("仅显示本机没有的会话。本次只查询最近 200 个的列表窗口（可能额外含固定会话），不代表全部历史。勾选后加入本机列表，打开时加载服务端最近消息（接口最多 500 条），不会清除本地记录。",
+                    color = c.dim, fontSize = T.sub)
+                Spacer(Modifier.height(8.dp))
+                when {
+                    state.loading -> Text("正在读取…", color = c.dim)
+                    state.error.isNotEmpty() -> Text(state.error, color = c.bad)
+                    state.candidates.isEmpty() -> Text("本次返回中没有可恢复的会话", color = c.dim)
+                    else -> LazyColumn(Modifier.heightIn(max = 340.dp)) {
+                        items(state.candidates, key = { it.id }) { session ->
+                            Row(Modifier.fillMaxWidth().clickable {
+                                selected = if (session.id in selected) selected - session.id else selected + session.id
+                            }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(checked = session.id in selected, onCheckedChange = { checked ->
+                                    selected = if (checked) selected + session.id else selected - session.id
+                                })
+                                Column {
+                                    Text(session.title, color = c.text, maxLines = 2)
+                                    Text(session.id.take(16), color = c.dim, fontSize = T.cap)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            if (state.error.isNotEmpty()) TextButton(onClick = onRetry) { Text("重试") }
+            else TextButton(onClick = { onRestore(selected) }, enabled = !state.loading && selected.isNotEmpty()) {
+                Text("恢复所选（${selected.size}）")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
 /**
  * 对话页。输入状态用 MutableState<String> 持有：
  * 打字只让 ChatInputBar 重组，消息列表（MessageList）完全不动 —— 消除输入卡顿。
@@ -2491,7 +2542,7 @@ fun SettingsScreen(
     LaunchedEffect(Unit) { vm.refreshCache() }
     val vc = remember {
         runCatching {
-            ctx.packageManager.getPackageInfo(ctx.packageName, 0).longVersionCode.toInt()
+            androidx.core.content.pm.PackageInfoCompat.getLongVersionCode(ctx.packageManager.getPackageInfo(ctx.packageName, 0)).toInt()
         }.getOrDefault(1)
     }
     // 版本名（如 2.41）：与 versionCode 一起显示，用户能一眼对上发布的版本号。
@@ -2546,7 +2597,7 @@ fun SettingsScreen(
             }
             if (accounts.size == 1) {
                 Spacer(Modifier.height(4.dp))
-                Text("要加/换账号：退出登录后用另一个账号登录一次即可", color = c.dim, fontSize = T.cap)
+                Text("要加/换账号：在底部切换账号，已保存的账号可一键进入", color = c.dim, fontSize = T.cap)
             }
         }
 
@@ -2850,9 +2901,9 @@ fun SettingsScreen(
         Spacer(Modifier.height(G.x4))
         OutlinedButton(
             onClick = { prefs.loggedIn = false; onLogout() }, modifier = Modifier.fillMaxWidth()
-        ) { Text("退出登录", color = c.bad) }
+        ) { Text("切换账号（保留登录凭据）", color = c.accent) }
         Spacer(Modifier.height(G.x3))
-        Text("退出后可重新选择身份", color = c.dim, fontSize = T.cap)
+        Text("保留本地对话与服务端任务；切换页可退出并移除保存的凭据", color = c.dim, fontSize = T.cap)
     }
 
     if (showClear) {

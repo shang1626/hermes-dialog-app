@@ -2,20 +2,64 @@ package com.hermesapp
 
 import android.content.Context
 
-class Prefs(ctx: Context) {
-    private val sp = ctx.getSharedPreferences("hermes_app", Context.MODE_PRIVATE)
+class Prefs private constructor(private val ctx: Context, private val boundIdentity: IdentityDomain?) {
+    constructor(ctx: Context) : this(ctx, null)
+    private val global = ctx.getSharedPreferences("hermes_app", Context.MODE_PRIVATE)
+    private val sp get() = ctx.getSharedPreferences("identity_" + identity.key, Context.MODE_PRIVATE)
+    internal val identity: IdentityDomain get() = boundIdentity ?: IdentityDomain(
+        serverUrl, profile, credential(profile).substringBefore(':'))
+    internal val legacyServer: String get() {
+        val owner = global.getString("legacy_account:" + identity.profile, "").orEmpty()
+        return if (owner.isNotEmpty() && owner == identity.account)
+            global.getString("legacy_server", "").orEmpty() else ""
+    }
+    internal fun bound(): Prefs = Prefs(ctx, identity)
+
+    init {
+        synchronized(Prefs::class.java) {
+            if (!global.contains("legacy_server")) {
+                val original = global.getString("server_url", "").orEmpty()
+
+                // Legacy credentials and conversation state belong only to the original server.
+                for (p in listOf("default", "friend")) {
+                    val credential = global.getString("credential:" + p, "").orEmpty()
+                    if (original.isNotBlank() && credential.isNotBlank()) {
+                        global.edit().putString(credentialKey(original, p), credential)
+                            .putString("legacy_account:" + p, credential.substringBefore(':')).commit()
+                        val id = IdentityDomain(original, p, credential.substringBefore(':'))
+                        val dest = ctx.getSharedPreferences("identity_" + id.key, Context.MODE_PRIVATE)
+                        val editor = dest.edit()
+                        for ((k, v) in global.all) if (p == global.getString("profile", "friend") && (isConversationContentPrefKey(k) || k in listOf(
+                            "session_id", "shell_cleanup_done", "notified_reports", "pending_open_session"))) {
+                            when (v) {
+                                is String -> editor.putString(k, v)
+                                is Int -> editor.putInt(k, v)
+                                is Boolean -> editor.putBoolean(k, v)
+                            }
+                        }
+                        editor.commit()
+                    }
+                }
+                global.edit().remove("credential:default").remove("credential:friend")
+                    .putString("legacy_server", original).commit()
+            }
+        }
+    }
+
+    private fun credentialKey(server: String, p: String) =
+        "credential:v2:" + domainHash(canonicalServer(server)) + ":" + p
 
     var loggedIn: Boolean
-        get() = sp.getBoolean("logged_in", false)
-        set(v) { sp.edit().putBoolean("logged_in", v).apply() }
+        get() = global.getBoolean("logged_in", false)
+        set(v) { global.edit().putBoolean("logged_in", v).apply() }
 
     var profile: String
-        get() = sp.getString("profile", "friend") ?: "friend"
-        set(v) { sp.edit().putString("profile", v).apply() }
+        get() = boundIdentity?.profile ?: global.getString("profile", "friend") ?: "friend"
+        set(v) { global.edit().putString("profile", v).apply() }
 
     var serverUrl: String
-        get() = sp.getString("server_url", "") ?: ""
-        set(v) { sp.edit().putString("server_url", v).apply() }
+        get() = boundIdentity?.server ?: global.getString("server_url", "") ?: ""
+        set(v) { global.edit().putString("server_url", v).apply() }
 
     var sessionId: String?
         get() = sp.getString("session_id", null)
@@ -30,25 +74,27 @@ class Prefs(ctx: Context) {
      */
     fun credential(profile: String): String {
         if (profile.isEmpty()) return ""
-        return sp.getString("credential:" + profile, "") ?: ""
+        return global.getString(credentialKey(boundIdentity?.server ?: serverUrl, profile), "") ?: ""
     }
 
     fun setCredential(profile: String, value: String) {
         if (profile.isEmpty()) return
-        sp.edit().putString("credential:" + profile, value).apply()
+        global.edit().putString(credentialKey(serverUrl, profile), value).commit()
     }
 
     /** 退出登录：清掉所有身份的凭据（下次要用得重新输账号密码）。 */
     fun clearCredentials() {
-        sp.edit().apply {
-            for (p in listOf("default", "friend")) remove("credential:" + p)
-        }.apply()
+        val prefix = "credential:v2:" + domainHash(canonicalServer(serverUrl)) + ":"
+        global.edit().apply {
+            for (key in global.all.keys) if (key.startsWith(prefix)) remove(key)
+        }.commit()
+        loggedIn = false
     }
 
     /** 主题：system / day / night，默认跟随系统 */
     var themeMode: String
-        get() = sp.getString("theme_mode", "system") ?: "system"
-        set(v) { sp.edit().putString("theme_mode", v).apply() }
+        get() = global.getString("theme_mode", "system") ?: "system"
+        set(v) { global.edit().putString("theme_mode", v).apply() }
 
     /**
      * 对话输入框草稿：按会话隔离存（键 draft_input:<sessionId>）。
@@ -187,8 +233,8 @@ class Prefs(ctx: Context) {
 
     /** 模型不支持视觉时：true=自动转文字，false=每次都问用户。 */
     var visionAutoText: Boolean
-        get() = sp.getBoolean("vision_auto_text", true)
-        set(v) { sp.edit().putBoolean("vision_auto_text", v).apply() }
+        get() = global.getBoolean("vision_auto_text", true)
+        set(v) { global.edit().putBoolean("vision_auto_text", v).apply() }
 
     /**
      * 后台运行（任务期间起前台服务保持 SSE 连接）。
@@ -196,32 +242,32 @@ class Prefs(ctx: Context) {
      * 任务仍在服务端跑，重开 App 会重新拉取结果。
      */
     var keepAlive: Boolean
-        get() = sp.getBoolean("keep_alive", true)
-        set(v) { sp.edit().putBoolean("keep_alive", v).apply() }
+        get() = global.getBoolean("keep_alive", true)
+        set(v) { global.edit().putBoolean("keep_alive", v).apply() }
 
     /**
      * 「其它会话完成也提醒」：App 在前台、但你正看着别的会话时，那边跑完也弹系统通知。
      * 要靠一条活连接才能观察到别的会话收尾，所以打开它意味着同时启用后台运行。
      */
     var notifySessionCompletions: Boolean
-        get() = sp.getBoolean("notify_session_completions", false)
-        set(v) { sp.edit().putBoolean("notify_session_completions", v).apply() }
+        get() = global.getBoolean("notify_session_completions", false)
+        set(v) { global.edit().putBoolean("notify_session_completions", v).apply() }
 
     /**
      * 完成语音播报：任务跑完时把服务端合成的整段语音自动播一遍。
      * 默认开（装完即响，不用去设置页点开关）；开关只影响「要不要播」，语音文件本来就随回复下发。
      */
     var playCompletionVoice: Boolean
-        get() = sp.getBoolean("play_completion_voice", true)
-        set(v) { sp.edit().putBoolean("play_completion_voice", v).apply() }
+        get() = global.getBoolean("play_completion_voice", true)
+        set(v) { global.edit().putBoolean("play_completion_voice", v).apply() }
 
     /**
      * 完成语音播报的语速（1.0 = 正常）。设置页给几档平铺按钮调；
      * 播放时由 MediaPlayer 的 PlaybackParams.setSpeed 应用，不影响语音文件本身。
      */
     var voiceRate: Float
-        get() = sp.getFloat("voice_rate", 1.0f)
-        set(v) { sp.edit().putFloat("voice_rate", v).apply() }
+        get() = global.getFloat("voice_rate", 1.0f)
+        set(v) { global.edit().putFloat("voice_rate", v).apply() }
 
     /** 空壳会话一次性清理是否已执行（2026-10-07 下线「拉取」时加）。 */
     var shellCleanupDone: Boolean

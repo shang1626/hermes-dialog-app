@@ -23,6 +23,10 @@ import java.util.concurrent.ConcurrentHashMap
  */
 internal object RuntimeHub {
     /** 键 = 会话 id；进程内唯一，跨 Activity/ViewModel 重建保持。 */
+    private val domains = ConcurrentHashMap<String, ConcurrentHashMap<String, SessionRuntime>>()
+    fun runtimes(domain: String): ConcurrentHashMap<String, SessionRuntime> =
+        domains.computeIfAbsent(domain) { ConcurrentHashMap() }
+    // Compatibility for tests; production always supplies the full identity domain.
     val runtimes = ConcurrentHashMap<String, SessionRuntime>()
 
     fun rt(id: String): SessionRuntime = runtimes.computeIfAbsent(id) { SessionRuntime(it) }

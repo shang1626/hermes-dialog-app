@@ -45,6 +45,9 @@ class SessionStore(private val dir: File, private val profile: String) {
      */
     constructor(ctx: Context, profile: String) : this(ctx.filesDir, profile)
 
+    internal constructor(ctx: Context, identity: IdentityDomain, legacyServer: String) :
+        this(identityStoreDirectory(ctx.filesDir, identity, legacyServer), identity.profile)
+
     /** 索引文件格式版本：改了字段结构就 +1，读到旧值按旧格式解析。 */
     private val SCHEMA_INDEX = 2
 

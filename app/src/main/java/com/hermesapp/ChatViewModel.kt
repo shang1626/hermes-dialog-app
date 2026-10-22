@@ -100,8 +100,12 @@ private data class SaveCheckpoint(val gen: Int, val runId: String, val seq: Int,
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
-    private val prefs = Prefs(app)
-    private var store = SessionStore(app, prefs.profile)
+    private val prefs = Prefs(app).bound()
+    private val identity = prefs.identity
+    private val identityJob = kotlinx.coroutines.SupervisorJob()
+    private val identityScope = kotlinx.coroutines.CoroutineScope(identityJob + Dispatchers.Main.immediate)
+    @Volatile private var detached = false
+    private var store = SessionStore(app, identity, prefs.legacyServer)
 
     /**
      * 会话索引是否已经读进内存（bootstrapSessions 结束前置位）。
@@ -121,8 +125,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // 会话运行态改放进程级单例（见 RuntimeHub.kt）：重建接回同一份，不再分叉。
-    private val runtimes get() = RuntimeHub.runtimes
-    private fun rt(id: String): SessionRuntime = RuntimeHub.rt(id)
+    private val runtimes get() = RuntimeHub.runtimes(identity.key)
+    private fun rt(id: String): SessionRuntime = runtimes.computeIfAbsent(id) { SessionRuntime(it) }
 
     private val _currentId = MutableStateFlow("")
     val currentId = _currentId.asStateFlow()
@@ -130,7 +134,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 当前会话的消息/忙闲/重连提示：随 _currentId 切换，后台会话互不影响。 */
     val messages: StateFlow<List<Msg>> = _currentId
         .flatMapLatest { id -> if (id.isEmpty()) flowOf(emptyList<Msg>()) else rt(id).messages }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+        .stateIn(identityScope, SharingStarted.Eagerly, emptyList())
 
     /**
      * 当前会话里的全部子任务（跨气泡汇总、按 id 去重取最新状态），供对话窗口顶部的面板用。
@@ -153,15 +157,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         .distinctUntilChanged()
-        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+        .stateIn(identityScope, SharingStarted.Eagerly, emptyList())
 
     val busy: StateFlow<Boolean> = _currentId
         .flatMapLatest { id -> if (id.isEmpty()) flowOf(false) else rt(id).busy }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+        .stateIn(identityScope, SharingStarted.Eagerly, false)
 
     val retryNote: StateFlow<String> = _currentId
         .flatMapLatest { id -> if (id.isEmpty()) flowOf("") else rt(id).retryNote }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, "")
+        .stateIn(identityScope, SharingStarted.Eagerly, "")
 
     /**
      * 当前会话里「在等我点头」的卡片（审批或澄清），供对话窗口顶部一条醒目提示。
@@ -196,17 +200,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         .distinctUntilChanged()
-        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+        .stateIn(identityScope, SharingStarted.Eagerly, null)
 
     /** 当前会话排队待发的条数：输入栏显示「排队 N 条」。 */
     val queuedCount: StateFlow<Int> = _currentId
         .flatMapLatest { id -> if (id.isEmpty()) flowOf(0) else rt(id).queued }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
+        .stateIn(identityScope, SharingStarted.Eagerly, 0)
 
     /** 当前会话的待发队列是否被「停止」按住（界面显示「继续」按钮）。 */
     val queuedPaused: StateFlow<Boolean> = _currentId
         .flatMapLatest { id -> if (id.isEmpty()) flowOf(false) else rt(id).queuePaused }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+        .stateIn(identityScope, SharingStarted.Eagerly, false)
 
     private val _sessions = MutableStateFlow<List<SessionMeta>>(emptyList())
     val sessions = _sessions.asStateFlow()
@@ -450,7 +454,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             _searchIdx.value = -1
             return
         }
-        searchJob = viewModelScope.launch {
+        searchJob = identityScope.launch {
             delay(150)
             val msgs = rt(sid).messages.value
             val ids = withContext(Dispatchers.Default) { ChatSearch.matchIds(msgs, q) }
@@ -520,7 +524,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             _globalHits.value = emptyList()
             return
         }
-        globalJob = viewModelScope.launch {
+        globalJob = identityScope.launch {
             delay(200)
             val hits = withContext(Dispatchers.IO) { store.searchAll(q) }
             if (_globalQuery.value != q) return@launch
@@ -536,7 +540,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         clearGlobalSearch()
         if (hit.sessionId != _currentId.value) switchSession(hit.sessionId)
         ensureLoaded(hit.sessionId)
-        viewModelScope.launch {
+        identityScope.launch {
             delay(80)   // 等会话消息装载完
             val msgs = rt(hit.sessionId).messages.value
             val idx = msgs.indexOfFirst { it.text == hit.text }
@@ -577,7 +581,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     init {
         // 通知栏直接回复：先取落盘的（App 被杀过），再收运行中的广播
         drainPendingReply()
-        viewModelScope.launch {
+        identityScope.launch {
             com.hermesapp.PendingReply.flow.collect { drainPendingReply() }
         }
     }
@@ -673,7 +677,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun scheduleSave(r: SessionRuntime) {
         if (r.dead) return          // 已删除的会话：别再安排写盘，否则文件会复活
         r.saveJob?.cancel()
-        r.saveJob = RuntimeHub.scope.launch(Dispatchers.IO) {
+        r.saveJob = identityScope.launch(Dispatchers.IO) {
             delay(400)
             saveRuntime(r)
         }
@@ -722,7 +726,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (r.loaded || r.loading || r.dead) return
         r.loading = true
         val t0 = System.currentTimeMillis()
-        RuntimeHub.scope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             val msgs = sanitizeLoadedMessages(runCatching { store.loadMessages(id) }.getOrDefault(emptyList()))
             val cost = System.currentTimeMillis() - t0
             withContext(Dispatchers.Main.immediate) {
@@ -781,7 +785,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * 放在启动 1.2 秒后、IO 线程上，不跟启动期的同步标题/收件箱/更新检查抢，也不挡首帧。
      */
     private fun prewarmRecentSessions() {
-        RuntimeHub.scope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             delay(1200L)
             val ids = _sessions.value.filter { !it.archived }.take(3).map { it.id }
             for (id in ids) ensureLoaded(id)   // 内部自带 loaded/loading 守卫与锚点合并
@@ -789,6 +793,71 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     
+
+    private val _historyRestore = MutableStateFlow(HistoryRestoreState())
+    val historyRestore = _historyRestore.asStateFlow()
+    private var historyRestoreRequest = 0L
+    private var historyRestoreValid: (() -> Boolean)? = null
+
+    private fun historyIdentityActive(): Boolean = !detached && prefs.loggedIn &&
+        Prefs(getApplication<Application>()).identity == identity
+
+    /** Explicit user action only: inspecting remote rows never changes the local index. */
+    fun openHistoryRestore() {
+        if (!historyIdentityActive()) return
+        val a = api ?: return
+        val targetStore = store
+        val request = ++historyRestoreRequest
+        val valid = { request == historyRestoreRequest && api === a && store === targetStore && historyIdentityActive() }
+        historyRestoreValid = valid
+        _historyRestore.value = HistoryRestoreState(visible = true, loading = true)
+        identityScope.launch(Dispatchers.IO) {
+            try {
+                val response = a.listSessions(limit = 200)
+                val rows = response.optJSONArray("data") ?: error("服务端未返回会话列表")
+                val remote = (0 until rows.length()).mapNotNull { i ->
+                    val row = rows.optJSONObject(i) ?: return@mapNotNull null
+                    val id = row.optString("id", "").trim()
+                    if (id.isEmpty() || row.optBoolean("is_internal_child", false)) return@mapNotNull null
+                    SessionMeta(id, row.optString("title", "").trim().ifEmpty { "未命名对话" },
+                        (row.optDouble("last_active", 0.0) * 1000).toLong())
+                }
+                withContext(Dispatchers.Main) {
+                    if (!valid()) return@withContext
+                    _historyRestore.value = HistoryRestoreState(visible = true,
+                        candidates = HistoryRestore.candidates(remote, _sessions.value))
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    if (!valid()) return@withContext
+                    _historyRestore.value = HistoryRestoreState(visible = true, error = "读取失败，请重试")
+                }
+                AppLog.err("history-restore", "读取可恢复会话失败", e)
+            }
+        }
+    }
+
+    fun dismissHistoryRestore() {
+        historyRestoreRequest++
+        historyRestoreValid = null
+        _historyRestore.value = HistoryRestoreState()
+    }
+
+    fun restoreSelectedHistory(selected: Set<String>) {
+        if (historyRestoreValid?.invoke() != true) {
+            dismissHistoryRestore()
+            return
+        }
+        val state = _historyRestore.value
+        if (!state.visible || state.loading || state.error.isNotEmpty() || !indexReady || !prefs.loggedIn) return
+        val merged = HistoryRestore.merge(_sessions.value, state.candidates, selected)
+        if (merged.size != _sessions.value.size) {
+            _sessions.value = merged
+            saveIndexAsync(debounceMs = 0L)
+        }
+        dismissHistoryRestore()
+        // Messages are fetched only when the user opens a restored row, via switchSession.
+    }
 
     /** 上次从服务端同步标题的时间：节流用，避免每个轮末都打一次接口。 */
     private var lastTitleSyncAt = 0L
@@ -806,7 +875,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val now = System.currentTimeMillis()
         if (throttleMs > 0 && now - lastTitleSyncAt < throttleMs) return
         lastTitleSyncAt = now
-        viewModelScope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             try {
                 val resp = a.listSessions()
                 val arr = resp.optJSONArray("data") ?: return@launch
@@ -950,7 +1019,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val r = runtimes[id]
             if (r != null && !r.dead) {
                 r.saveJob?.cancel()
-                r.saveJob = RuntimeHub.scope.launch(Dispatchers.IO) { saveRuntime(r) }
+                r.saveJob = identityScope.launch(Dispatchers.IO) { saveRuntime(r) }
             }
         }
         saveIndexAsync()
@@ -969,7 +1038,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         indexSaveJob?.cancel()
-        indexSaveJob = RuntimeHub.scope.launch(Dispatchers.IO) {
+        indexSaveJob = identityScope.launch(Dispatchers.IO) {
             if (debounceMs > 0) delay(debounceMs)
             // 去抖窗口内列表可能又变过，落盘前再判一次（与 SessionStore 内的闸门同源）。
             if (!indexWriteAllowed(indexReady, _sessions.value.size, store.lastKnownCount, allowEmpty)) {
@@ -1062,7 +1131,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             toast("重命名没同步：未连接服务器")
             return
         }
-        viewModelScope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             val res = runCatching { a.renameSession(id, t) }
             withContext(Dispatchers.Main) {
                 val e = res.exceptionOrNull()
@@ -1128,7 +1197,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 删掉最后一个会话时列表就是空的，这是真·清空，显式放行（否则闸门会拒绝写盘，
         // 磁盘上那条已删的会话会在下次启动时被 .bak 恢复回来）。
         saveIndexAsync(debounceMs = 0L, allowEmpty = list.isEmpty())
-        RuntimeHub.scope.launch(Dispatchers.IO) { runCatching { store.deleteMessages(id) } }
+        identityScope.launch(Dispatchers.IO) { runCatching { store.deleteMessages(id) } }
         if (id == _currentId.value) selectNextOrEmpty()
     }
 
@@ -1168,7 +1237,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 列表/角标立刻降下来，不等 2 秒一次的巡检。runFlags 由 runtimes 与 _sessions 重算，
         // 两个来源都已清空，所以这一步的结果就是「没有任何会话在跑」。
         refreshRunFlags()
-        RuntimeHub.scope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             val n = runCatching { store.clearAllLocal() }.getOrDefault(-1)
             AppLog.log("ui", "清空全部对话完成 prefs键=" + prefsCleared + " 文件=" + n)
         }
@@ -1181,7 +1250,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * 失败只在日志里记一行，不弹错——导出是附加功能，坏了不该打扰正常对话。
      */
     fun exportSession(ctx: Context, id: String) {
-        viewModelScope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             try {
                 val meta = _sessions.value.firstOrNull { it.id == id }
                 val title = meta?.title ?: "对话"
@@ -1248,7 +1317,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun bootstrapSessions(profileSessionId: String?) {
         try {
-            store = SessionStore(getApplication<Application>(), prefs.profile)
+            store = SessionStore(getApplication<Application>(), identity, prefs.legacyServer)
             // 启动体检：把本机到底存了哪些会话文件钉进日志。
             AppLog.log("store", "启动体检 profile=" + prefs.profile + " " + store.diagSummary() +
                 " 上次会话=" + (profileSessionId ?: "无"))
@@ -1332,6 +1401,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     // ---------- 连接 ----------
 
     fun onProfileChanged(p: Prefs) {
+        if (detached || p.identity != identity) return
+        if (api != null) return
+
         AppLog.log("ui", "切身份 profile=" + p.profile + " 服务器=" + p.serverUrl)
         // 换身份才作废通知栏暂存回复（F18）；**同身份**（冷启动 / 手动重连）必须保留 ——
         // 原来这里无条件清空，于是「进程被杀 → 通知栏回复 → 重开 App」在恢复落地后又被
@@ -1342,18 +1414,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             p.pendingReplyProfile = ""
         }
         runCatching { Notifier.clearBusinessNotifications(getApplication()) }
-        migrateLegacyHost(p)
+        // Server changes require a fresh identity-bound ViewModel. Never rewrite trust domains here.
         // R20：密钥不再编进包里，改用该身份的登录凭据（"账号:密码"）；未登录则该身份为空。
-        val key = p.credential(p.profile)
+        val key = prefs.credential(identity.profile)
         val prefix = if (p.profile == "default") "" else "/p/friend"
-        api = HermesApi(p.serverUrl, key, prefix)
+        api = HermesApi(identity.server, key, prefix)
         // 网关托管媒体：把带鉴权的取文件函数挂给 Markdown 附件卡片
         val a0 = api
         MediaFetch.handler = { token -> a0?.downloadMedia(token) }
         // 语音重播：点旧消息的播放按钮时按 runId 取长期留档的 mp3
         VoiceReplayPlayer.fetcher = { rid -> a0?.downloadVoice(rid) }
         VoiceReplayPlayer.rate = p.voiceRate
-        viewModelScope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             bootstrapSessions(p.sessionId)
             cleanupShellSessionsOnce()
         }
@@ -1399,7 +1471,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun checkUpdateSilently() {
         val a = api ?: return
-        viewModelScope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             try {
                 val info = a.checkUpdate() ?: return@launch
                 _updateBadge.value = info.versionCode > myVersionCode
@@ -1423,7 +1495,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             if (rt(sid).busy.value) continue
             // 同一会话的探测不许叠（两个前台事件可能并发进来）。
             if (!resumingSids.add(sid)) continue
-            RuntimeHub.scope.launch(Dispatchers.IO) {
+            identityScope.launch(Dispatchers.IO) {
               try {
                 // 开机时网络往往还没就绪，探测失败不能当成「任务已结束」——
                 // 那样会把活跃标记删掉，这条任务就永远回不来了。重试几次，
@@ -1577,7 +1649,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 continue
             }
             AppLog.log("resume", "服务端报告活跃轮次，接管 sid=" + sid.take(8) + " run=" + rid.take(12))
-            RuntimeHub.scope.launch(Dispatchers.IO) {
+            identityScope.launch(Dispatchers.IO) {
                 try {
                     val st = a.probeRun(rid)
                     if (st !is HermesApi.RunStatus.Known || st.status !in RUNNING_STATES) {
@@ -1649,7 +1721,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun onAppForeground() {
         AppLog.log("ui", "回前台")
         // 回前台立刻补一次 CPU%（平时的 8 秒循环可能刚好在后台睡过一轮，别让顶栏空着）。
-        viewModelScope.launch(Dispatchers.IO) { refreshCpuOnce() }
+        identityScope.launch(Dispatchers.IO) { refreshCpuOnce() }
         // 回前台顺手看一眼定时任务收件箱：App 这个通道收不到推送（服务端
         // supports_async_delivery=False），任务产出只能自己来拉。
         refreshInbox()
@@ -1683,7 +1755,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 保证继续挂着的任务不再被系统冻结。
         updateRunService()
         // 顺带刷一次在线状态，别让角标停在离线
-        viewModelScope.launch(Dispatchers.IO) { refreshStatus() }
+        identityScope.launch(Dispatchers.IO) { refreshStatus() }
         // 回前台顺带同步一次服务端标题（节流 30 秒，避免频繁切前后台狂打接口）
         // 同时把服务端的「正在跑」收下来（syncFromServer 内部会 reconcileServerRuns），
         // 这样别的端刚起的轮次也能被接管。
@@ -1746,7 +1818,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
         val reason = "manual"
         _diagNote.value = "上报中…"
-        viewModelScope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             try {
                 val log = AppLog.read(getApplication())
                 val ver = AppLog.env(getApplication())
@@ -1838,7 +1910,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 拉一次服务端能力：是否支持原生图片（决定图片是原生附图还是先转文字）。 */
     fun fetchCapabilities() {
         val a = api ?: return
-        viewModelScope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             try {
                 val caps = a.capabilities()
                 val f = caps.optJSONObject("features")
@@ -1870,10 +1942,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             AppLog.log("sync", "会话在跑，落待同步标记（入口）sid=" + id.take(8))
             return
         }
-        // 挂进程级作用域而不是 viewModelScope：回前台同步与「收尾补拉」都可能在
-        // Activity 已被重建/销毁之后触发，挂 viewModelScope 会随旧实例一起被取消，
+        // 挂进程级作用域而不是 identityScope：回前台同步与「收尾补拉」都可能在
+        // Activity 已被重建/销毁之后触发，挂 identityScope 会随旧实例一起被取消，
         // 表现就是「该同步的时候没同步」。
-        RuntimeHub.scope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             try {
                 fun parseRows(a0: org.json.JSONArray?): MutableList<Msg> {
                     val out = mutableListOf<Msg>()
@@ -1975,7 +2047,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun pingLoop() {
         if (!pingStarted.compareAndSet(false, true)) return
-        viewModelScope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             var fails = 0
             var tick = 0
             // 最近一次探测成功的时刻：用于「30 秒内成功过就仍算在线」的兜底，
@@ -2027,7 +2099,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun startCpuLoop() {
         if (cpuTicker?.isActive == true) return
-        cpuTicker = viewModelScope.launch(Dispatchers.IO) {
+        cpuTicker = identityScope.launch(Dispatchers.IO) {
             while (isActive) {
                 if (AppForeground.isForeground) refreshCpuOnce()
                 delay(CPU_REFRESH_MS)
@@ -2047,7 +2119,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun startStallWatch() {
         if (stallWatch?.isActive == true) return
-        stallWatch = RuntimeHub.scope.launch {
+        stallWatch = identityScope.launch {
             var last = android.os.SystemClock.uptimeMillis()
             var lastLog = 0L
             while (isActive) {
@@ -2104,11 +2176,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * 同一条只弹一次（按 id 记着）。失败只记错误文案，不打扰。
      */
     fun refreshInbox(notifyNew: Boolean = true) {
-        // 必须显式切 IO：RuntimeHub.scope 是 Dispatchers.Main.immediate，而 a.inbox()
+        // 必须显式切 IO：identityScope 是 Dispatchers.Main.immediate，而 a.inbox()
         // 是阻塞式 HTTP。挂在主线程上会抛 NetworkOnMainThreadException（在建立连接那一
         // 刻就抛，请求根本没发出去——服务端访问日志里一条都不会有），界面显示
         // 「收件箱获取失败」。而且该异常的 message 是 null，不带上异常类名就只剩一个「?」。
-        RuntimeHub.scope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             try {
                 val a = api ?: return@launch
                 val resp = a.inbox(limit = 50)
@@ -2170,7 +2242,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 标记已读：ids 为空表示整箱已读。标记完本地状态与未读数一起更新。 */
     fun ackInbox(ids: List<String> = emptyList(), all: Boolean = false) {
         // 同上：a.ackInbox() 也是阻塞 HTTP，不能在主线程上跑。
-        RuntimeHub.scope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             try {
                 val a = api ?: return@launch
                 a.ackInbox(ids, all)
@@ -2189,7 +2261,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 删除收件箱条目：ids 非空按 id 删；all=true 整箱清空。删完本地列表与未读数即时更新。 */
     fun deleteInbox(ids: List<String> = emptyList(), all: Boolean = false) {
-        RuntimeHub.scope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             try {
                 val a = api ?: return@launch
                 val resp = a.deleteInbox(ids, all)
@@ -2233,7 +2305,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 已知定时任务的中文名；不认识的返回空串，界面回落显示原始名。 */
     fun refreshJobs(includeDisabled: Boolean = _jobsIncludeDisabled.value) {
         _jobsIncludeDisabled.value = includeDisabled
-        viewModelScope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             try {
                 val out = fetchJobs(includeDisabled) ?: return@launch
                 _jobs.value = out
@@ -2297,7 +2369,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun jobAction(jobId: String, action: String, jobLabel: String = "") {
         if (jobId.isEmpty()) return
         val who = jobLabel.ifEmpty { jobId }
-        viewModelScope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             val a = api ?: return@launch
             AppLog.log("job", "操作 " + action + " id=" + jobId.take(12) + " 名=" + who)
             try {
@@ -2398,7 +2470,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      */
 
     fun refreshStatus() {
-        viewModelScope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             try {
                 val h = api?.sysinfo() ?: return@launch
                 _statusHero.value = buildHero(h)
@@ -2436,7 +2508,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshStats(days: Int = _statsDays.value) {
         _statsDays.value = days
         _statsLoading.value = true
-        viewModelScope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             try {
                 val raw = api?.stats(days) ?: return@launch
                 _stats.value = buildStats(raw)
@@ -2660,7 +2732,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
         // 插话结果要可见：200 才算送进本轮；409/其它说明本轮已收尾、这句没赶上。
         // 原来 runCatching 把返回整个吞了，用户看不到任何反应，才觉得「插不进去」。
-        viewModelScope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             val ok = a.steer(rid, t)
             AppLog.log("steer", "插话 run=" + rid.take(12) + " 结果=" + (if (ok) "送达" else "未送达") + " len=" + t.length)
             withContext(Dispatchers.Main) {
@@ -2769,7 +2841,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (i < 0) return
         val rc = list[i].receipt ?: return
         _receiptMenu.value = 0L
-        viewModelScope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             // 「没查到」和「查询失败」必须分开（F21）：网络断了、或历史接口出错时，
             // 旧代码把异常吞成空列表，于是直接宣告「服务端记录里没有这条消息」——
             // 那是把「不知道」说成了「确定没有」，会诱导用户重发一条其实已送达的话。
@@ -2902,7 +2974,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 把选中的图片拷进 App 沙盒，加入待发列表。 */
     fun addImage(ctx: Context, uri: Uri) {
         val app = getApplication<Application>()
-        viewModelScope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             try {
                 val (name, size) = queryNameSize(app, uri)
                 if (size > 20L * 1024 * 1024) {
@@ -2949,7 +3021,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 把任意文件拷进 App 沙盒，加入待发列表（非图片走文件卡片展示）。 */
     fun addFile(ctx: Context, uri: Uri) {
         val app = getApplication<Application>()
-        viewModelScope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             try {
                 val (name, size) = queryNameSize(app, uri)
                 if (size > 50L * 1024 * 1024) {
@@ -3037,7 +3109,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
         val ids = mutableListOf<String>()
         var uploadsDone = reuseArtifacts.isNotEmpty()
-        r.sendJob = viewModelScope.launch(Dispatchers.IO) {
+        r.sendJob = identityScope.launch(Dispatchers.IO) {
             try {
                 // 起流前先对号：用户已点停止、或又发了新的一轮，本轮直接作废（不发、不写状态）。
                 if (!ownsTurn(gen, r.sendGen, r.finished, r.stopRequested)) return@launch
@@ -3072,6 +3144,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 _imageNote.value = ""
                 val run = a.startRun(text, sid, emptyList(), idemKey, inlineFiles)
                 val myRun = run.optString("run_id", run.optString("id", ""))
+                if (detached) {
+                    // The POST may complete after leaving this identity. Keep recovery, never stop it.
+                    if (myRun.isNotEmpty()) prefs.putActiveRun(sid, myRun)
+                    return@launch
+                }
                 AppLog.log("send", "已建 run=" + myRun.take(12) + " 重放=" + run.optBoolean("replayed", false) + " 内联附件=" + inlineFiles.size)
                 // 归属校验必须在写任何共享状态之前：startRun 是同步 HTTP、取消协程拦不住它，
                 // 请求已经发出去、服务端这条 run 可能已建好。但这期间用户可能点过停止、或已经
@@ -3201,7 +3278,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 提示里的「可重试」才真的能重试（原来先置已选、再发，失败后界面已无入口）。
         if (!receiptInFlight.add(msgId)) return
         r.retryNote.value = "正在送达回执…"
-        viewModelScope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             val code = a.respondClarify(rid, card.clarifyId, choice)
             withContext(Dispatchers.Main) {
                 receiptInFlight.remove(msgId)
@@ -3293,7 +3370,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (rid.isEmpty()) return
         val msgId = r.messages.value.lastOrNull { it.approval?.requestId == requestId }?.id ?: return
         AppLog.log("approval", "自动批准 sid=" + r.id.take(8) + " id=" + requestId.take(12))
-        viewModelScope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             val code = a.respondApproval(rid, requestId, "once")
             if (code in 200..299) return@launch
             withContext(Dispatchers.Main) {
@@ -3436,7 +3513,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun flashNote(r: SessionRuntime, text: String, ms: Long = 4000L) {
         r.retryNote.value = text
         val sid = r.id
-        viewModelScope.launch(Dispatchers.Main) {
+        identityScope.launch(Dispatchers.Main) {
             delay(ms)
             val cur = runtimes[sid] ?: return@launch
             if (cur.retryNote.value == text) cur.retryNote.value = ""
@@ -3496,7 +3573,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (card.resolved.isNotEmpty()) return
         if (!receiptInFlight.add(msgId)) return
         r.retryNote.value = "正在送达回执…"
-        viewModelScope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             val code = a.respondApproval(rid, card.requestId, "once", resolveAll = true)
             withContext(Dispatchers.Main) {
                 receiptInFlight.remove(msgId)
@@ -3538,7 +3615,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 同 respondClarify：发成功才标「已选择」，失败保持可点，让提示里的重试有入口。
         if (!receiptInFlight.add(msgId)) return
         r.retryNote.value = "正在送达回执…"
-        viewModelScope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             val code = a.respondApproval(rid, card.requestId, choice)
             withContext(Dispatchers.Main) {
                 receiptInFlight.remove(msgId)
@@ -3705,10 +3782,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (sid.isEmpty()) return
         val r = rt(sid)
         if (r.subSweep?.isActive == true) return
-        // 必须显式切到 IO：RuntimeHub.scope 是 Dispatchers.Main.immediate，
+        // 必须显式切到 IO：identityScope 是 Dispatchers.Main.immediate，
         // 而 sessionDetail() 是阻塞式 HTTP。挂主线程的话，打开有子任务的会话时
         // 第一次拉进度就把 UI 卡住（这正是「有子任务的会话打开卡顿」的根因）。
-        r.subSweep = RuntimeHub.scope.launch(Dispatchers.IO) {
+        r.subSweep = identityScope.launch(Dispatchers.IO) {
             val a = api ?: return@launch
             val deadline = System.currentTimeMillis() + 6 * 60 * 60 * 1000L
             while (isActive && System.currentTimeMillis() < deadline) {
@@ -3779,7 +3856,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (sid.isEmpty() || key.isEmpty()) return
         val a = api ?: return
         AppLog.log("stop", "停止子任务 sid=" + sid.take(8) + " key=" + key)
-        RuntimeHub.scope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             val resp = runCatching { a.stopSubagent(key) }.getOrNull()
             val found = resp?.optBoolean("found", false) ?: false
             rt(sid).retryNote.value =
@@ -3795,7 +3872,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         )
         subDetailJob?.cancel()
         // 同上：面板的 3 秒刷新也是阻塞 HTTP，不能在主线程上跑。
-        subDetailJob = RuntimeHub.scope.launch(Dispatchers.IO) {
+        subDetailJob = identityScope.launch(Dispatchers.IO) {
             val a = api ?: return@launch
             val deadline = System.currentTimeMillis() + 6 * 60 * 60 * 1000L
             while (isActive && System.currentTimeMillis() < deadline) {
@@ -3833,7 +3910,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 否则 IO 线程（maybeContinue 退避链）与 OkHttp 回调线程会并发改它，
         // 这是历史上「重复播报 / 进度错乱」的共同根因。非主线程调用一律投回主线程。
         if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
-            RuntimeHub.scope.launch { streamRun(a, sid) }
+            identityScope.launch { streamRun(a, sid) }
             return
         }
         val r = rt(sid)
@@ -3851,11 +3928,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         AppLog.log("stream", "起流 run=" + rid.take(12) + " lastSeq=" + r.lastSeq + " 第" + r.autoContinue + "次续接 gen=" + gen + "（本轮事件计数清零）")
         // 每轮流一个攒帧器：碎字按帧放送。重起流时丢弃上一轮的残余。
         r.coalescer?.discard()
-        r.coalescer = StreamDeltaCoalescer(RuntimeHub.scope, onFlush = { s -> appendDelta(r, s) })
+        r.coalescer = StreamDeltaCoalescer(identityScope, onFlush = { s -> appendDelta(r, s) })
         r.call = a.streamEvents(
             runId = rid,
             lastSeq = r.lastSeq,
-            onEvent = { ev -> RuntimeHub.scope.launch {
+            onEvent = { ev -> identityScope.launch {
                 if (!r.acceptsStreamCallback(gen, sendGen)) return@launch   // 已被新流取代，作废
                 if (ev.id != null) r.lastSeq = ev.id
                 r.lastEventAt = System.currentTimeMillis()
@@ -3877,7 +3954,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     "replay.truncated" -> {
                         appendDelta(r, TRUNCATED_NOTICE)
                         val s = sid
-                        viewModelScope.launch(Dispatchers.IO) {
+                        identityScope.launch(Dispatchers.IO) {
                             delay(600)
                             if (s == _currentId.value) refreshFromServer()
                         }
@@ -3984,14 +4061,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
             } },
-            onClosed = { RuntimeHub.scope.launch {
+            onClosed = { identityScope.launch {
                 if (!r.acceptsStreamCallback(gen, sendGen)) return@launch   // 已被新流取代，作废
                 r.coalescer?.flushNow()
                 AppLog.log("stream", "流关闭 run=" + rid.take(12) + " busy=" + r.busy.value + " finished=" + r.finished + " lastSeq=" + r.lastSeq +
                     " 本轮共收事件=" + r.evCount + " 其中工具=" + r.toolCount)
                 if (r.busy.value && !r.finished) maybeContinue(sid)
             } },
-            onError = { e -> RuntimeHub.scope.launch {
+            onError = { e -> identityScope.launch {
                 if (!r.acceptsStreamCallback(gen, sendGen)) return@launch   // 已被新流取代，作废
                 AppLog.err("stream", "流出错 run=" + rid.take(12) + " busy=" + r.busy.value + " finished=" + r.finished +
                     " 本轮共收事件=" + r.evCount + " 其中工具=" + r.toolCount, e)
@@ -4016,7 +4093,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             } },
             // 心跳等任何一行都刷新活跃时间：长工具执行期间只有心跳、没有真实事件，
             // 不刷就会让「回到前台」的 25 秒看门狗把健康流误判成假死（用户报的「一直在重连」）。
-            onActivity = { RuntimeHub.scope.launch { if (r.acceptsStreamCallback(gen, sendGen)) r.lastEventAt = System.currentTimeMillis() } }
+            onActivity = { identityScope.launch { if (r.acceptsStreamCallback(gen, sendGen)) r.lastEventAt = System.currentTimeMillis() } }
         )
     }
 
@@ -4055,7 +4132,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // A 探测回来的 Known("completed")/Missing 会按当前会话收尾，把 B 的 busy、
         // runId 与 active 全清掉（探针实测 busy=false、runId=run-B、active={}、drains=2）。
         val gen = r.sendGen
-        RuntimeHub.scope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             delay(waitMs)
             // 退出前必须留一行：这条退避链可能已被别的路径（切回前台的体检、
             // 翻历史取回、手动停止）抢先收尾。静默 return 会让日志里只剩
@@ -4193,7 +4270,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 " · 服务端最后事件=" + (if (age < 0) "未知" else (age / 1000L).toString() + "秒前") + " run=" + rid.take(12))
         }
 
-        r.recoveryJob = RuntimeHub.scope.launch(Dispatchers.IO) {
+        r.recoveryJob = identityScope.launch(Dispatchers.IO) {
             var elapsed = 0L
             var misses = 0
             var firstProbe = true
@@ -4311,7 +4388,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         r.retryNote.value = ReconnectPolicy.noteReconnecting("，正在从服务端取回结果…")
-        r.recoveryJob = RuntimeHub.scope.launch(Dispatchers.IO) {
+        r.recoveryJob = identityScope.launch(Dispatchers.IO) {
             var delayMs = 5_000L
             var elapsed = 0L
             var lastSig: String? = null
@@ -4380,7 +4457,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         //（用户报「偶尔任务完成后不出现这些信息」）。补一次 run 状态查询把 usage 与 runId
         // 挂上；纯尽力而为，取不到就算了（不影响已取回的正文）。
         if (rid.isEmpty()) return
-        RuntimeHub.scope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             val a = api ?: return@launch
             try {
                 val st = a.probeRun(rid)
@@ -4438,7 +4515,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.invalidateTurnForStop()
         r.recoveryJob?.cancel()
         r.coalescer?.discard()
-        if (a != null && rid.isNotEmpty()) viewModelScope.launch(Dispatchers.IO) {
+        if (a != null && rid.isNotEmpty()) identityScope.launch(Dispatchers.IO) {
             // 停止请求本身也可能没送达（网络问题/服务端报错）。旧代码吞掉异常、界面照样
             // 显示「已请求停止」，用户以为停了其实还在跑。这里如实回一句（F21）。
             val sent = a.stopRun(rid)
@@ -4635,7 +4712,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun startRunFlagsTicker() {
         if (runFlagsTicker?.isActive == true) return
-        runFlagsTicker = RuntimeHub.scope.launch {
+        runFlagsTicker = identityScope.launch {
             var tick = 0
             while (isActive) {
                 refreshRunFlags()
@@ -4867,7 +4944,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val a = api ?: return
         _updateNote.value = "检查中…"
         _pendingUpdate.value = null
-        viewModelScope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             try {
                 val info = a.checkUpdate()
                 if (info == null) {
@@ -4900,9 +4977,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         _updateNote.value = "下载中…"
         _downloadPct.value = 0
         _downloadText.value = "0%"
-        viewModelScope.launch(Dispatchers.IO) {
+        identityScope.launch(Dispatchers.IO) {
             try {
-                val f = a.downloadApk(info.url, ctx, info.versionName, info.md5) { done, total ->
+                val f = a.downloadApk(info, ctx) { done, total ->
                     if (total > 0) {
                         val pct = ((done * 100) / total).toInt().coerceIn(0, 100)
                         _downloadPct.value = pct
@@ -4933,10 +5010,43 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * ViewModel 销毁：取消挂在进程级 scope 上的轮询 ticker。
      *
-     * 原来没有 onCleared，每次 Activity 重建都会在 RuntimeHub.scope 上新起一条永不取消的
+     * 原来没有 onCleared，每次 Activity 重建都会在 identityScope 上新起一条永不取消的
      * ticker（字段在新实例里是 null，幂等守卫拦不住），越积越多。这里显式收掉。
      */
+    /** Retire only local observers; server runs and paused queues remain recoverable. */
+    fun detachIdentity() {
+        if (detached) return
+        detached = true
+        identityJob.cancel()
+        VoicePlayer.stop()
+        VoiceReplayPlayer.stop()
+        StreamVoicePlayer.stop()
+        MediaFetch.handler = null
+        VoiceReplayPlayer.fetcher = null
+        for (r in runtimes.values) {
+            r.coalescer?.flushNow()
+            r.streamGen++
+            r.call?.cancel()
+            r.call = null
+            r.saveJob?.cancel()
+            r.recoveryJob?.cancel()
+            r.subSweep?.cancel()
+            if (!r.dead && r.loaded) {
+                store.saveMessages(r.id, r.messages.value)
+                store.saveQueue(r.id, r.queue.toList(), r.queuePaused.value)
+                if (r.runId.isNotEmpty()) {
+                    prefs.putActiveRun(r.id, r.runId)
+                    prefs.putLastSeq(r.id, r.lastSeq)
+                }
+            }
+        }
+        if (indexReady) store.saveIndex(_sessions.value)
+        runtimes.clear()
+        runCatching { Notifier.clearBusinessNotifications(getApplication()) }
+    }
+
     override fun onCleared() {
+        detachIdentity()
         runFlagsTicker?.cancel()
         runFlagsTicker = null
         cpuTicker?.cancel()

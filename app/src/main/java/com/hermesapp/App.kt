@@ -374,16 +374,20 @@ fun HermesApp(vm: ChatViewModel, prefs: Prefs) {
             Surface(color = c.bg, modifier = Modifier.fillMaxSize()) {
                 when {
                     !loggedIn -> LoginScreen(prefs) {
-                        loggedIn = true
-                        AppLog.log("ui", "登录完成 profile=" + prefs.profile)
-                        vm.onProfileChanged(prefs)
+                        vm.detachIdentity()
+                        (ctx as? ComponentActivity)?.let { it.viewModelStore.clear(); it.recreate() }
                     }
                     else -> MainScaffold(
                         vm = vm,
                         prefs = prefs,
                         mode = mode,
                         onMode = { mode = it; prefs.themeMode = it },
-                        onLogout = { loggedIn = false },
+                        onLogout = {
+                            vm.detachIdentity()
+                            prefs.loggedIn = false
+                            loggedIn = false
+                            (ctx as? ComponentActivity)?.let { it.viewModelStore.clear(); it.recreate() }
+                        },
                     )
                 }
             }
@@ -393,6 +397,7 @@ fun HermesApp(vm: ChatViewModel, prefs: Prefs) {
 
 @Composable
 fun LoginScreen(prefs: Prefs, onDone: () -> Unit) {
+    val ctx = LocalContext.current
     val c = LocalAppColors.current
     var url by remember { mutableStateOf(prefs.serverUrl) }
     var acct by remember { mutableStateOf("") }
@@ -402,9 +407,9 @@ fun LoginScreen(prefs: Prefs, onDone: () -> Unit) {
     val scope = rememberCoroutineScope()
     // 已登录过的账号（凭据存在手机本地）：直接按**账号名**列出，点一下进入。
     // 不写「本人/朋友」——身份由账号本身决定（ghzy=本人、jiacvn=朋友），界面只认账号。
-    val saved = remember {
+    val saved = remember(url) {
         listOf("default", "friend").mapNotNull { p ->
-            val cred = prefs.credential(p)
+            val cred = if (runCatching { canonicalServer(url) == canonicalServer(prefs.serverUrl) }.getOrDefault(false)) prefs.credential(p) else ""
             if (cred.isEmpty()) null else p to cred.substringBefore(':')
         }
     }
@@ -419,6 +424,21 @@ fun LoginScreen(prefs: Prefs, onDone: () -> Unit) {
         Text(
             if (saved.isEmpty()) "首次使用请填写服务器地址" else "用账号密码登录",
             color = c.dim, fontSize = T.body
+        )
+        var confirmForget by remember { mutableStateOf(false) }
+        if (saved.isNotEmpty()) TextButton(onClick = { confirmForget = true }) {
+            Text("退出并移除本服务器保存的凭据", color = c.bad)
+        }
+        if (confirmForget) AlertDialog(
+            onDismissRequest = { confirmForget = false },
+            title = { Text("移除保存的登录凭据？") },
+            text = { Text("下次登录需重新输入账号密码。本地对话保留，服务端任务不会停止。") },
+            confirmButton = { TextButton(onClick = {
+                prefs.clearCredentials()
+                confirmForget = false
+                (ctx as? ComponentActivity)?.let { it.viewModelStore.clear(); it.recreate() }
+            }) { Text("移除凭据") } },
+            dismissButton = { TextButton(onClick = { confirmForget = false }) { Text("取消") } },
         )
         // 已登录过的账号：直接按账号名一键进入，不用重新输（切换身份也走这里）
         if (saved.isNotEmpty()) {
@@ -732,6 +752,11 @@ fun DrawerPanel(
     var sortMode by remember { mutableStateOf(false) }
     // 「清空全部对话」的二次确认开关：删除不可恢复，点入口只开弹窗，真删在弹窗里确认。
     var clearAllConfirm by remember { mutableStateOf(false) }
+    val historyRestore by vm.historyRestore.collectAsStateWithLifecycle()
+    if (historyRestore.visible) {
+        HistoryRestoreDialog(historyRestore, vm::dismissHistoryRestore,
+            vm::openHistoryRestore, vm::restoreSelectedHistory)
+    }
 
     ModalDrawerSheet(
         drawerContainerColor = c.panel,
@@ -824,6 +849,10 @@ fun DrawerPanel(
                         )
                     }
                 }
+            }
+
+            TextButton(onClick = vm::openHistoryRestore, modifier = Modifier.fillMaxWidth()) {
+                Text("从服务器选择恢复…", color = c.accent, fontSize = T.sub)
             }
 
             // 清空全部对话的二次确认。文案把「清掉什么、什么不动、在跑的任务怎么办」讲全，
