@@ -28,16 +28,21 @@ internal fun quoteSnippet(m: Msg): String {
     return who + "：" + body
 }
 /**
- * 一行过程轨迹（「· ✓ 中文工具名 1.2s」+ 参数预览）。
+ * 一行过程轨迹（「· ✓ 中文工具名 1.2s」+ 具体做了什么）。
  *
  * 工具名走 [toolNameZh] 中文化；耗时由调用方算好传进来（[durationSec]）：
  * 服务端 canonical turn 那条链路的 `tool.completed` 不带 `duration`，一律传 0 会让
  * 过程行全是「0.0s」，所以缺值时传 -1（不显示耗时），别回落成 0。
+ *
+ * 明细行（第二行）优先用 [previewOverride]——那是 `tool.started` 里服务端给的**入参预览**
+ * （terminal 就是命令本身）。`tool.completed` 的 `preview` 在 canonical turn 链路上是空的
+ * （`_tool_complete` 没把 result 传进去），所以只写「执行命令 2.3s」会让人看不出干了什么。
  */
 internal fun toolLine(
     ev: com.hermesapp.net.SseEvent,
     failed: Boolean,
     durationSec: Double = -1.0,
+    previewOverride: String = "",
 ): String {
     val name = ev.data.optString("tool", "")
     if (name.isEmpty() || name.startsWith("_")) return ""
@@ -45,9 +50,13 @@ internal fun toolLine(
     sb.append(if (failed) "✗ " else "✓ ").append(toolNameZh(name))
     val durTxt = fmtToolDuration(durationSec)
     if (durTxt.isNotEmpty()) sb.append("  ").append(durTxt)
-    val pv = ev.data.optString("preview", "").replace(Regex("\\s+"), " ").trim()
+    val raw = previewOverride.trim().ifEmpty { ev.data.optString("preview", "") }
+    val pv = raw.replace(Regex("\\s+"), " ").trim()
     if (pv.isNotEmpty()) {
-        sb.append("\n   ").append(if (pv.length > 120) pv.take(120) + "…" else pv)
+        // 命令类加个 $ 提示符，一眼看出这是「执行的命令」而不是结果摘要。
+        val prefix = if (name == "terminal") "$ " else ""
+        val body = prefix + pv
+        sb.append("\n   ").append(if (body.length > 140) body.take(140) + "…" else body)
     }
     sb.append("\n")
     return sb.toString()

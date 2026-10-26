@@ -79,6 +79,30 @@ class ToolNamesTest {
     }
 
     @Test
+    fun tool_line_shows_the_command_from_started_preview() {
+        // 只写「执行命令 2.3s」太笼统：明细行要用 started 事件的入参预览（= 命令本身）
+        val line = toolLine(ev("terminal"), failed = false, durationSec = 2.3, previewOverride = "python3 sync.py --dry-run")
+        assertTrue(line.contains("执行命令"))
+        assertTrue(line.contains("2.3s"))
+        assertTrue(line.contains("$ python3 sync.py --dry-run"))
+    }
+
+    @Test
+    fun tool_line_falls_back_to_event_preview() {
+        val line = toolLine(ev("read_file", preview = "/root/a.kt"), failed = false, durationSec = 0.2)
+        assertTrue(line.contains("/root/a.kt"))
+    }
+
+    @Test
+    fun tool_line_truncates_long_command_but_keeps_it_recognisable() {
+        val cmd = "bash -lc " + "x".repeat(400)
+        val line = toolLine(ev("terminal"), failed = false, durationSec = 1.0, previewOverride = cmd)
+        val detail = line.lines().first { it.trim().startsWith("$") }
+        assertTrue(detail.trim().endsWith("…"))
+        assertTrue(detail.trim().length <= 150)
+    }
+
+    @Test
     fun step_count_counts_steps_not_lines() {
         // 用户实测：5 个操作显示「10 步」——每步至少两行（标题 + 参数预览），
         // 旧实现数换行就是两倍。
