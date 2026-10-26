@@ -1356,7 +1356,11 @@ fun Bubble(
                 // 流式模式下正文里没有附件，按钮改看消息的 runId（服务端长期留档）。
                 val voiceTarget = remember(m.text) { VoicePlayer.audioTarget(m.text) }
                 val replayRunId = m.runId
-                if (rc != null || m.ts > 0 || voiceTarget.isNotEmpty() || replayRunId.isNotEmpty() || m.steer) {
+                // 「过程」展开时这一行必须存在（收在底部的「收起过程」要挂在这里），
+                // 否则服务端来源、没时间戳的老消息展开后就只能滚回顶部收起。
+                if (rc != null || m.ts > 0 || voiceTarget.isNotEmpty() || replayRunId.isNotEmpty() || m.steer ||
+                    (traceOpen && m.trace.isNotEmpty())
+                ) {
                     Spacer(Modifier.height(4.dp))
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -1397,6 +1401,24 @@ fun Bubble(
                         } else if (voiceTarget.isNotEmpty()) {
                             Spacer(Modifier.width(6.dp))
                             VoiceMiniButton(voiceTarget)
+                        }
+                        // 过程展开后，把「收起」放在最底下这行（时间行）里：
+                        // 长过程翻到底时不用再滚回气泡上方找那个「▾ 过程」。
+                        // 用描边小按钮（用户定版：不用实色大块），一眼看出可点。
+                        if (traceOpen && m.trace.isNotEmpty()) {
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                "收起过程",
+                                color = c.accent, fontSize = T.micro,
+                                modifier = Modifier
+                                    .border(
+                                        BorderStroke(1.dp, c.accent.copy(alpha = 0.45f)),
+                                        RoundedCornerShape(Rad.pill),
+                                    )
+                                    .clip(RoundedCornerShape(Rad.pill))
+                                    .clickable { traceOpen = false }
+                                    .padding(horizontal = 8.dp, vertical = 2.dp),
+                            )
                         }
                         if (rc != null) {
                             val tip = when (rc.status) {
