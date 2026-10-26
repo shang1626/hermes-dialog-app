@@ -77,4 +77,27 @@ class ToolNamesTest {
         assertTrue(line.contains("<0.1s"))
         assertTrue(line.contains("/root/a.kt"))
     }
+
+    @Test
+    fun step_count_counts_steps_not_lines() {
+        // 用户实测：5 个操作显示「10 步」——每步至少两行（标题 + 参数预览），
+        // 旧实现数换行就是两倍。
+        val trace = "\n· ✓ 看技能  <0.1s\n\n· ✓ 执行命令  3.6s\n   ls -la\n" +
+            "\n· ✓ 执行命令  0.20s\n   git status\n\n· ✓ 看图片  11s\n   /root/a.png\n" +
+            "\n· ✓ 改技能  <0.1s\n"
+        assertEquals(5, traceStepCount(trace))
+    }
+
+    @Test
+    fun step_count_ignores_server_status_lines() {
+        val trace = "\n· 服务端：上游等待 3s\n\n· ✓ 执行命令  1.0s\n"
+        assertEquals(1, traceStepCount(trace))
+    }
+
+    @Test
+    fun step_count_falls_back_to_content_lines() {
+        // 老数据/别的来源没有步骤标记：按非空行算，不能显示 0 步
+        assertEquals(2, traceStepCount("旧格式行一\n旧格式行二\n"))
+        assertEquals(0, traceStepCount(""))
+    }
 }

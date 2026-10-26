@@ -61,6 +61,26 @@ internal fun toolNameZh(name: String): String {
 }
 
 /**
+ * 过程轨迹里「真正的步数」——按行首的步骤标记数（`· ✓ 工具` / `· ✗ 工具`）。
+ *
+ * 不能用 `trace.count { it == '\n' }` 数换行：每一步至少占两行（标题行 + 可能的
+ * 参数预览行），换行数会把步数放大约 2 倍（用户实测 5 个操作显示「10 步」）。
+ * `· 服务端：…` 是状态提示行，不是一次工具调用，不计入步数。
+ * 找不到任何步骤标记时（老数据/别的来源）退化成「非空行数」，别显示 0 步。
+ */
+internal fun traceStepCount(trace: String): Int {
+    if (trace.isBlank()) return 0
+    var steps = 0
+    var other = 0
+    for (raw in trace.split('\n')) {
+        val line = raw.trim()
+        if (line.isEmpty()) continue
+        if (line.startsWith("· ✓") || line.startsWith("· ✗")) steps++ else other++
+    }
+    return if (steps > 0) steps else other
+}
+
+/**
  * 过程行耗时格式化。
  *
  * - `sec < 0`（服务端没给、本地也没计到）→ 空串，**绝不显示 0.0s**；

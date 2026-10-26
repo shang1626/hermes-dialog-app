@@ -1296,7 +1296,7 @@ fun Bubble(
                 if (m.trace.isNotEmpty()) {
                     Spacer(Modifier.height(G.x2))
                     Text(
-                        if (traceOpen) "▾ 过程" else "▸ 过程（" + m.trace.count { it == '\n' } + " 步）",
+                        if (traceOpen) "▾ 过程" else "▸ 过程（" + traceStepCount(m.trace) + " 步）",
                         color = c.dim, fontSize = T.cap,
                         modifier = Modifier.clickable { traceOpen = !traceOpen }
                     )
