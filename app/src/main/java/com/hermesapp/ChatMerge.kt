@@ -27,13 +27,24 @@ internal fun quoteSnippet(m: Msg): String {
     val body = if (one.isEmpty()) "[图片或附件]" else if (one.length > 80) one.take(80) + "…" else one
     return who + "：" + body
 }
-internal fun toolLine(ev: com.hermesapp.net.SseEvent, failed: Boolean): String {
+/**
+ * 一行过程轨迹（「· ✓ 中文工具名 1.2s」+ 参数预览）。
+ *
+ * 工具名走 [toolNameZh] 中文化；耗时由调用方算好传进来（[durationSec]）：
+ * 服务端 canonical turn 那条链路的 `tool.completed` 不带 `duration`，一律传 0 会让
+ * 过程行全是「0.0s」，所以缺值时传 -1（不显示耗时），别回落成 0。
+ */
+internal fun toolLine(
+    ev: com.hermesapp.net.SseEvent,
+    failed: Boolean,
+    durationSec: Double = -1.0,
+): String {
     val name = ev.data.optString("tool", "")
     if (name.isEmpty() || name.startsWith("_")) return ""
     val sb = StringBuilder("\n· ")
-    sb.append(if (failed) "✗ " else "✓ ").append(name)
-    val dur = ev.data.optDouble("duration", -1.0)
-    if (dur >= 0) sb.append("  ").append(String.format("%.1f", dur)).append("s")
+    sb.append(if (failed) "✗ " else "✓ ").append(toolNameZh(name))
+    val durTxt = fmtToolDuration(durationSec)
+    if (durTxt.isNotEmpty()) sb.append("  ").append(durTxt)
     val pv = ev.data.optString("preview", "").replace(Regex("\\s+"), " ").trim()
     if (pv.isNotEmpty()) {
         sb.append("\n   ").append(if (pv.length > 120) pv.take(120) + "…" else pv)

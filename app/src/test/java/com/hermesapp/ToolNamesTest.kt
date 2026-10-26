@@ -1,0 +1,80 @@
+package com.hermesapp
+
+import com.hermesapp.net.SseEvent
+import org.json.JSONObject
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * 过程轨迹显示层的两条用户定版要求：
+ * ① 工具名要中文（不铺内部标识符给用户）；
+ * ② 耗时不能一律 0.0s（服务端 canonical turn 链路不给 duration）。
+ */
+class ToolNamesTest {
+
+    @Test
+    fun known_tools_are_chinese() {
+        assertEquals("执行命令", toolNameZh("terminal"))
+        assertEquals("改代码", toolNameZh("patch"))
+        assertEquals("读文件", toolNameZh("read_file"))
+        assertEquals("查记忆", toolNameZh("hindsight_recall"))
+    }
+
+    @Test
+    fun unknown_tool_keeps_original_name() {
+        // 插件/自定义工具随时新增：不能空、不能崩、也不能瞎编
+        assertEquals("my_custom_tool", toolNameZh("my_custom_tool"))
+        assertEquals("", toolNameZh(""))
+    }
+
+    @Test
+    fun mcp_tool_shows_last_segment() {
+        val zh = toolNameZh("mcp__codebase_memory__search_code")
+        assertTrue(zh.startsWith("外部·"))
+        assertTrue(zh.contains("search_code"))
+    }
+
+    @Test
+    fun duration_format_never_shows_zero() {
+        assertEquals("", fmtToolDuration(-1.0))
+        assertEquals("<0.1s", fmtToolDuration(0.0))
+        assertEquals("<0.1s", fmtToolDuration(0.049))
+        assertEquals("0.35s", fmtToolDuration(0.35))
+        assertEquals("1.2s", fmtToolDuration(1.23))
+        assertEquals("65s", fmtToolDuration(65.3))
+    }
+
+    private fun ev(tool: String, duration: Double? = null, preview: String = ""): SseEvent {
+        val o = JSONObject()
+        o.put("tool", tool)
+        if (duration != null) o.put("duration", duration)
+        if (preview.isNotEmpty()) o.put("preview", preview)
+        return SseEvent(1, "tool.completed", o)
+    }
+
+    @Test
+    fun tool_line_uses_chinese_name_and_computed_duration() {
+        val line = toolLine(ev("terminal"), failed = false, durationSec = 1.4)
+        assertTrue(line.contains("执行命令"))
+        assertTrue(line.contains("1.4s"))
+        assertFalse(line.contains("terminal"))
+    }
+
+    @Test
+    fun tool_line_omits_duration_when_unknown() {
+        // 服务端 duration=0 且本地没记到开始时刻：不显示耗时，绝不写 0.0s
+        val line = toolLine(ev("patch", duration = 0.0), failed = false, durationSec = -1.0)
+        assertTrue(line.contains("改代码"))
+        assertFalse(line.contains("0.0s"))
+    }
+
+    @Test
+    fun tool_line_marks_failure_and_keeps_preview() {
+        val line = toolLine(ev("read_file", preview = "/root/a.kt"), failed = true, durationSec = 0.02)
+        assertTrue(line.contains("✗"))
+        assertTrue(line.contains("<0.1s"))
+        assertTrue(line.contains("/root/a.kt"))
+    }
+}

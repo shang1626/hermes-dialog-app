@@ -374,6 +374,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val _diagNote = MutableStateFlow("")
     val diagNote = _diagNote.asStateFlow()
 
+    /**
+     * 工具调用的开始时刻（key = 会话 id + "|" + tool_call_id）。
+     *
+     * 服务端 `/v1/runs` 走的是 canonical turn 那条链路（`observe_api_turn` 的
+     * `_tool_complete`），它给 `tool.completed` **不带 `duration`**——只有
+     * `_make_run_event_callback` 那条链才带。于是过程行一律显示 0.0s。
+     * 这里按 started→completed 的墙钟差补算；流重放时 started 可能没收到，
+     * 那时宁可不显示耗时，也不写 0.0s。
+     */
+    private val toolStartedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
     // ---------- 会话内搜索（只搜当前会话的本地消息） ----------
 
     /** 搜索栏是否展开。 */
@@ -3983,17 +3994,26 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             }
                         }
                     }
-                    "tool.started" -> {}
+                    "tool.started" -> {
+                        // 记下开始时刻：服务端 canonical turn 链路的 tool.completed 不带
+                        // duration（_make_run_event_callback 那条才带），过程行会全是 0.0s。
+                        // 客户端按 started→completed 的墙钟差补算，比显示 0.0s 诚实。
+                        val cid = ev.data.optString("tool_call_id", "")
+                        if (cid.isNotEmpty()) {
+                            if (toolStartedAt.size > 400) toolStartedAt.clear()
+                            toolStartedAt[sid + "|" + cid] = System.currentTimeMillis()
+                        }
+                    }
                     "tool.completed" -> {
                         r.coalescer?.flushNow()
-                        val line = toolLine(ev, ev.data.optBoolean("error", false))
+                        val line = toolLine(ev, ev.data.optBoolean("error", false), toolDuration(sid, ev))
                         if (line.isNotEmpty()) appendTrace(r, line)
                         AppLog.log("stream", "过程行已加 工具=" + ev.data.optString("tool", "") +
                             " 本轮事件=" + r.evCount + " 其中工具=" + r.toolCount)
                     }
                     "tool.failed" -> {
                         r.coalescer?.flushNow()
-                        val line = toolLine(ev, true)
+                        val line = toolLine(ev, true, toolDuration(sid, ev))
                         if (line.isNotEmpty()) appendTrace(r, line)
                     }
                     // 流式语音（方案丙）：服务端边合成边推，这里边收边播。
@@ -4544,6 +4564,24 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         updateRunService()
         // 停止时把待发队列一起按住：不自动发下一条，等用户点「继续」。
         if (r.queue.isNotEmpty()) r.queuePaused.value = true else drainQueue(sid)
+    }
+
+    /**
+     * 过程行耗时（秒）。
+     *
+     * 优先用服务端下发的 `duration`（>0 才算，0 就是「没给」——旧实现把 0 当有效值，
+     * 于是每条都是 0.0s）；没有就用 started 时记下的本地时刻算墙钟差；
+     * 两者都没有返回 -1（界面不显示耗时段）。
+     */
+    private fun toolDuration(sid: String, ev: com.hermesapp.net.SseEvent): Double {
+        val cid = ev.data.optString("tool_call_id", "")
+        val key = if (cid.isEmpty()) "" else sid + "|" + cid
+        val started = if (key.isEmpty()) null else toolStartedAt.remove(key)
+        val srv = ev.data.optDouble("duration", -1.0)
+        if (srv > 0.0) return srv
+        val t0 = started ?: return -1.0
+        val ms = System.currentTimeMillis() - t0
+        return if (ms > 0) ms / 1000.0 else -1.0
     }
 
     /** 工具轨迹追加到该会话当前 assistant 消息的 trace（界面默认折叠，不进正文）。 */
