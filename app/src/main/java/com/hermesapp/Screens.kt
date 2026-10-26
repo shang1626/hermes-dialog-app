@@ -1943,7 +1943,7 @@ private fun StatsToolCard(list: List<StatsTool>) {
             for (t in list) {
                 Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        t.name, color = c.text, fontSize = T.sub,
+                        toolNameZh(t.name), color = c.text, fontSize = T.sub,
                         maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
                     )
                     Text(fmtNum(t.count) + " 次", color = c.dim, fontSize = T.cap)
