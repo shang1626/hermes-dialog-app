@@ -1404,20 +1404,17 @@ fun Bubble(
                         }
                         // 过程展开后，把「收起」放在最底下这行（时间行）里：
                         // 长过程翻到底时不用再滚回气泡上方找那个「▾ 过程」。
-                        // 用描边小按钮（用户定版：不用实色大块），一眼看出可点。
+                        // 样式要与同一行的时间文字同字号同色系（用户反馈：描边按钮太大、颜色不搭），
+                        // 只靠「▴ 收起」的箭头暗示可点，不加边框不加底色。
                         if (traceOpen && m.trace.isNotEmpty()) {
-                            Spacer(Modifier.width(10.dp))
+                            Spacer(Modifier.width(8.dp))
                             Text(
-                                "收起过程",
-                                color = c.accent, fontSize = T.micro,
+                                "▴ 收起",
+                                color = c.dim, fontSize = T.micro,
                                 modifier = Modifier
-                                    .border(
-                                        BorderStroke(1.dp, c.accent.copy(alpha = 0.45f)),
-                                        RoundedCornerShape(Rad.pill),
-                                    )
                                     .clip(RoundedCornerShape(Rad.pill))
                                     .clickable { traceOpen = false }
-                                    .padding(horizontal = 8.dp, vertical = 2.dp),
+                                    .padding(horizontal = 4.dp, vertical = 2.dp),
                             )
                         }
                         if (rc != null) {
