@@ -398,6 +398,8 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
     val view = LocalView.current
     // 变化即重建各气泡的 SelectionContainer：用来取消文本选中（点空白/点正文时 +1）。
     var selReset by remember { mutableStateOf(0) }
+    // 会话内所有用户图片按顺序连成一组：全屏点开任意一张都能左右滑动切换（切会话随 msgs 重算）。
+    val galleryImages = remember(msgs) { msgs.flatMap { it.images } }
 
     // 末尾放一个 1dp 占位项，永远滚到它 = 永远贴底（正文增长也能跟上）
     //
@@ -570,6 +572,7 @@ fun MessageList(vm: ChatViewModel, modifier: Modifier = Modifier) {
                     onCardAction = { vm.dispatchCardAction(it, ctx) },
                     highlight = hl,
                     hitQuery = if (hl) q else "",
+                    galleryImages = galleryImages,
                     selectionReset = selReset,
                     onClearSelection = { selReset++ },
                 )
@@ -1038,6 +1041,8 @@ fun Bubble(
     highlight: Boolean = false,
     /** 命中词：正文里加黄底（空表示不高亮）。 */
     hitQuery: String = "",
+    /** 会话内所有用户图片（按顺序）：点开任意一张时作为可左右滑动的图组。 */
+    galleryImages: List<String> = emptyList(),
     selectionReset: Int = 0,
     onClearSelection: () -> Unit = {},
 ) {
@@ -1089,7 +1094,8 @@ fun Bubble(
                         for (u in m.images) {
                             LocalImageView(
                                 uri = u,
-                                modifier = Modifier.size(72.dp).clip(RoundedCornerShape(Rad.chip))
+                                modifier = Modifier.size(72.dp).clip(RoundedCornerShape(Rad.chip)),
+                                gallery = galleryImages,
                             )
                         }
                     }

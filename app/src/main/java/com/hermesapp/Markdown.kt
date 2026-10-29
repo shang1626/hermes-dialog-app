@@ -14,8 +14,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.ClickableText
 import androidx.compose.material3.Text
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -33,12 +31,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
-import coil.compose.AsyncImage
 import coil.compose.AsyncImagePainter
 import coil.compose.SubcomposeAsyncImage
 import coil.compose.SubcomposeAsyncImageContent
-import androidx.compose.foundation.gestures.rememberTransformableState
-import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -48,8 +43,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.alpha
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.graphicsLayer
 import android.net.Uri
 import android.widget.Toast
 import androidx.compose.ui.text.AnnotatedString
@@ -132,12 +125,18 @@ fun RichText(
     val blocks = remember(text) {
         parseMdBlocks(text).filterNot { it is MdBlock.Attachment && VoicePlayer.isAudio(it.name) }
     }
+    // 同一条消息里的内联图连成一组：全屏查看时能左右滑动切换，不必关掉再点下一张。
+    val inlineImages = remember(blocks) { blocks.filterIsInstance<MdBlock.Image>() }
 
     Column(modifier) {
         for ((idx, b) in blocks.withIndex()) {
             if (idx > 0) Spacer(Modifier.height(6.dp))
             when (b) {
-                is MdBlock.Image -> MdImage(b.dataUrl, b.alt)
+                is MdBlock.Image -> MdImage(
+                    b.dataUrl, b.alt,
+                    gallery = inlineImages.map { it.dataUrl },
+                    start = inlineImages.indexOfFirst { it.dataUrl == b.dataUrl }.coerceAtLeast(0),
+                )
                 is MdBlock.Attachment -> MdAttachmentCard(b.name, b.dataUrl, b.token)
                 is MdBlock.Card -> HermesCardView(b.card, onCardAction)
                 is MdBlock.Para -> {
@@ -198,9 +197,15 @@ private fun MdTable(rows: List<List<String>>, color: Color, fontSize: TextUnit) 
     }
 }
 
-/** 内联图片（正文里的 data URL）：点击 App 内放大查看，长按保存到相册。 */
+/** 内联图片（正文里的 data URL）：点击 App 内放大查看，同一条消息的多张图可左右滑动切换。 */
 @Composable
-private fun MdImage(dataUrl: String, alt: String) {
+private fun MdImage(
+    dataUrl: String,
+    alt: String,
+    /** 同一条消息里所有内联图的 data URL（不含则为单张）。 */
+    gallery: List<String> = listOf(dataUrl),
+    start: Int = 0,
+) {
     val c = LocalAppColors.current
     // 解码失败时给一个重试出口：原来只显示一行「[图片解析失败]」就没了，
     // 用户分不清是「数据坏了」还是「这一下没解出来」，也没有任何补救动作。
@@ -234,19 +239,27 @@ private fun MdImage(dataUrl: String, alt: String) {
     }
     ZoomableImage(
         model = decoded.bytes,
-        decoded = decoded,
         alt = alt,
         thumbScale = ContentScale.Fit,
         thumbModifier = Modifier.widthIn(max = 300.dp).clip(RoundedCornerShape(8.dp)),
+        viewer = remember(gallery, alt) {
+            gallery.map { ViewerImage(name = alt.ifBlank { "image" }, dataUrl = it) }
+        },
+        startIndex = start,
     )
 }
 
 /**
  * 用户气泡里的本地图片（content:// 或 file:// Uri）：点击 App 内放大查看，长按保存到相册。
  * 读不到字节时仍能放大（用 Uri 直接渲染），只是不能保存。
+ * [gallery] 传入这一组图的全部 Uri（会话内所有图），全屏时即可左右滑动切换。
  */
 @Composable
-fun LocalImageView(uri: String, modifier: Modifier = Modifier) {
+fun LocalImageView(
+    uri: String,
+    modifier: Modifier = Modifier,
+    gallery: List<String> = emptyList(),
+) {
     val ctx = LocalContext.current
     val decoded = remember(uri) { uriToDecoded(ctx, Uri.parse(uri)) }
     // 读不到字节：可能是相册给的 content:// 已被系统回收（换机/清数据/授权到期）。
@@ -255,12 +268,18 @@ fun LocalImageView(uri: String, modifier: Modifier = Modifier) {
         LocalImageFallback(uri, modifier)
         return
     }
+    // 我在不在这一组里；不在就退化成单张（别把别处点开的图变成从 0 开始的一组）。
+    val uris = remember(gallery, uri) { if (gallery.contains(uri)) gallery else listOf(uri) }
+    val viewer = remember(uris) {
+        uris.map { ViewerImage(name = "image", model = it, uri = it, bytes = null) }
+    }
     ZoomableImage(
         model = decoded.bytes,
-        decoded = decoded,
         alt = "image",
         thumbScale = ContentScale.Crop,
         thumbModifier = modifier,
+        viewer = viewer,
+        startIndex = uris.indexOf(uri).coerceAtLeast(0),
     )
 }
 
@@ -278,30 +297,21 @@ private fun LocalImageFallback(uri: String, modifier: Modifier) {
 }
 
 /**
- * 可缩放图片：缩略图点击 → 全屏 Dialog；全屏支持双指缩放/拖动，底部「保存到相册」按钮保存。
- * model 可以是 ByteArray（内联图）或 Uri 字符串（本地图）；decoded 为 null 时无保存按钮。
+ * 可缩放图片：缩略图点击 → 全屏查看（[viewer] 里多张时可左右滑动切换）；
+ * 全屏支持双指缩放/拖动，顶部「保存到相册」按钮保存。
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ZoomableImage(
     model: Any?,
-    decoded: DecodedData?,
     alt: String,
     thumbScale: ContentScale,
     thumbModifier: Modifier,
+    viewer: List<ViewerImage>,
+    startIndex: Int,
 ) {
     val ctx = LocalContext.current
     var zoom by remember { mutableStateOf(false) }
-    val name = alt.ifBlank { "image" } + extFor(decoded?.mime ?: "image/png")
-    fun save() {
-        val d = decoded ?: return
-        val saved = saveImageToGallery(ctx, name, d)
-        Toast.makeText(
-            ctx,
-            if (saved != null) "已保存到相册：Pictures/Hermes/$saved" else "保存失败",
-            Toast.LENGTH_SHORT
-        ).show()
-    }
     // 三态渲染：加载中显示灰底占位，失败显示「加载失败 + 重试」，成功才画图。
     // 原来直接 AsyncImage，网络一抖或 token 过期就是一片空白，用户分不清「在加载」还是「坏了」。
     var retry by remember { mutableStateOf(0) }
@@ -344,65 +354,8 @@ private fun ZoomableImage(
         }
     }
     if (zoom) {
-        // 全屏查看：双指缩放 + 拖动，底部按钮保存/关闭（点空白不再误关，方便缩放）
-        var scale by remember { mutableStateOf(1f) }
-        var offset by remember { mutableStateOf(Offset.Zero) }
-        val state = rememberTransformableState { zoomChange, panChange, _ ->
-            scale = (scale * zoomChange).coerceIn(1f, 6f)
-            offset = if (scale <= 1f) Offset.Zero else offset + panChange
-        }
-        Dialog(
-            onDismissRequest = { zoom = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false)
-        ) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.95f)),
-                contentAlignment = Alignment.Center
-            ) {
-                AsyncImage(
-                    model = model,
-                    contentDescription = alt.ifBlank { "图片" },
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp)
-                        .graphicsLayer(
-                            scaleX = scale, scaleY = scale,
-                            translationX = offset.x, translationY = offset.y
-                        )
-                        .transformable(state)
-                )
-                // 顶部操作条：不再依赖长按，按钮一目了然
-                Row(
-                    Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (decoded != null) {
-                        OutlinedButton(
-                            onClick = { save() },
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                            shape = RoundedCornerShape(8.dp),
-                        ) { Text("保存到相册", color = Color.White, fontSize = 13.sp) }
-                    }
-                    OutlinedButton(
-                        onClick = { zoom = false },
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                        shape = RoundedCornerShape(8.dp),
-                    ) { Text("关闭", color = Color.White, fontSize = 13.sp) }
-                }
-                Text(
-                    "双指缩放 · 拖动查看",
-                    color = Color.White.copy(alpha = 0.7f),
-                    fontSize = 12.sp,
-                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 28.dp)
-                )
-            }
-        }
+        // 全屏查看：多张图左右滑动切换 + 双指缩放 + 拖动，顶部按钮保存/关闭
+        ImagePagerDialog(items = viewer, start = startIndex, onDismiss = { zoom = false })
     }
 }
 
