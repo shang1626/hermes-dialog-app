@@ -134,9 +134,3 @@ fun StatusLineChart(
     }
 }
 
-/** 一行小字说明（图表下方的口径提示，避免用户把折线误读成「磁盘/负载也在图里」）。 */
-@Composable
-fun ChartCaption(text: String) {
-    val c = LocalAppColors.current
-    Text(text, color = c.faint, fontSize = T.micro, modifier = Modifier.fillMaxWidth())
-}

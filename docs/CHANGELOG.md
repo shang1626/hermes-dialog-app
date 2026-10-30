@@ -1,3 +1,10 @@
+## 2.229 — versionCode 240
+
+- 内存 / Swap / 磁盘 改回条形进度条（2.228 曾把内存与 swap 改成折线图，用户定版：只有 CPU 保留折线图，这三项要条形）。
+- 移除底部「内存·网关进程」「磁盘·可用空间」两张明细卡（与条形卡信息重复）；底部只留「网关」（操作系统 / Python）与「CPU」（型号 / 核心数 / 主频）。
+- 系统负载不进条形图（量纲不是百分比），单独一行数值。
+- 涉及文件：`Screens.kt`（StatusScreen 重排、恢复 StatusMetricBar）、`StatusBuild.kt`（buildStatus 去掉内存/磁盘两段）、`StatusChart.kt`（删掉已无引用的 ChartCaption）。
+
 ## 2.228 — versionCode 239
 
 - 重构「状态」页：CPU 与「内存 / Swap」改成折线图（此前是进度条），内存与 Swap 同图两条线；磁盘与系统负载量纲不同，压成紧凑两行；顶部概览卡保留网关状态/版本/已运行/活跃任务。

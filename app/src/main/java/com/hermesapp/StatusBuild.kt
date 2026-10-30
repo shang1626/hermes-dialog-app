@@ -72,12 +72,10 @@ internal fun buildMetrics(h: JSONObject): List<StatusMetric> {
     return out
 }
 /**
- * 状态页底部明细（2.228 重构）。
+ * 状态页底部明细（2.229）。
  *
- * 只保留**别处没出现过**的静态信息：使用率/已用总量/PID/运行时长/负载这些已经出现在
- * 顶部概览卡、指标行与折线图里，这里再列一遍就是重复内容（用户要求「去掉重复内容」）。
- * 所以：网关只留操作系统与 Python 版本，CPU 只留型号/核数/主频，内存只留网关进程占用，
- * 磁盘只留可用空间。
+ * 内存 / Swap / 磁盘 已经在上面的条形卡里，这里不再重复（用户明确要求移除
+ * 「内存·网关进程」与「磁盘·可用空间」两张卡）。只留网关版本信息与 CPU 静态信息。
  */
 internal fun buildStatus(h: JSONObject): List<StatusSection> {
     val out = mutableListOf<StatusSection>()
@@ -98,15 +96,6 @@ internal fun buildStatus(h: JSONObject): List<StatusSection> {
         it("型号", h.optString("cpu_model", "")),
         it("核心数", h.optInt("cpu_count", 0).takeIf { it > 0 }?.let { "$it 核" } ?: ""),
         it("主频", h.optInt("cpu_freq_mhz", 0).takeIf { it > 0 }?.let { "$it MHz" } ?: ""),
-    ))
-
-    sec("内存", listOf(
-        it("网关进程", h.optInt("proc_memory_mb", 0).takeIf { it > 0 }?.let { "$it MB" } ?: ""),
-    ))
-
-    sec("磁盘", listOf(
-        it("可用空间", h.optDouble("disk_free_gb", -1.0).takeIf { it >= 0 }
-            ?.let { String.format("%.1f GB", it) } ?: ""),
     ))
 
     return out

@@ -1599,26 +1599,9 @@ fun StatusScreen(vm: ChatViewModel, prefs: Prefs) {
                 }
             }
 
-            // ③ 内存与 Swap 合在一张折线图里（同一量纲都是百分比，放一起才看得出「内存吃满开始吃 swap」）
-            if (mem != null || swap != null) {
-                Spacer(Modifier.height(G.x3))
-                StatusChartCard(title = "内存 / Swap", sub = mem?.subText.orEmpty()) {
-                    StatusLineChart(
-                        series = listOfNotNull(
-                            mem?.let { ChartSeries("内存", c.warn, history.mem, it.valueText) },
-                            swap?.let { ChartSeries("Swap", c.bad, history.swap, it.valueText) },
-                        ),
-                        maxPoints = StatusHistory.MAX_POINTS,
-                    )
-                    if (swap != null && swap.subText.isNotEmpty()) {
-                        Spacer(Modifier.height(G.x1))
-                        ChartCaption("Swap " + swap.subText)
-                    }
-                }
-            }
-
-            // ④ 不进折线图的两项（量纲不同）：磁盘占用与系统负载，压成紧凑两行。
-            if (disk != null || load != null) {
+            // ③ 内存 / Swap / 磁盘：改回条形（用户 2026-10-30 定版，只有 CPU 用折线）。
+            val bars = listOfNotNull(mem, swap, disk)
+            if (bars.isNotEmpty()) {
                 Spacer(Modifier.height(G.x3))
                 Surface(
                     color = c.panel,
@@ -1627,9 +1610,27 @@ fun StatusScreen(vm: ChatViewModel, prefs: Prefs) {
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(Modifier.padding(G.x4)) {
-                        disk?.let { StatusCompactRow("磁盘", it.valueText, it.subText) }
-                        if (disk != null && load != null) Spacer(Modifier.height(G.x2))
-                        load?.let { StatusCompactRow("系统负载", it.valueText, it.subText) }
+                        Text("资源使用", color = c.accent, fontSize = T.sub, fontWeight = T.bold)
+                        Spacer(Modifier.height(G.x3))
+                        for ((i, m) in bars.withIndex()) {
+                            if (i > 0) Spacer(Modifier.height(G.x3))
+                            StatusMetricBar(m)
+                        }
+                    }
+                }
+            }
+
+            // ④ 系统负载：量纲不是百分比，单独一行（不画条）
+            load?.let {
+                Spacer(Modifier.height(G.x3))
+                Surface(
+                    color = c.panel,
+                    shape = RoundedCornerShape(Rad.card),
+                    border = BorderStroke(1.dp, c.borderSoft),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(G.x4)) {
+                        StatusCompactRow("系统负载", it.valueText, it.subText)
                     }
                 }
             }
@@ -1752,6 +1753,48 @@ fun StatusHeroCard(h: StatusHero) {
                 Spacer(Modifier.width(G.x4))
                 Text("子任务：" + h.delegations, color = if (h.delegations > 0) c.accent else c.dim, fontSize = T.sub)
             }
+        }
+    }
+}
+
+/**
+ * 一根进度条：标签 + 数值在上一行，下面一条会平滑推进的细条。
+ * 颜色分级：<60% 用主色，60~85% 用警示色，≥85% 用危险色。
+ * 内存 / Swap / 磁盘 用它（用户 2026-10-30 定版：这三个保持条形，只有 CPU 用折线）。
+ */
+@Composable
+fun StatusMetricBar(m: StatusMetric) {
+    val c = LocalAppColors.current
+    val frac by animateFloatAsState(
+        targetValue = (m.percent / 100.0).toFloat().coerceIn(0f, 1f),
+        animationSpec = tween(700), label = m.key
+    )
+    val color = when {
+        m.percent >= 85.0 -> c.bad
+        m.percent >= 60.0 -> c.warn
+        else -> c.accent
+    }
+    Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(m.label, color = c.text, fontSize = T.sub)
+            Spacer(Modifier.weight(1f))
+            Text(m.valueText, color = color, fontSize = T.sub, fontWeight = T.bold)
+        }
+        Spacer(Modifier.height(G.x2))
+        // 轨道 + 填充；填充宽度按百分比动画推进。
+        Box(
+            Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(Rad.pill))
+                .background(c.cardAlt)
+        ) {
+            Box(
+                Modifier.fillMaxWidth(frac).fillMaxHeight()
+                    .clip(RoundedCornerShape(Rad.pill)).background(color)
+            )
+        }
+        if (m.subText.isNotEmpty()) {
+            Spacer(Modifier.height(G.x1))
+            Text(m.subText, color = c.faint, fontSize = T.cap,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
