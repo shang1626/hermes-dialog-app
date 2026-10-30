@@ -652,6 +652,16 @@ class HermesApi(
     fun sysinfo(): JSONObject = sync(base("/health/sysinfo").get().build())
 
     /**
+     * CPU 历史采样点（服务端只读端点 GET /api/sysinfo/cpu_history?seconds=N）。
+     *
+     * 数据源是网关进程内的环形缓冲（5 秒一点、10 分钟窗口、不落盘，重启清零），
+     * 状态页折线图靠它铺满「过去 10 分钟」，而不是只画 App 自己在前台攒的那几个点。
+     * 返回 `{"interval":5.0,"points":[{"t":秒,"v":百分比}, ...]}`。须在 Dispatchers.IO 里跑。
+     */
+    fun cpuHistory(seconds: Int = 600): JSONObject =
+        sync(base("/api/sysinfo/cpu_history?seconds=" + seconds).get().build())
+
+    /**
      * 用量统计（服务端只读端点 GET /api/stats?days=N，N 夹 1..90）。
      * 走 [sync]→[callText] 的 HTTP/1.1 客户端（callTimeout 180s）：服务端首次冷查
      * 要 3~5 秒（大 state.db），不能按探针那套 15s 超时算。调用方须在 Dispatchers.IO 里跑。

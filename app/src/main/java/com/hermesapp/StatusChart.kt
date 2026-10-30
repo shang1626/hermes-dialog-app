@@ -127,7 +127,7 @@ fun StatusLineChart(
         }
         Spacer(Modifier.height(3.dp))
         Row(Modifier.fillMaxWidth()) {
-            Text("约 3 分钟前", color = c.faint, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+            Text("约 10 分钟前", color = c.faint, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
             Spacer(Modifier.weight(1f))
             Text("现在", color = c.faint, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
         }

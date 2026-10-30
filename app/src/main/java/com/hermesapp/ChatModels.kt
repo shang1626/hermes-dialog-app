@@ -267,18 +267,44 @@ data class StatusHistory(
     val cpu: List<Float> = emptyList(),
     val mem: List<Float> = emptyList(),
     val swap: List<Float> = emptyList(),
+    /** 最后追加 CPU 点的时刻（毫秒）；0 = 还没有点。用来判断「同一个采样窗口」以免重一点。 */
+    val cpuTs: Long = 0L,
 ) {
     companion object {
-        /** 5 秒采样一次 × 40 = 约 3.3 分钟窗口，手机上够看趋势又不至于糊成一团。 */
-        const val MAX_POINTS = 40
+        /** 与服务端采样周期一致：5 秒一点 × 120 = 10 分钟窗口（服务端 /api/sysinfo/cpu_history）。 */
+        const val MAX_POINTS = 120
+        /** 两点间隔小于此值视为「同一次采样」（两端各自 5 秒节奏的抖动），替换末点而不是新增。 */
+        const val SAME_SAMPLE_MS = 3000L
     }
 
     /** 追加一次采样；null 表示这次没这项数据，该序列保持不动。 */
-    fun push(cpu: Float?, mem: Float?, swap: Float?): StatusHistory = StatusHistory(
-        cpu = append(cpu, this.cpu),
-        mem = append(mem, this.mem),
-        swap = append(swap, this.swap),
-    )
+    fun push(cpu: Float?, mem: Float?, swap: Float?, ts: Long = System.currentTimeMillis()): StatusHistory {
+        val sameCpu = cpu != null && cpuTs > 0 && (ts - cpuTs) < SAME_SAMPLE_MS
+        return StatusHistory(
+            cpu = if (cpu == null) this.cpu else appendOrReplace(cpu, this.cpu, sameCpu),
+            mem = append(mem, this.mem),
+            swap = append(swap, this.swap),
+            cpuTs = if (cpu == null) cpuTs else ts,
+        )
+    }
+
+    /**
+     * 用服务端历史铺满曲线（进入状态页 / 回到前台时拉一次）。
+     *
+     * 服务端只保证「有数据」，不保证点的数量：网关刚重启时可能只有几个点。这里不补假点
+     * ——序列短就画短，横轴按 [MAX_POINTS] 固定铺开，右侧空着如实反映「历史还没攒够」。
+     */
+    fun seedCpu(points: List<Pair<Long, Float>>): StatusHistory {
+        if (points.isEmpty()) return this
+        val vals = points.map { it.second.coerceIn(0f, 100f) }.takeLast(MAX_POINTS)
+        return copy(cpu = vals, cpuTs = points.last().first)
+    }
+
+    private fun appendOrReplace(v: Float, old: List<Float>, replace: Boolean): List<Float> {
+        val value = v.coerceIn(0f, 100f)
+        if (replace && old.isNotEmpty()) return old.dropLast(1) + value
+        return append(value, old)
+    }
 
     private fun append(v: Float?, old: List<Float>): List<Float> {
         if (v == null) return old

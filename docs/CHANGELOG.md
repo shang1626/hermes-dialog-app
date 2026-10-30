@@ -1,3 +1,12 @@
+## 2.231 — versionCode 242
+
+- 状态页 CPU 折线图改读**服务端真实历史**：新增 `HermesApi.cpuHistory()` 调 `GET /api/sysinfo/cpu_history?seconds=600`，进入状态页与回到前台各拉一次，把曲线按服务端点铺满后再由 5 秒刷新续尾部。此前只画 App 自己在前台攒的点，切走/重开就清零，用户报「和历史对不上」。
+- 窗口从约 3 分钟扩到 10 分钟（`StatusHistory.MAX_POINTS` 40 → 120，与服务端 5 秒 × 120 一致）；时间轴文案改「约 10 分钟前」。
+- 衔接去重：`StatusHistory` 新增 `cpuTs`，两次 push 间隔 < 3 秒视为同一次采样、替换末点而不是新增，避免服务端续点与本地采样在衔接处出现重复点。
+- 拉历史失败不清空已有曲线（继续用本地攒的点），只记日志。
+- 涉及文件：`net/HermesApi.kt`、`ChatModels.kt`、`ChatViewModel.kt`（refreshCpuHistory）、`Screens.kt`（进页/回前台触发）、`StatusChart.kt`（时间轴文案）。
+- 服务端配套：补丁 `apply_cpu_history_patch.py`（5 秒环形缓冲 120 点 + `/api/sysinfo/cpu_history`，并把 `/health/sysinfo` 的 cpu_percent 改为读最近一次采样，保证当前值与折线末点同源）。
+
 ## 2.230 — versionCode 241
 
 - 系统负载也改成条形进度条：与内存 / Swap / 磁盘同放「资源使用」卡（负载百分比按「核数 = 100%」折算，副标题写 1/5/15 三个值与核数基准）。上一版它是单独一行的纯数值，用户要求也用条形。

@@ -1539,10 +1539,15 @@ fun StatusScreen(vm: ChatViewModel, prefs: Prefs) {
     val online by vm.online.collectAsStateWithLifecycle()
     // 上次刷新时刻：给「每 5 秒自动刷新」配一个会动的秒数，一眼看出数据是新的。
     var refreshedAt by remember { mutableStateOf(0L) }
-    LaunchedEffect(Unit) { vm.refreshStatus() }
+    LaunchedEffect(Unit) {
+        // 先用服务端历史把曲线铺满，再走 5 秒刷新续尾部——否则刚进页面只有一个点。
+        vm.refreshCpuHistory()
+        vm.refreshStatus()
+    }
     // 每 5 秒自动刷新（仅前台；退后台停，省电省包）
     val resumedStatus by isResumedState()
     LaunchedEffect(resumedStatus) {
+        if (resumedStatus) vm.refreshCpuHistory()   // 回前台：补齐后台期间漏掉的采样
         while (resumedStatus) {
             delay(5000)
             vm.refreshStatus()

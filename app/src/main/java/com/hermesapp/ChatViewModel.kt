@@ -2509,6 +2509,38 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 用服务端历史把 CPU 折线铺满（进入状态页 / 回前台时各拉一次）。
+     *
+     * 为什么需要它：状态页原来只画 App 自己在前台攒的点，切走/杀进程就清零，看起来
+     * 「和历史对不上」。服务端 /api/sysinfo/cpu_history 有 10 分钟真实采样（进程内环形
+     * 缓冲，不落盘、重启清零），拉回来直接替换本地序列即可。
+     *
+     * 失败**不清空**已有曲线：拉不到就继续用本地攒的（比空屏有用），只记日志。
+     */
+    fun refreshCpuHistory() {
+        identityScope.launch(Dispatchers.IO) {
+            try {
+                val raw = api?.cpuHistory(600) ?: return@launch
+                val arr = raw.optJSONArray("points") ?: return@launch
+                val pts = ArrayList<Pair<Long, Float>>(arr.length())
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val t = o.optDouble("t", -1.0)
+                    val v = o.optDouble("v", -1.0)
+                    if (t <= 0.0 || v < 0.0) continue
+                    // 服务端 t 是「秒」（浮点），本地统一用毫秒，方便与 push 的间隔判定对齐。
+                    pts.add((t * 1000.0).toLong() to v.toFloat())
+                }
+                if (pts.isNotEmpty()) {
+                    _statusHistory.value = _statusHistory.value.seedCpu(pts)
+                }
+            } catch (e: Exception) {
+                AppLog.err("status", "获取 CPU 历史失败", e)
+            }
+        }
+    }
+
     // ---------- 用量统计（「统计」页） ----------
 
     /** 统计窗口（天）：1/7/30/90 四档，默认 7；页面按钮与它同源（动作后重拉才不会再错位）。 */
