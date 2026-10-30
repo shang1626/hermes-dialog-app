@@ -1,3 +1,12 @@
+## 2.232 — versionCode 243
+
+- 修 2.231 的一个真 bug：折线**从左往右画**，而横轴右端写的是「现在」——网关刚重启、点数不足时曲线缩在左边，看着就是「时间和数据对不上」。改为**右对齐**（最新一点贴右边界，历史向左延伸）。
+- 数据源收口：删掉 App 侧「每次刷新追加一点」的本地采样（`StatusHistory.push`）。sysinfo 的 cpu_percent 本来就是服务端最近一次采样值，再当新点追加等于同一采样记两遍，曲线会出现台阶抖动；现在状态页每 5 秒只拉 `/api/sysinfo/cpu_history` 整段替换。
+- 横轴左端文案按**真实跨度**显示：网关刚重启只攒了 40 秒点，就写「约 1 分钟前」，不再一律写 10 分钟（`StatusHistory.leftSpanSeconds` + `leftLabel()`）。
+- 服务端补丁同步收紧：采样循环加「进程内只起一个」守护（适配器重连会重走 start()，不判重会跑出两条循环、采样周期翻倍）；`/api/sysinfo/cpu_history?seconds=0` 从「返回全部」改为「返回空」。
+- 单测：`StatusHistoryTest` 重写为 6 条（顺序/截断/夹取/空输入/整段替换/横轴文案）；全仓 226 条单测全绿。
+- 涉及文件：`ChatModels.kt`、`ChatViewModel.kt`、`StatusChart.kt`、`Screens.kt`、`app/src/test/.../StatusHistoryTest.kt`、服务端补丁 `apply_cpu_history_patch.py`（+ `api_server.py`）。
+
 ## 2.231 — versionCode 242
 
 - 状态页 CPU 折线图改读**服务端真实历史**：新增 `HermesApi.cpuHistory()` 调 `GET /api/sysinfo/cpu_history?seconds=600`，进入状态页与回到前台各拉一次，把曲线按服务端点铺满后再由 5 秒刷新续尾部。此前只画 App 自己在前台攒的点，切走/重开就清零，用户报「和历史对不上」。

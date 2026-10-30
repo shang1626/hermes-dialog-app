@@ -54,6 +54,7 @@ fun StatusLineChart(
     maxPoints: Int,
     modifier: Modifier = Modifier,
     height: Dp = 104.dp,
+    leftLabel: String = "约 10 分钟前",
 ) {
     val c = LocalAppColors.current
     val hasData = series.any { it.values.isNotEmpty() }
@@ -102,17 +103,22 @@ fun StatusLineChart(
                     for (s in series) {
                         val pts = s.values
                         if (pts.isEmpty()) continue
+                        // ⚠️ 横轴右端 = 「现在」，所以点数不足时必须**右对齐**：最新一点固定贴在右边界，
+                        // 历史向左延伸。否则刚打开 App（只有几个点）时线会缩在左边，而右下角写着
+                        // 「现在」，看着就是「时间和曲线对不上」。
+                        val shift = denom - (pts.size - 1)
+                        fun xAt(i: Int): Float = w * (i + shift) / denom
                         // 单点也得画出「一个点」，否则刚启动时整张图是空的
                         if (pts.size == 1) {
                             val y = h - (pts[0] / 100f).coerceIn(0f, 1f) * h
-                            drawCircle(s.color, radius = 3.5f, center = Offset(0f, y))
+                            drawCircle(s.color, radius = 3.5f, center = Offset(w, y))
                             continue
                         }
                         val path = Path()
                         var lastX = 0f
                         var lastY = 0f
                         for ((i, v) in pts.withIndex()) {
-                            val x = w * i / denom
+                            val x = xAt(i)
                             val y = h - (v / 100f).coerceIn(0f, 1f) * h
                             if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
                             lastX = x
@@ -120,14 +126,14 @@ fun StatusLineChart(
                         }
                         drawPath(path, s.color, style = Stroke(width = 2.2.dp.toPx(), cap = StrokeCap.Round))
                         // 末端点：一眼看出「现在在哪」
-                        drawCircle(s.color, radius = 3.2f, center = Offset(lastX, lastY))
+                        drawCircle(s.color, radius = 3.2f, center = Offset(lastX.coerceAtMost(w), lastY))
                     }
                 }
             }
         }
         Spacer(Modifier.height(3.dp))
         Row(Modifier.fillMaxWidth()) {
-            Text("约 10 分钟前", color = c.faint, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+            Text(leftLabel, color = c.faint, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
             Spacer(Modifier.weight(1f))
             Text("现在", color = c.faint, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
         }

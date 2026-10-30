@@ -1540,17 +1540,18 @@ fun StatusScreen(vm: ChatViewModel, prefs: Prefs) {
     // 上次刷新时刻：给「每 5 秒自动刷新」配一个会动的秒数，一眼看出数据是新的。
     var refreshedAt by remember { mutableStateOf(0L) }
     LaunchedEffect(Unit) {
-        // 先用服务端历史把曲线铺满，再走 5 秒刷新续尾部——否则刚进页面只有一个点。
-        vm.refreshCpuHistory()
+        // 首次铺满曲线由下面 resumedStatus 那条 effect 负责（它在首帧就以 true 触发），
+        // 这里只拉状态卡，别再重复发一次历史请求。
         vm.refreshStatus()
     }
     // 每 5 秒自动刷新（仅前台；退后台停，省电省包）
     val resumedStatus by isResumedState()
     LaunchedEffect(resumedStatus) {
-        if (resumedStatus) vm.refreshCpuHistory()   // 回前台：补齐后台期间漏掉的采样
+        if (resumedStatus) vm.refreshCpuHistory()   // 回前台：把后台期间漏掉的采样一次补齐
         while (resumedStatus) {
             delay(5000)
             vm.refreshStatus()
+            vm.refreshCpuHistory()
         }
     }
     // 状态一到就记一次刷新时间（数据变了才会触发重组，用 metrics/sections 变化当信号）。
@@ -1600,6 +1601,7 @@ fun StatusScreen(vm: ChatViewModel, prefs: Prefs) {
                             ChartSeries("CPU", c.accent, history.cpu, cpu.valueText)
                         ),
                         maxPoints = StatusHistory.MAX_POINTS,
+                        leftLabel = history.leftLabel(),
                     )
                 }
             }

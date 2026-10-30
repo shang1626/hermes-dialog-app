@@ -260,56 +260,37 @@ data class StatusMetric(
 )
 
 /**
- * 状态页折线图的历史采样：每刷新一次追加一个点，只留最近 [MAX_POINTS] 个。
- * 序列为空 = 该项没有数据（如未启用 swap），界面就不画那条线。
+ * 状态页折线图的数据：CPU 历史序列（旧→新），最多 [MAX_POINTS] 个点。
+ *
+ * **唯一数据源是服务端** `GET /api/sysinfo/cpu_history`（网关每 5 秒采一点、保留 10 分钟）。
+ * App 不再自己做「每次刷新追加一点」——那个做法有两个毛病：① sysinfo 的 cpu_percent
+ * 本来就是服务端最近一次采样的值，再当新点追加等于把同一个采样记两遍，曲线出现台阶抖动；
+ * ② 离开页面就断档，回来还得靠历史补，补完又和本地点接不上。
  */
 data class StatusHistory(
     val cpu: List<Float> = emptyList(),
-    val mem: List<Float> = emptyList(),
-    val swap: List<Float> = emptyList(),
-    /** 最后追加 CPU 点的时刻（毫秒）；0 = 还没有点。用来判断「同一个采样窗口」以免重一点。 */
-    val cpuTs: Long = 0L,
+    /** 这批点在服务端实际覆盖了多少秒（网关刚重启时远小于 600）；用于横轴文案，不补假点。 */
+    val spanSeconds: Int = 0,
 ) {
     companion object {
-        /** 与服务端采样周期一致：5 秒一点 × 120 = 10 分钟窗口（服务端 /api/sysinfo/cpu_history）。 */
+        /** 与服务端窗口一致：5 秒一点 × 120 = 10 分钟。 */
         const val MAX_POINTS = 120
-        /** 两点间隔小于此值视为「同一次采样」（两端各自 5 秒节奏的抖动），替换末点而不是新增。 */
-        const val SAME_SAMPLE_MS = 3000L
     }
 
-    /** 追加一次采样；null 表示这次没这项数据，该序列保持不动。 */
-    fun push(cpu: Float?, mem: Float?, swap: Float?, ts: Long = System.currentTimeMillis()): StatusHistory {
-        val sameCpu = cpu != null && cpuTs > 0 && (ts - cpuTs) < SAME_SAMPLE_MS
+    /** 用服务端拉回的序列整段替换（只保留最近 [MAX_POINTS] 点）。 */
+    fun seedCpu(points: List<Float>, span: Int = 0): StatusHistory {
+        if (points.isEmpty()) return this
         return StatusHistory(
-            cpu = if (cpu == null) this.cpu else appendOrReplace(cpu, this.cpu, sameCpu),
-            mem = append(mem, this.mem),
-            swap = append(swap, this.swap),
-            cpuTs = if (cpu == null) cpuTs else ts,
+            cpu = points.map { it.coerceIn(0f, 100f) }.takeLast(MAX_POINTS),
+            spanSeconds = if (span > 0) span else spanSeconds,
         )
     }
 
-    /**
-     * 用服务端历史铺满曲线（进入状态页 / 回到前台时拉一次）。
-     *
-     * 服务端只保证「有数据」，不保证点的数量：网关刚重启时可能只有几个点。这里不补假点
-     * ——序列短就画短，横轴按 [MAX_POINTS] 固定铺开，右侧空着如实反映「历史还没攒够」。
-     */
-    fun seedCpu(points: List<Pair<Long, Float>>): StatusHistory {
-        if (points.isEmpty()) return this
-        val vals = points.map { it.second.coerceIn(0f, 100f) }.takeLast(MAX_POINTS)
-        return copy(cpu = vals, cpuTs = points.last().first)
-    }
-
-    private fun appendOrReplace(v: Float, old: List<Float>, replace: Boolean): List<Float> {
-        val value = v.coerceIn(0f, 100f)
-        if (replace && old.isNotEmpty()) return old.dropLast(1) + value
-        return append(value, old)
-    }
-
-    private fun append(v: Float?, old: List<Float>): List<Float> {
-        if (v == null) return old
-        val next = if (old.size >= MAX_POINTS) old.subList(old.size - MAX_POINTS + 1, old.size) else old
-        return next + v.coerceIn(0f, 100f)
+    /** 横轴左端文案：按真实跨度说，别把「网关刚重启的 40 秒」写成 10 分钟。 */
+    fun leftLabel(): String {
+        val s = if (spanSeconds > 0) spanSeconds else MAX_POINTS * 5
+        val minutes = (s + 30) / 60
+        return if (minutes >= 10) "约 10 分钟前" else "约 ${minutes.coerceAtLeast(1)} 分钟前"
     }
 }
 

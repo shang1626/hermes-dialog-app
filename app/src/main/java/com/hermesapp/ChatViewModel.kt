@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -2498,9 +2499,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val ms = buildMetrics(h)
                 _statusMetrics.value = ms
                 _statusSections.value = buildStatus(h)
-                // 折线图历史：每次刷新采样一个点（服务端没回该项就传 null，序列不动）。
-                fun pct(k: String): Float? = ms.firstOrNull { it.key == k }?.percent?.toFloat()
-                _statusHistory.value = _statusHistory.value.push(pct("cpu"), pct("mem"), pct("swap"))
                 _statusErr.value = ""
             } catch (e: Exception) {
                 AppLog.err("status", "获取系统状态失败", e)
@@ -2510,30 +2508,35 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 用服务端历史把 CPU 折线铺满（进入状态页 / 回前台时各拉一次）。
+     * 拉服务端 CPU 历史，整段替换折线（状态页每 5 秒一次，与页面刷新同频）。
      *
-     * 为什么需要它：状态页原来只画 App 自己在前台攒的点，切走/杀进程就清零，看起来
-     * 「和历史对不上」。服务端 /api/sysinfo/cpu_history 有 10 分钟真实采样（进程内环形
-     * 缓冲，不落盘、重启清零），拉回来直接替换本地序列即可。
+     * 为什么不本地采样：状态页原来自己 push 点，切走/杀进程就清零，用户看着「和历史对不上」。
+     * 现在服务端网关每 5 秒采一点、留 10 分钟，App 只负责拉；本地点不再参与，避免同一个
+     * 采样被记两遍（sysinfo 的 cpu_percent 本身就是服务端最近一次采样值）。
      *
-     * 失败**不清空**已有曲线：拉不到就继续用本地攒的（比空屏有用），只记日志。
+     * 失败**不清空**已有曲线（留着旧波形比空屏有用），只记日志。
      */
     fun refreshCpuHistory() {
         identityScope.launch(Dispatchers.IO) {
             try {
                 val raw = api?.cpuHistory(600) ?: return@launch
                 val arr = raw.optJSONArray("points") ?: return@launch
-                val pts = ArrayList<Pair<Long, Float>>(arr.length())
+                val pts = ArrayList<Float>(arr.length())
+                var firstT = 0.0
+                var lastT = 0.0
                 for (i in 0 until arr.length()) {
                     val o = arr.optJSONObject(i) ?: continue
-                    val t = o.optDouble("t", -1.0)
                     val v = o.optDouble("v", -1.0)
-                    if (t <= 0.0 || v < 0.0) continue
-                    // 服务端 t 是「秒」（浮点），本地统一用毫秒，方便与 push 的间隔判定对齐。
-                    pts.add((t * 1000.0).toLong() to v.toFloat())
+                    if (v < 0.0) continue
+                    val t = o.optDouble("t", 0.0)
+                    if (pts.isEmpty()) firstT = t
+                    lastT = t
+                    pts.add(v.toFloat())
                 }
                 if (pts.isNotEmpty()) {
-                    _statusHistory.value = _statusHistory.value.seedCpu(pts)
+                    // 跨度取「首末点时间差」：网关刚重启时只有几十秒，横轴文案照实说。
+                    val span = (lastT - firstT).toInt()
+                    _statusHistory.update { it.seedCpu(pts, span) }
                 }
             } catch (e: Exception) {
                 AppLog.err("status", "获取 CPU 历史失败", e)
