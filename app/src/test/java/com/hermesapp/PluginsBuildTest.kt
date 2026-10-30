@@ -97,4 +97,29 @@ class PluginsBuildTest {
         // enabled 的 mmm 不在这档；两个停用项按名字排
         assertEquals(listOf("aaa", "zzz"), out.map { it.name })
     }
+
+    @Test
+    fun origin_labels_distinguish_self_from_catalog() {
+        // 用户要求自研与第三方在列表里分得开：自研=自己写的（agnes、web-tavily-deepseek），
+        // 第三方=从插件目录装的（hindsight，作者字段为空）
+        assertEquals("自研", pluginOriginZh("self", "user"))
+        assertEquals("第三方", pluginOriginZh("catalog", "user"))
+        assertEquals("内置", pluginOriginZh("bundled", "bundled"))
+        // 老网关没有 origin 字段时回落 source，不能显示成空白
+        assertEquals("第三方", pluginOriginZh("", "user"))
+        assertEquals("内置", pluginOriginZh("", "bundled"))
+    }
+
+    @Test
+    fun parse_reads_origin_and_author() {
+        val m = parsePlugins(raw("""
+            {"plugins":[
+              {"name":"agnes","key":"agnes","status":"enabled","source":"user","author":"Hermes Agent","origin":"self","toggleable":true},
+              {"name":"hindsight","key":"hindsight","status":"enabled","source":"user","author":"","origin":"catalog","toggleable":true}
+            ]}
+        """.trimIndent()))
+        assertEquals("self", m.items[0].origin)
+        assertEquals("Hermes Agent", m.items[0].author)
+        assertEquals("catalog", m.items[1].origin)
+    }
 }

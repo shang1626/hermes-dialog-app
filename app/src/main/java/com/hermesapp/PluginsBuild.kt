@@ -16,6 +16,9 @@ data class PluginItem(
     val source: String,
     val status: String,
     val toggleable: Boolean,
+    val author: String = "",
+    /** 服务端给的来源分类：bundled 内置 / self 自研 / catalog 第三方（从插件目录安装）。 */
+    val origin: String = "",
 ) {
     val enabled: Boolean get() = status == "enabled"
 }
@@ -65,6 +68,8 @@ internal fun parsePlugins(raw: JSONObject): PluginsModel {
                 source = o.optString("source", ""),
                 status = o.optString("status", ""),
                 toggleable = o.optBoolean("toggleable", false),
+                author = o.optString("author", ""),
+                origin = o.optString("origin", ""),
             )
         )
     }
@@ -104,6 +109,22 @@ internal fun pluginStatusZh(status: String): String = when (status) {
     "disabled" -> "已停用"
     "not enabled" -> "未启用"
     else -> if (status.isEmpty()) "未知" else status
+}
+
+/**
+ * 来源文案：自研 / 第三方 / 内置。
+ *
+ * 用户要求把「自己写的」和「从插件目录装的」分开——两者都能切换，但维护责任完全不同：
+ * 自研的改起来就是改自己仓库的代码，第三方的要跟着上游版本走。
+ * origin 字段由服务端按 plugin.yaml 的 author 判定；老网关没有该字段时回落到 source。
+ */
+internal fun pluginOriginZh(origin: String, source: String): String = when {
+    origin == "self" -> "自研"
+    origin == "catalog" -> "第三方"
+    origin == "bundled" -> "内置"
+    source == "user" -> "第三方"
+    source == "bundled" -> "内置"
+    else -> pluginSourceZh(source)
 }
 
 /** 来源文案：bundled 内置 / user 第三方 / entrypoint 包安装。 */

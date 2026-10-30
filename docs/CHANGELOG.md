@@ -1,3 +1,9 @@
+## 2.235 — versionCode 246
+
+- 插件页区分「自研 / 第三方」：服务端 /api/plugins 新增 `author` 与 `origin` 字段（origin 取值 bundled 内置 / self 自研 / catalog 第三方目录安装，按 plugin.yaml 的 author 判定，自研白名单 jiacvn、Hermes Agent 等）。App 行内把来源做成描边小胶囊：自研主色、第三方灰色、内置灰色，非可切换项另标「只读」。
+- 效果（本机实测）：agnes → 自研（author: Hermes Agent）、web-tavily-deepseek → 自研（author: jiacvn）、hindsight → 第三方（无 author，从插件目录安装）。
+- 老网关没有 origin 字段时回落 source 映射，不会显示成空白。新增 2 条单测（来源文案回落、origin/author 解析），全仓 230 条全绿。
+
 ## 2.234 — versionCode 245
 
 - 插件页第三档文案「已停用」改「未启用」：服务端 status 里 disabled（显式停用）与 not enabled（从未启用）两种都收进这一档，按钮文案必须跟列表徽章一致，否则看着像错判。功能无变化。

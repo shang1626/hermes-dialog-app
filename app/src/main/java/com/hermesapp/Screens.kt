@@ -1990,10 +1990,21 @@ private fun PluginRow(
             }
             Spacer(Modifier.height(2.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // 来源徽章：自研（主色描边）与第三方（灰描边）必须一眼分得开
+                val originText = pluginOriginZh(p.origin, p.source)
+                val originColor = if (p.origin == "self") c.accent else c.dim
                 Text(
-                    pluginSourceZh(p.source) + (if (p.toggleable) "" else " · 只读"),
-                    color = c.faint, fontSize = T.micro, modifier = Modifier.weight(1f)
+                    originText,
+                    color = originColor, fontSize = T.micro,
+                    modifier = Modifier
+                        .border(BorderStroke(1.dp, originColor.copy(alpha = 0.45f)), RoundedCornerShape(Rad.pill))
+                        .padding(horizontal = 6.dp, vertical = 1.dp)
                 )
+                if (!p.toggleable) {
+                    Spacer(Modifier.width(G.x2))
+                    Text("只读", color = c.faint, fontSize = T.micro)
+                }
+                Spacer(Modifier.weight(1f))
                 if (p.toggleable) {
                     // 行内可见的启停入口（不靠长按/隐藏菜单）
                     Text(
