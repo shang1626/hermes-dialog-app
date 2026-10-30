@@ -1,3 +1,7 @@
+## 2.234 — versionCode 245
+
+- 插件页第三档文案「已停用」改「未启用」：服务端 status 里 disabled（显式停用）与 not enabled（从未启用）两种都收进这一档，按钮文案必须跟列表徽章一致，否则看着像错判。功能无变化。
+
 ## 2.233 — versionCode 244
 
 - 侧边栏「统计」整体下线，改为「插件」页（用户定版）。App 侧删：StatsScreen 及 5 个 Stats* 子组件、StatsBuild.kt、StatsFormatTest.kt、ChatViewModel 的 stats 四件套与 refreshStats、HermesApi.stats()。服务端同步删掉 `GET /api/stats` 路由 + handler + `_collect_stats`（177 行），补丁 apply_app_stats_patch.py 从六处登记里全部撤出（脚本与资产移到 retired/），体检现为 36 项 → 加插件补丁后 37 项全绿。

@@ -20,11 +20,17 @@ data class PluginItem(
     val enabled: Boolean get() = status == "enabled"
 }
 
-/** 插件页的分类档位（按钮平铺，不用下拉）。默认停「第三方」。 */
+/**
+ * 插件页的分类档位（按钮平铺，不用下拉）。默认停「第三方」。
+ *
+ * 第三档叫「未启用」而不是「已停用」：服务端 status 有 disabled（显式停用）与 not enabled
+ * （从未启用/内置默认关）两种，档位把两者都收进来，文案得跟徽章一致，否则按钮写「已停用」、
+ * 列表里却挂着「未启用」的徽章，看着像错判。
+ */
 enum class PluginTab(val label: String) {
     THIRD_PARTY("第三方"),
     BUNDLED("内置"),
-    DISABLED("已停用"),
+    DISABLED("未启用"),
 }
 
 /**
