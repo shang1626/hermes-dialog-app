@@ -1,3 +1,11 @@
+## 2.228 — versionCode 239
+
+- 重构「状态」页：CPU 与「内存 / Swap」改成折线图（此前是进度条），内存与 Swap 同图两条线；磁盘与系统负载量纲不同，压成紧凑两行；顶部概览卡保留网关状态/版本/已运行/活跃任务。
+- 去掉重复内容：底部明细只留别处没有的静态信息（操作系统、Python、CPU 型号/核数/主频、网关进程占用、可用空间）。原来在明细里重复出现的运行状态、PID、使用率、已用总量、负载、已运行、磁盘总大小/已用全部移除。
+- 折线图数据是 App 侧采样：每次刷新（状态页前台每 5 秒）追加一点，保留最近 40 点（约 3 分钟），换会话/重开 App 重新累积；序列无数据（如未启用 swap）就不画那条线。
+- 自绘 Canvas，不引第三方图表库（保持零 UI 依赖）。
+- 涉及文件：新增 `StatusChart.kt`（`ChartSeries` / `StatusLineChart` / `ChartCaption`）；`ChatModels.kt` 加 `StatusHistory`；`ChatViewModel.kt` 加 `_statusHistory` 与采样；`StatusBuild.kt` 精简 `buildStatus`；`Screens.kt` 重排 `StatusScreen` 并删除 `StatusMetricBar`。
+
 ## 2.227 — versionCode 238
 
 - 全屏看图支持左右滑动切换：会话内所有图片（用户发的）按顺序连成一组，点开任意一张即可左右滑到上一张/下一张；同一条助手消息里的多张内联图也连成一组。顶部显示「2 / 5」计数，两侧有可见的 ‹ › 箭头（到头的一侧不出现）。

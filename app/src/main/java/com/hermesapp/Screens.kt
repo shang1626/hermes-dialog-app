@@ -1534,6 +1534,7 @@ fun StatusScreen(vm: ChatViewModel, prefs: Prefs) {
     val sections by vm.statusSections.collectAsStateWithLifecycle()
     val metrics by vm.statusMetrics.collectAsStateWithLifecycle()
     val hero by vm.statusHero.collectAsStateWithLifecycle()
+    val history by vm.statusHistory.collectAsStateWithLifecycle()
     val err by vm.statusErr.collectAsStateWithLifecycle()
     val online by vm.online.collectAsStateWithLifecycle()
     // 上次刷新时刻：给「每 5 秒自动刷新」配一个会动的秒数，一眼看出数据是新的。
@@ -1549,6 +1550,12 @@ fun StatusScreen(vm: ChatViewModel, prefs: Prefs) {
     }
     // 状态一到就记一次刷新时间（数据变了才会触发重组，用 metrics/sections 变化当信号）。
     LaunchedEffect(metrics, sections) { refreshedAt = System.currentTimeMillis() }
+
+    val cpu = metrics.firstOrNull { it.key == "cpu" }
+    val mem = metrics.firstOrNull { it.key == "mem" }
+    val swap = metrics.firstOrNull { it.key == "swap" }
+    val disk = metrics.firstOrNull { it.key == "disk" }
+    val load = metrics.firstOrNull { it.key == "load" }
 
     Column(Modifier.fillMaxSize()) {
         // 顶部状态条：在线点 + 身份/地址 + 刷新
@@ -1576,11 +1583,43 @@ fun StatusScreen(vm: ChatViewModel, prefs: Prefs) {
         }
 
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(G.page)) {
-            // ① 顶部概览卡：状态徽章 + 模型 + 运行时长 + 在跑任务数，全部行内标签。
+            // ① 顶部概览卡：网关是否正常 / 版本 / 已运行 / 活跃任务。整页只在这里出现一次。
             hero?.let { StatusHeroCard(it) }
 
-            // ② 动态进度条：CPU / 内存 / Swap / 磁盘 / 负载，数值到条会平滑推进。
-            if (metrics.isNotEmpty()) {
+            // ② CPU 折线图
+            if (cpu != null) {
+                Spacer(Modifier.height(G.x3))
+                StatusChartCard(title = "CPU 使用率", sub = cpu.subText) {
+                    StatusLineChart(
+                        series = listOf(
+                            ChartSeries("CPU", c.accent, history.cpu, cpu.valueText)
+                        ),
+                        maxPoints = StatusHistory.MAX_POINTS,
+                    )
+                }
+            }
+
+            // ③ 内存与 Swap 合在一张折线图里（同一量纲都是百分比，放一起才看得出「内存吃满开始吃 swap」）
+            if (mem != null || swap != null) {
+                Spacer(Modifier.height(G.x3))
+                StatusChartCard(title = "内存 / Swap", sub = mem?.subText.orEmpty()) {
+                    StatusLineChart(
+                        series = listOfNotNull(
+                            mem?.let { ChartSeries("内存", c.warn, history.mem, it.valueText) },
+                            swap?.let { ChartSeries("Swap", c.bad, history.swap, it.valueText) },
+                        ),
+                        maxPoints = StatusHistory.MAX_POINTS,
+                    )
+                    if (swap != null && swap.subText.isNotEmpty()) {
+                        Spacer(Modifier.height(G.x1))
+                        ChartCaption("Swap " + swap.subText)
+                    }
+                }
+            }
+
+            // ④ 不进折线图的两项（量纲不同）：磁盘占用与系统负载，压成紧凑两行。
+            if (disk != null || load != null) {
+                Spacer(Modifier.height(G.x3))
                 Surface(
                     color = c.panel,
                     shape = RoundedCornerShape(Rad.card),
@@ -1588,24 +1627,65 @@ fun StatusScreen(vm: ChatViewModel, prefs: Prefs) {
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(Modifier.padding(G.x4)) {
-                        Text("资源使用", color = c.accent, fontSize = T.sub, fontWeight = T.bold)
-                        Spacer(Modifier.height(G.x3))
-                        for (m in metrics) {
-                            StatusMetricBar(m)
-                            Spacer(Modifier.height(G.x3))
-                        }
+                        disk?.let { StatusCompactRow("磁盘", it.valueText, it.subText) }
+                        if (disk != null && load != null) Spacer(Modifier.height(G.x2))
+                        load?.let { StatusCompactRow("系统负载", it.valueText, it.subText) }
                     }
                 }
-                Spacer(Modifier.height(G.x3))
             }
 
-            // ③ 原有明细分组（网关、CPU、内存、磁盘、运行…）。
+            // ⑤ 底部明细：只放图表与概览卡没覆盖到的静态信息（系统/Python/CPU 型号/网关进程占用/可用空间）。
             for (s in sections) {
-                StatusCard(s)
                 Spacer(Modifier.height(G.x3))
+                StatusCard(s)
             }
+            Spacer(Modifier.height(G.x3))
             // 心跳指示：点每 5 秒闪一下，说明自动刷新真的在跑。
             RefreshHeartbeat(refreshedAt)
+        }
+    }
+}
+
+/** 一张带标题的折线图卡片。 */
+@Composable
+private fun StatusChartCard(title: String, sub: String, content: @Composable () -> Unit) {
+    val c = LocalAppColors.current
+    Surface(
+        color = c.panel,
+        shape = RoundedCornerShape(Rad.card),
+        border = BorderStroke(1.dp, c.borderSoft),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.padding(G.x4)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(title, color = c.accent, fontSize = T.sub, fontWeight = T.bold)
+                if (sub.isNotEmpty()) {
+                    Spacer(Modifier.width(G.x2))
+                    Text(sub, color = c.faint, fontSize = T.micro,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f))
+                }
+            }
+            Spacer(Modifier.height(G.x3))
+            content()
+        }
+    }
+}
+
+/** 紧凑信息行：左侧标签、右侧数值、下方小字说明（标签与值同行，同类信息同行）。 */
+@Composable
+private fun StatusCompactRow(label: String, value: String, sub: String) {
+    val c = LocalAppColors.current
+    Column(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(label, color = c.dim, fontSize = T.cap)
+            Spacer(Modifier.weight(1f))
+            Text(value, color = c.text, fontSize = T.sub, fontWeight = T.bold)
+        }
+        if (sub.isNotEmpty()) {
+            Spacer(Modifier.height(1.dp))
+            Text(sub, color = c.faint, fontSize = T.micro,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -1672,48 +1752,6 @@ fun StatusHeroCard(h: StatusHero) {
                 Spacer(Modifier.width(G.x4))
                 Text("子任务：" + h.delegations, color = if (h.delegations > 0) c.accent else c.dim, fontSize = T.sub)
             }
-        }
-    }
-}
-
-/**
- * 一根进度条：标签 + 数值在上一行，下面一条会平滑推进的细条。
- * 颜色分级：<60% 用主色，60~85% 用警示色，≥85% 用危险色。
- * 负载条按「核数=100%」折算，超核就是满条。
- */
-@Composable
-fun StatusMetricBar(m: StatusMetric) {
-    val c = LocalAppColors.current
-    val frac by animateFloatAsState(
-        targetValue = (m.percent / 100.0).toFloat().coerceIn(0f, 1f),
-        animationSpec = tween(700), label = m.key
-    )
-    val color = when {
-        m.percent >= 85.0 -> c.bad
-        m.percent >= 60.0 -> c.warn
-        else -> c.accent
-    }
-    Column(Modifier.fillMaxWidth()) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(m.label, color = c.text, fontSize = T.sub)
-            Spacer(Modifier.weight(1f))
-            Text(m.valueText, color = color, fontSize = T.sub, fontWeight = T.bold)
-        }
-        Spacer(Modifier.height(G.x2))
-        // 轨道 + 填充；填充宽度按百分比动画推进。
-        Box(
-            Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(Rad.pill))
-                .background(c.cardAlt)
-        ) {
-            Box(
-                Modifier.fillMaxWidth(frac).fillMaxHeight()
-                    .clip(RoundedCornerShape(Rad.pill)).background(color)
-            )
-        }
-        if (m.subText.isNotEmpty()) {
-            Spacer(Modifier.height(G.x1))
-            Text(m.subText, color = c.faint, fontSize = T.cap,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }

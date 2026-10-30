@@ -259,6 +259,34 @@ data class StatusMetric(
     val subText: String = "",
 )
 
+/**
+ * 状态页折线图的历史采样：每刷新一次追加一个点，只留最近 [MAX_POINTS] 个。
+ * 序列为空 = 该项没有数据（如未启用 swap），界面就不画那条线。
+ */
+data class StatusHistory(
+    val cpu: List<Float> = emptyList(),
+    val mem: List<Float> = emptyList(),
+    val swap: List<Float> = emptyList(),
+) {
+    companion object {
+        /** 5 秒采样一次 × 40 = 约 3.3 分钟窗口，手机上够看趋势又不至于糊成一团。 */
+        const val MAX_POINTS = 40
+    }
+
+    /** 追加一次采样；null 表示这次没这项数据，该序列保持不动。 */
+    fun push(cpu: Float?, mem: Float?, swap: Float?): StatusHistory = StatusHistory(
+        cpu = append(cpu, this.cpu),
+        mem = append(mem, this.mem),
+        swap = append(swap, this.swap),
+    )
+
+    private fun append(v: Float?, old: List<Float>): List<Float> {
+        if (v == null) return old
+        val next = if (old.size >= MAX_POINTS) old.subList(old.size - MAX_POINTS + 1, old.size) else old
+        return next + v.coerceIn(0f, 100f)
+    }
+}
+
 /** 状态页顶部的概览卡：一眼看完「活着没、跑什么模型、跑了多久、在干几件事」。 */
 data class StatusHero(
     val ok: Boolean,

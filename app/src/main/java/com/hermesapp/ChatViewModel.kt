@@ -252,6 +252,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val _statusMetrics = MutableStateFlow<List<StatusMetric>>(emptyList())
     val statusMetrics = _statusMetrics.asStateFlow()
 
+    /** 折线图历史（每次刷新追加一点，只留最近 40 个）。 */
+    private val _statusHistory = MutableStateFlow(StatusHistory())
+    val statusHistory = _statusHistory.asStateFlow()
+
     private val _statusErr = MutableStateFlow("")
     val statusErr = _statusErr.asStateFlow()
 
@@ -2491,8 +2495,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val h = api?.sysinfo() ?: return@launch
                 _statusHero.value = buildHero(h)
-                _statusMetrics.value = buildMetrics(h)
+                val ms = buildMetrics(h)
+                _statusMetrics.value = ms
                 _statusSections.value = buildStatus(h)
+                // 折线图历史：每次刷新采样一个点（服务端没回该项就传 null，序列不动）。
+                fun pct(k: String): Float? = ms.firstOrNull { it.key == k }?.percent?.toFloat()
+                _statusHistory.value = _statusHistory.value.push(pct("cpu"), pct("mem"), pct("swap"))
                 _statusErr.value = ""
             } catch (e: Exception) {
                 AppLog.err("status", "获取系统状态失败", e)
