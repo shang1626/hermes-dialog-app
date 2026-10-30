@@ -662,11 +662,22 @@ class HermesApi(
         sync(base("/api/sysinfo/cpu_history?seconds=" + seconds).get().build())
 
     /**
-     * 用量统计（服务端只读端点 GET /api/stats?days=N，N 夹 1..90）。
-     * 走 [sync]→[callText] 的 HTTP/1.1 客户端（callTimeout 180s）：服务端首次冷查
-     * 要 3~5 秒（大 state.db），不能按探针那套 15s 超时算。调用方须在 Dispatchers.IO 里跑。
+     * 已安装插件清单（服务端 GET /api/plugins，只读快照）。
+     * 纯本地扫描（服务端约 40 毫秒），失败多为老网关 404。调用方须在 Dispatchers.IO 里跑。
      */
-    fun stats(days: Int): JSONObject = sync(base("/api/stats?days=" + days.coerceIn(1, 90)).get().build())
+    fun plugins(): JSONObject = sync(base("/api/plugins").get().build())
+
+    /**
+     * 启用/停用一个第三方插件（服务端 POST /api/plugins/toggle）。
+     *
+     * 服务端会跑 `hermes plugins enable|disable` 子进程并把网关插件重载一遍，**可能耗时数秒**
+     * （callTimeout 180s 才够）；返回体带 CLI 原始输出片段，界面拿它显示真实结果。
+     * 非 2xx 由 [sync] 抛 IOException（含服务端 JSON 原文），调用方须在 Dispatchers.IO 里跑。
+     */
+    fun togglePlugin(name: String, enable: Boolean): JSONObject {
+        val body = JSONObject().put("name", name).put("enable", enable).toString()
+        return sync(base("/api/plugins/toggle").post(body.toRequestBody(jsonType)).build())
+    }
 
     fun ping(): Boolean = runCatching {
         probeClient.newCall(base("/health").get().build()).execute().use { resp ->

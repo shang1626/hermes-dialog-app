@@ -1800,277 +1800,226 @@ fun StatusCard(s: StatusSection) {
 }
 
 /**
- * 统计页：只读展示服务端 `/api/stats` 的用量聚合（窗口 24 小时 / 7 / 30 / 90 天）。
+ * 插件页（侧边栏「插件」）。
  *
- * 手机端布局：窗口按钮平铺（不用下拉）+ 刷新；概览格两列；下面依次是 分渠道 / 分模型 /
- * 分用途 / 按天 / 工具 Top / 最耗会话。**不做自动轮询**——这是历史累计数据，手点刷新即可，
- * 也避免在大 state.db 上反复跑聚合查询（服务端一次 0.7~5 秒）。
+ * 手机端布局：顶部摘要（共 N · 已启用 M · 已停用 K）+ 刷新；下面一行**平铺的分类按钮**
+ * （第三方 / 内置 / 已停用，禁下拉），默认停在「第三方」——那是用户自己装的、真正会去动的东西。
+ * 列表用 LazyColumn（内置可能有 60+ 条）。第三方行带启用/停用开关，内置行只读。
+ *
+ * 不做自动轮询：插件清单只在装/卸/启停时变化，进页面拉一次、动作后重拉即可。
  */
 @Composable
-fun StatsScreen(vm: ChatViewModel, prefs: Prefs) {
+fun PluginsScreen(vm: ChatViewModel, prefs: Prefs) {
     val c = LocalAppColors.current
-    val model by vm.stats.collectAsStateWithLifecycle()
-    val err by vm.statsErr.collectAsStateWithLifecycle()
-    val loading by vm.statsLoading.collectAsStateWithLifecycle()
-    val days by vm.statsDays.collectAsStateWithLifecycle()
+    val model by vm.plugins.collectAsStateWithLifecycle()
+    val err by vm.pluginsErr.collectAsStateWithLifecycle()
+    val note by vm.pluginsNote.collectAsStateWithLifecycle()
+    val loading by vm.pluginsLoading.collectAsStateWithLifecycle()
+    // 默认档位是「第三方」（用户定版）；档位状态由界面持有，动作后重拉不会把它重置。
+    var tab by remember { mutableStateOf(PluginTab.THIRD_PARTY) }
+    var expanded by remember { mutableStateOf("") }
+    var confirm by remember { mutableStateOf<Pair<PluginItem, Boolean>?>(null) }
+    val shown = remember(model.items, tab) { filterPlugins(model.items, tab) }
 
-    // 每次进这一页刷新一次（用户要求：只有打开该界面才刷新；页面本身不做轮询）。
-    LaunchedEffect(Unit) { vm.refreshStats(days) }
+    LaunchedEffect(Unit) { vm.refreshPlugins() }
+    // 提示条飘完就收（一次性确认类提示，不常驻）
+    LaunchedEffect(note) {
+        if (note.isNotEmpty()) {
+            delay(4000)
+            vm.clearPluginsNote()
+        }
+    }
 
     Column(Modifier.fillMaxSize()) {
-        // 顶部条：标题 + 上次刷新时刻 + 刷新（与状态页同一视觉语言）。
+        // 顶部摘要 + 刷新
         Row(
-            Modifier.fillMaxWidth().background(c.panel).padding(horizontal = 14.dp, vertical = 10.dp),
+            Modifier.fillMaxWidth().background(c.panel).padding(horizontal = G.page, vertical = G.x3),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("用量统计", color = c.text, fontSize = T.body, fontWeight = T.bold)
-            Spacer(Modifier.weight(1f))
             Text(
-                if (loading) "刷新中…" else if (model != null) "上次 " + TimeFmt.hhmmss(model!!.generatedAt) else "",
-                color = c.faint, fontSize = T.micro
+                "共 " + model.total + " · 已启用 " + model.enabledCount +
+                    " · 未启用 " + (model.total - model.enabledCount),
+                color = c.text, fontSize = T.sub, modifier = Modifier.weight(1f)
             )
-            Spacer(Modifier.width(G.x2))
             OutlinedButton(
-                onClick = { vm.refreshStats(days) },
-                enabled = !loading,
+                onClick = { vm.refreshPlugins() },
                 contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
                 shape = RoundedCornerShape(Rad.pill),
                 border = BorderStroke(1.dp, c.border),
-            ) { Text("刷新", fontSize = T.sub, color = if (loading) c.dim else c.accent) }
+            ) { Text(if (loading) "刷新中…" else "刷新", fontSize = T.sub, color = c.accent) }
         }
-        // 窗口：四个平铺小描边按钮，选中项用主色描边高亮。
+        // 分类按钮：平铺三档，选中项主色描边（禁下拉）
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            Modifier.fillMaxWidth().padding(horizontal = G.page, vertical = G.x2),
+            horizontalArrangement = Arrangement.spacedBy(G.x2)
         ) {
-            for (opt in listOf(1 to "24小时", 7 to "7天", 30 to "30天", 90 to "90天")) {
-                val sel = days == opt.first
+            for (t in PluginTab.values()) {
+                val on = tab == t
+                val count = when (t) {
+                    PluginTab.THIRD_PARTY -> model.items.count { it.source == "user" }
+                    PluginTab.BUNDLED -> model.items.count { it.source != "user" }
+                    PluginTab.DISABLED -> model.items.count { it.status == "disabled" || it.status == "not enabled" }
+                }
                 OutlinedButton(
-                    onClick = { vm.refreshStats(opt.first) },
+                    onClick = { tab = t },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                     shape = RoundedCornerShape(Rad.pill),
-                    border = BorderStroke(1.dp, if (sel) c.accent else c.border),
-                    contentPadding = PaddingValues(vertical = 4.dp),
+                    border = BorderStroke(
+                        1.dp,
+                        if (on) c.accent.copy(alpha = 0.85f) else c.border
+                    ),
                     modifier = Modifier.weight(1f),
-                ) { Text(opt.second, fontSize = T.cap, color = if (sel) c.accent else c.dim) }
+                ) {
+                    Text(
+                        t.label + if (count > 0) " " + count else "",
+                        fontSize = T.cap,
+                        color = if (on) c.accent else c.dim,
+                        maxLines = 1
+                    )
+                }
             }
+        }
+        if (note.isNotEmpty()) {
+            Text(note, color = c.ok, fontSize = T.micro,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = G.page, vertical = 2.dp),
+                maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
         if (err.isNotEmpty()) {
-            Text(
-                err, color = c.bad, fontSize = T.sub,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp)
-            )
+            Text(err, color = c.bad, fontSize = T.sub,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = G.page, vertical = G.x2))
         }
-        val m = model
-        if (m == null) {
-            Text(
-                if (err.isEmpty()) "正在统计…" else "",
-                color = c.dim, fontSize = T.sub, modifier = Modifier.padding(G.page)
-            )
-            return
-        }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(c.borderSoft))
 
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(G.page)) {
-            // ① 概览格：两列平铺（同类数据同行，不留大块空白）。
-            for (row in m.metrics.chunked(2)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(G.x2)) {
-                    for (mm in row) StatsCell(mm, Modifier.weight(1f))
-                    if (row.size == 1) Spacer(Modifier.weight(1f))
-                }
-                Spacer(Modifier.height(G.x2))
-            }
-            // ② 分渠道 / 分模型 / 分用途。
-            StatsSectionCard("按渠道（token 花在哪）", m.sources)
-            StatsSectionCard("按模型", m.models)
-            StatsSectionCard("按用途（含辅助调用）", m.tasks)
-            // ③ 按天趋势（数字 + 横条）。
-            StatsDailyCard(m.daily)
-            // ④ 工具调用 Top、最耗会话。
-            StatsToolCard(m.tools)
-            StatsTopCard(m.tops)
+        if (!model.supported) {
             Text(
-                "口径：「按天」按会话开始时刻归日（跨午夜的会话整段记在开始那天）；合计 token = 输入 + 输出 + 缓存读 + 缓存写；工具调用数与上方列表同口径。本页不放费用——本机未记录计费，显示 0 会误导。",
-                color = c.faint, fontSize = T.micro
+                "服务端版本较旧，升级网关后可用",
+                color = c.dim, fontSize = T.sub,
+                modifier = Modifier.fillMaxWidth().padding(G.page)
             )
+            return@Column
         }
-    }
-}
-
-/** 概览格：标签 + 主值 + 一行小字副值。 */
-@Composable
-private fun StatsCell(m: StatsMetric, modifier: Modifier = Modifier) {
-    val c = LocalAppColors.current
-    Surface(
-        color = c.panel,
-        shape = RoundedCornerShape(Rad.card),
-        border = BorderStroke(1.dp, c.borderSoft),
-        modifier = modifier,
-    ) {
-        Column(Modifier.padding(G.x3)) {
-            Text(m.label, color = c.dim, fontSize = T.cap)
-            Spacer(Modifier.height(2.dp))
+        if (shown.isEmpty()) {
             Text(
-                m.value, color = c.text, fontSize = T.body, fontWeight = T.bold,
-                maxLines = 1, overflow = TextOverflow.Ellipsis
+                if (tab == PluginTab.THIRD_PARTY) "还没有安装第三方插件" else "这一档没有条目",
+                color = c.dim, fontSize = T.sub,
+                modifier = Modifier.fillMaxWidth().padding(G.page)
             )
-            if (m.sub.isNotEmpty()) {
-                Spacer(Modifier.height(1.dp))
-                Text(
-                    m.sub, color = c.faint, fontSize = T.micro,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis
+            return@Column
+        }
+        LazyColumn(
+            Modifier.weight(1f).fillMaxWidth(),
+            contentPadding = PaddingValues(G.page),
+            verticalArrangement = Arrangement.spacedBy(G.x2)
+        ) {
+            items(shown, key = { it.key }) { p ->
+                PluginRow(
+                    p = p,
+                    open = expanded == p.key,
+                    onToggleExpand = { expanded = if (expanded == p.key) "" else p.key },
+                    onToggle = { want -> confirm = p to want },
                 )
             }
         }
     }
-}
 
-/** 通用分段卡：标题 + 「左名 / 右主值 + 副值」行列表（分渠道、分模型、分用途共用）。 */
-@Composable
-private fun StatsSectionCard(title: String, rows: List<StatsRow>) {
-    val c = LocalAppColors.current
-    if (rows.isEmpty()) return
-    Surface(
-        color = c.panel,
-        shape = RoundedCornerShape(Rad.card),
-        border = BorderStroke(1.dp, c.borderSoft),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(Modifier.padding(G.x4)) {
-            Text(title, color = c.accent, fontSize = T.sub, fontWeight = T.bold)
-            Spacer(Modifier.height(G.x3))
-            for (r in rows) {
-                Row(
-                    Modifier.fillMaxWidth().padding(vertical = 3.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+    // 二次确认：启停会立刻改变运行中的网关，必须点名说清代价
+    confirm?.let { (p, want) ->
+        AlertDialog(
+            onDismissRequest = { confirm = null },
+            containerColor = c.panel,
+            title = { Text(if (want) "启用 " + p.name + "？" else "停用 " + p.name + "？", color = c.text) },
+            text = {
+                Column {
                     Text(
-                        r.name, color = c.dim, fontSize = T.cap,
-                        modifier = Modifier.width(88.dp), maxLines = 1, overflow = TextOverflow.Ellipsis
+                        if (want) "启用后网关会立即重载插件，插件提供的工具/能力随即可用。"
+                        else "停用后网关会立即卸载它，它提供的工具与能力马上不可用（例如记忆或搜索会回落）。",
+                        color = c.dim, fontSize = T.sub
                     )
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            r.value, color = c.text, fontSize = T.sub,
-                            maxLines = 1, overflow = TextOverflow.Ellipsis
-                        )
-                        if (r.sub.isNotEmpty()) {
-                            Text(
-                                r.sub, color = c.faint, fontSize = T.micro,
-                                maxLines = 1, overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
+                    Spacer(Modifier.height(G.x2))
+                    Text(pluginSourceZh(p.source) + " · " + p.version.ifEmpty { "无版本号" }, color = c.faint, fontSize = T.cap)
                 }
-            }
-        }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val w = want
+                    confirm = null
+                    vm.togglePlugin(p.key, w)
+                }) { Text(if (want) "启用" else "停用", color = if (want) c.accent else c.bad) }
+            },
+            dismissButton = { TextButton(onClick = { confirm = null }) { Text("取消", color = c.dim) } },
+        )
     }
-    Spacer(Modifier.height(G.x3))
 }
 
-/** 按天：每天一行「日期 + 横条 + 调用/输入/输出」，条长按当天 token 占比。 */
+/** 一行插件：名称 + 版本 + 状态徽章 + 来源；点行展开描述；第三方行带开关。 */
 @Composable
-private fun StatsDailyCard(list: List<StatsDaily>) {
+private fun PluginRow(
+    p: PluginItem,
+    open: Boolean,
+    onToggleExpand: () -> Unit,
+    onToggle: (Boolean) -> Unit,
+) {
     val c = LocalAppColors.current
-    if (list.isEmpty()) return
-    val maxTok = (list.maxOfOrNull { it.input + it.output } ?: 1L).coerceAtLeast(1L)
     Surface(
         color = c.panel,
         shape = RoundedCornerShape(Rad.card),
         border = BorderStroke(1.dp, c.borderSoft),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().clickable { onToggleExpand() }
     ) {
-        Column(Modifier.padding(G.x4)) {
-            Text("按天（最近 " + list.size + " 天）", color = c.accent, fontSize = T.sub, fontWeight = T.bold)
-            Spacer(Modifier.height(G.x3))
-            for (d in list) {
-                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(d.label, color = c.dim, fontSize = T.cap, modifier = Modifier.width(44.dp))
-                    Column(Modifier.weight(1f)) {
-                        Box(
-                            Modifier.fillMaxWidth().height(6.dp)
-                                .clip(RoundedCornerShape(Rad.pill)).background(c.cardAlt)
-                        ) {
-                            Box(
-                                Modifier
-                                    .fillMaxWidth(((d.input + d.output).toFloat() / maxTok.toFloat()).coerceIn(0.03f, 1f))
-                                    .fillMaxHeight()
-                                    .clip(RoundedCornerShape(Rad.pill)).background(c.accent)
-                            )
-                        }
-                        Spacer(Modifier.height(1.dp))
-                        Text(
-                            "调用 " + fmtNum(d.calls) + " · 入 " + fmtTok(d.input) + " · 出 " + fmtTok(d.output),
-                            color = c.faint, fontSize = T.micro,
-                            maxLines = 1, overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-            }
-        }
-    }
-    Spacer(Modifier.height(G.x3))
-}
-
-/** 工具调用 Top：名字左、次数右。 */
-@Composable
-private fun StatsToolCard(list: List<StatsTool>) {
-    val c = LocalAppColors.current
-    if (list.isEmpty()) return
-    Surface(
-        color = c.panel,
-        shape = RoundedCornerShape(Rad.card),
-        border = BorderStroke(1.dp, c.borderSoft),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(Modifier.padding(G.x4)) {
-            Text("工具调用 Top", color = c.accent, fontSize = T.sub, fontWeight = T.bold)
-            Spacer(Modifier.height(G.x3))
-            for (t in list) {
-                Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        toolNameZh(t.name), color = c.text, fontSize = T.sub,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
-                    )
-                    Text(fmtNum(t.count) + " 次", color = c.dim, fontSize = T.cap)
-                }
-            }
-        }
-    }
-    Spacer(Modifier.height(G.x3))
-}
-
-/** 消耗最高的会话：标题 + 来源/模型/调用 + 右侧 token。 */
-@Composable
-private fun StatsTopCard(list: List<StatsTop>) {
-    val c = LocalAppColors.current
-    if (list.isEmpty()) return
-    Surface(
-        color = c.panel,
-        shape = RoundedCornerShape(Rad.card),
-        border = BorderStroke(1.dp, c.borderSoft),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(Modifier.padding(G.x4)) {
-            Text("最耗 token 的会话", color = c.accent, fontSize = T.sub, fontWeight = T.bold)
-            Spacer(Modifier.height(G.x3))
-            for ((i, t) in list.withIndex()) {
-                Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text((i + 1).toString() + ".", color = c.faint, fontSize = T.cap, modifier = Modifier.width(20.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            t.title, color = c.text, fontSize = T.sub,
-                            maxLines = 1, overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            t.sub, color = c.faint, fontSize = T.micro,
-                            maxLines = 1, overflow = TextOverflow.Ellipsis
-                        )
-                    }
+        Column(Modifier.padding(G.x3)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(p.name, color = c.text, fontSize = T.sub, fontWeight = T.bold,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                if (p.version.isNotEmpty()) {
+                    Text(p.version, color = c.faint, fontSize = T.micro)
                     Spacer(Modifier.width(G.x2))
-                    Text(fmtTok(t.tokens), color = c.dim, fontSize = T.cap)
                 }
+                // 状态徽章：描边小胶囊，不用实色块
+                val badgeColor = when (p.status) {
+                    "enabled" -> c.ok
+                    "disabled" -> c.bad
+                    else -> c.dim
+                }
+                Text(
+                    pluginStatusZh(p.status),
+                    color = badgeColor, fontSize = T.micro,
+                    modifier = Modifier
+                        .border(BorderStroke(1.dp, badgeColor.copy(alpha = 0.5f)), RoundedCornerShape(Rad.pill))
+                        .padding(horizontal = 6.dp, vertical = 1.dp)
+                )
+            }
+            Spacer(Modifier.height(2.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    pluginSourceZh(p.source) + (if (p.toggleable) "" else " · 只读"),
+                    color = c.faint, fontSize = T.micro, modifier = Modifier.weight(1f)
+                )
+                if (p.toggleable) {
+                    // 行内可见的启停入口（不靠长按/隐藏菜单）
+                    Text(
+                        if (p.enabled) "停用" else "启用",
+                        color = if (p.enabled) c.bad else c.accent, fontSize = T.micro,
+                        modifier = Modifier
+                            .border(
+                                BorderStroke(1.dp, (if (p.enabled) c.bad else c.accent).copy(alpha = 0.45f)),
+                                RoundedCornerShape(Rad.pill)
+                            )
+                            .clickable { onToggle(!p.enabled) }
+                            .padding(horizontal = 8.dp, vertical = 2.dp)
+                    )
+                }
+            }
+            if (p.description.isNotEmpty()) {
+                Spacer(Modifier.height(G.x1))
+                Text(
+                    p.description,
+                    color = c.dim, fontSize = T.micro,
+                    maxLines = if (open) 12 else 2,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
     }
-    Spacer(Modifier.height(G.x3))
 }
 
 /**

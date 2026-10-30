@@ -1,3 +1,13 @@
+## 2.233 — versionCode 244
+
+- 侧边栏「统计」整体下线，改为「插件」页（用户定版）。App 侧删：StatsScreen 及 5 个 Stats* 子组件、StatsBuild.kt、StatsFormatTest.kt、ChatViewModel 的 stats 四件套与 refreshStats、HermesApi.stats()。服务端同步删掉 `GET /api/stats` 路由 + handler + `_collect_stats`（177 行），补丁 apply_app_stats_patch.py 从六处登记里全部撤出（脚本与资产移到 retired/），体检现为 36 项 → 加插件补丁后 37 项全绿。
+- 插件页：顶部摘要（共 N · 已启用 M · 未启用 K）+ 刷新；一行平铺分类按钮 **第三方 / 内置 / 已停用**，默认停在「第三方」（你手机上 3 个：agnes、hindsight、web-tavily-deepseek）；列表 LazyColumn，每行 名称+版本+状态徽章+来源，点行展开描述。
+- 第三方插件可启用/停用：行内描边小胶囊入口 → 二次确认（说明停用会立刻让该插件的工具/能力不可用）→ 服务端 POST /api/plugins/toggle。内置插件只读展示，不提供开关。
+- 状态一律以**服务端回读**为准（动作成功后重拉清单，不做本地乐观更新）：启停可能被能力校验拦下，本地先改会显示成「已启用但没生效」。
+- 老网关（无 /api/plugins）显示「服务端版本较旧，升级网关后可用」，不显示空列表。
+- 新增 `PluginsBuild.kt`（PluginItem / PluginTab / parsePlugins / filterPlugins / 状态与来源中文映射）与 `PluginsBuildTest`（7 条）。全仓单测 228 条全绿；变异验收：把「第三方」筛选改成 != user，`filter_third_party_only_user_source` 当场转红。
+- 服务端配套补丁 `apply_app_plugins_patch.py`：GET /api/plugins（复用 plugins_cmd 的发现与状态判定，66 个插件 0.04 秒、纯本地无网络）+ POST /api/plugins/toggle（跑 `hermes plugins enable|disable` 子进程，HERMES_HOME 钉到请求 profile，复用 CLI 的准入事务与网关插件重载；内置插件 400 拒绝）。实测 agnes 停用→启用往返成功，config.yaml 的 enabled 列表已还原。
+
 ## 2.232 — versionCode 243
 
 - 修 2.231 的一个真 bug：折线**从左往右画**，而横轴右端写的是「现在」——网关刚重启、点数不足时曲线缩在左边，看着就是「时间和数据对不上」。改为**右对齐**（最新一点贴右边界，历史向左延伸）。

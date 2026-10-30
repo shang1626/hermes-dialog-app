@@ -2544,42 +2544,67 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    // ---------- 用量统计（「统计」页） ----------
+    // ---------- 插件页（服务端 /api/plugins） ----------
 
-    /** 统计窗口（天）：1/7/30/90 四档，默认 7；页面按钮与它同源（动作后重拉才不会再错位）。 */
-    private val _statsDays = MutableStateFlow(7)
-    val statsDays = _statsDays.asStateFlow()
-
-    private val _stats = MutableStateFlow<StatsModel?>(null)
-    val stats = _stats.asStateFlow()
-    private val _statsErr = MutableStateFlow("")
-    val statsErr = _statsErr.asStateFlow()
-    private val _statsLoading = MutableStateFlow(false)
-    val statsLoading = _statsLoading.asStateFlow()
+    private val _plugins = MutableStateFlow(PluginsModel())
+    val plugins = _plugins.asStateFlow()
+    private val _pluginsErr = MutableStateFlow("")
+    val pluginsErr = _pluginsErr.asStateFlow()
+    private val _pluginsLoading = MutableStateFlow(false)
+    val pluginsLoading = _pluginsLoading.asStateFlow()
+    private val _pluginsNote = MutableStateFlow("")
+    val pluginsNote = _pluginsNote.asStateFlow()
 
     /**
-     * 拉一次用量统计（服务端只读聚合）。
+     * 拉一次插件清单（服务端只读快照）。
      *
-     * 必须走 Dispatchers.IO：HermesApi 全是阻塞式 okhttp，挂在主线程作用域上会抛
-     * NetworkOnMainThreadException（收件箱/子任务轮询都栽过，且该异常 message 为 null，
-     * 报障里只留一个「?」）。失败只写 [statsErr]、**不清空已有数据**——切换窗口失败时留着
-     * 上一份数据比空屏有用。
+     * 必须走 Dispatchers.IO：HermesApi 全是阻塞式 okhttp，挂主线程作用域会抛
+     * NetworkOnMainThreadException（该异常 message 为 null，报障里只剩一个「?」）。
+     * 失败只写 [pluginsErr]，**不清空已有清单**——老网关没有这个端点时靠 supported=false 提示，
+     * 而不是把已经显示的列表清成空屏。
      */
-    fun refreshStats(days: Int = _statsDays.value) {
-        _statsDays.value = days
-        _statsLoading.value = true
+    fun refreshPlugins() {
+        _pluginsLoading.value = true
         identityScope.launch(Dispatchers.IO) {
             try {
-                val raw = api?.stats(days) ?: return@launch
-                _stats.value = buildStats(raw)
-                _statsErr.value = ""
+                val raw = api?.plugins() ?: return@launch
+                _plugins.value = parsePlugins(raw)
+                _pluginsErr.value = ""
             } catch (e: Exception) {
-                AppLog.err("stats", "获取用量统计失败", e)
-                _statsErr.value = "获取失败：" + diagText(e)
+                // 404 = 老网关没打这个补丁，单独给一句人话，不当作故障刷红
+                val msg = diagText(e)
+                _pluginsErr.value = if (msg.contains("404")) "服务端版本较旧，升级网关后可用" else "获取失败：$msg"
+                AppLog.err("plugins", "获取插件清单失败", e)
             } finally {
-                _statsLoading.value = false
+                _pluginsLoading.value = false
             }
         }
+    }
+
+    /**
+     * 启用/停用一个**第三方**插件（服务端跑 `hermes plugins enable|disable` 子进程）。
+     *
+     * 成功后重新拉清单（以服务端回读的状态为准，不做本地乐观更新——启停可能被能力校验拦下，
+     * 本地先改会显示成「已启用但没生效」）。失败把服务端原文抛给界面，由界面提示。
+     */
+    fun togglePlugin(name: String, enable: Boolean) {
+        _pluginsNote.value = ""
+        identityScope.launch(Dispatchers.IO) {
+            try {
+                val raw = api?.togglePlugin(name, enable) ?: return@launch
+                val out = raw.optString("output", "").trim()
+                _pluginsNote.value = (if (enable) "已启用 " else "已停用 ") + name +
+                    if (out.isNotEmpty()) "：" + out.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty() else ""
+                refreshPlugins()
+            } catch (e: Exception) {
+                AppLog.err("plugins", "切换插件失败 " + name, e)
+                _pluginsErr.value = "切换失败：" + diagText(e)
+            }
+        }
+    }
+
+    fun clearPluginsNote() {
+        _pluginsNote.value = ""
     }
 
     // ---------- 发送与流式接收 ----------
