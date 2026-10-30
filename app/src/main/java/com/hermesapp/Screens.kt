@@ -1599,8 +1599,9 @@ fun StatusScreen(vm: ChatViewModel, prefs: Prefs) {
                 }
             }
 
-            // ③ 内存 / Swap / 磁盘：改回条形（用户 2026-10-30 定版，只有 CPU 用折线）。
-            val bars = listOfNotNull(mem, swap, disk)
+            // ③ 内存 / Swap / 磁盘 / 系统负载：全部用条形（用户 2026-10-30 定版，只有 CPU 用折线）。
+            // 负载的百分比是「按核数折算」（核数=100%），由 buildMetrics 算好，这里直接画条。
+            val bars = listOfNotNull(mem, swap, disk, load)
             if (bars.isNotEmpty()) {
                 Spacer(Modifier.height(G.x3))
                 Surface(
@@ -1620,20 +1621,7 @@ fun StatusScreen(vm: ChatViewModel, prefs: Prefs) {
                 }
             }
 
-            // ④ 系统负载：量纲不是百分比，单独一行（不画条）
-            load?.let {
-                Spacer(Modifier.height(G.x3))
-                Surface(
-                    color = c.panel,
-                    shape = RoundedCornerShape(Rad.card),
-                    border = BorderStroke(1.dp, c.borderSoft),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(Modifier.padding(G.x4)) {
-                        StatusCompactRow("系统负载", it.valueText, it.subText)
-                    }
-                }
-            }
+
 
             // ⑤ 底部明细：只放图表与概览卡没覆盖到的静态信息（系统/Python/CPU 型号/网关进程占用/可用空间）。
             for (s in sections) {
@@ -1669,24 +1657,6 @@ private fun StatusChartCard(title: String, sub: String, content: @Composable () 
             }
             Spacer(Modifier.height(G.x3))
             content()
-        }
-    }
-}
-
-/** 紧凑信息行：左侧标签、右侧数值、下方小字说明（标签与值同行，同类信息同行）。 */
-@Composable
-private fun StatusCompactRow(label: String, value: String, sub: String) {
-    val c = LocalAppColors.current
-    Column(Modifier.fillMaxWidth()) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(label, color = c.dim, fontSize = T.cap)
-            Spacer(Modifier.weight(1f))
-            Text(value, color = c.text, fontSize = T.sub, fontWeight = T.bold)
-        }
-        if (sub.isNotEmpty()) {
-            Spacer(Modifier.height(1.dp))
-            Text(sub, color = c.faint, fontSize = T.micro,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
