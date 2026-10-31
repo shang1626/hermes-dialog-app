@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hermes 浏览器空闲回收 · 核实报告（2026-10-11）</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#ffffff; --ink:#1c2027; --muted:#6b7280;
+    --line:#e3e6ea; --ok:#0f9d58; --bad:#d93025; --warn:#b7791f;
+    --accent:#1a56db; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.75 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;}
+  .wrap{max-width:860px;margin:0 auto;padding:28px 18px 72px;}
+  header h1{font-size:23px;line-height:1.4;margin:0 0 6px;}
+  .sub{color:var(--muted);font-size:13.5px;margin:0 0 22px;}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:18px 18px 6px;margin:0 0 16px;box-shadow:0 1px 2px rgba(16,24,40,.04);}
+  .card h2{font-size:16.5px;margin:0 0 12px;padding-left:10px;border-left:3px solid var(--accent);line-height:1.2;}
+  .card p,.card li{font-size:14.8px;}
+  .verdict{background:#fff;border:1px solid var(--line);border-left:4px solid var(--bad);
+    border-radius:10px;padding:14px 16px;margin-bottom:16px;}
+  .verdict .tag{display:inline-block;background:#fdecea;color:var(--bad);
+    font-size:12px;font-weight:700;padding:2px 8px;border-radius:99px;margin-bottom:8px;}
+  .verdict p{margin:0;font-size:15.5px;}
+  .lead{font-size:15.5px;}
+  table{width:100%;border-collapse:collapse;font-size:14.2px;margin:4px 0 12px;}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top;}
+  th{background:#fafbfc;color:#374151;font-weight:600;font-size:13.4px;white-space:nowrap;}
+  td.num{font-family:var(--mono);white-space:nowrap;}
+  .ok{color:var(--ok);font-weight:600}
+  .bad{color:var(--bad);font-weight:600}
+  .warn{color:var(--warn);font-weight:600}
+  code{font-family:var(--mono);font-size:12.9px;background:#f1f3f5;padding:1px 5px;border-radius:4px;
+    word-break:break-all;}
+  .chain{font-family:var(--mono);font-size:13px;line-height:2;background:#fafbfc;border:1px solid var(--line);
+    border-radius:10px;padding:14px;overflow-x:auto;}
+  .chain b{font-family:inherit;}
+  .metrics{display:flex;flex-wrap:wrap;gap:10px;margin:6px 0 14px;}
+  .metric{flex:1 1 150px;background:#fafbfc;border:1px solid var(--line);border-radius:10px;padding:12px 13px;}
+  .metric .k{font-size:12.6px;color:var(--muted);display:block;margin-bottom:4px;}
+  .metric .v{font-family:var(--mono);font-size:19px;font-weight:700;}
+  ul{padding-left:20px;margin:6px 0 12px}
+  li{margin:3px 0}
+  .two{display:flex;flex-wrap:wrap;gap:14px}
+  .two>div{flex:1 1 300px;min-width:260px}
+  .note{font-size:13px;color:var(--muted);margin:2px 0 12px}
+  footer{color:var(--muted);font-size:12.6px;text-align:center;margin-top:26px;line-height:1.8}
+  @media (max-width:520px){ body{font-size:15.4px} .wrap{padding:18px 12px 56px} header h1{font-size:20px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Hermes 浏览器空闲回收 · 核实报告</h1>
+  <p class="sub">对象：Herme（LXC 105 容器上的 Hermes Agent，v0.21.6+140）｜时间：2026-10-11 凌晨（CST）｜验证方式：真机实测 + 源码比对</p>
+</header>
+
+<div class="verdict">
+  <span class="tag">结论：那个每 15 分钟的定时回收任务不能删</span>
+  <p>内置回收确实存在，但它只管到 <b>chrome 这一层</b>；链路最上层的 <b>harness 守护进程</b>（每个约 22–42&nbsp;MB）不在内置回收范围内，既没有空闲自退，内置 orphan killer 也扫不到它 —— 这一层目前只有那个 cron 收割器在兜底。</p>
+</div>
+
+<div class="card">
+  <h2>一、浏览器链路分层：哪层会自己下班</h2>
+  <div class="chain">
+    browser_exec（下指令）<br>
+    &nbsp;&nbsp;└─ <b>harness 守护进程</b>（bu-default，翻译官）&nbsp;<span class="bad">✗ 没人叫它走，它就常驻</span><br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└─ agent-browser 守护（司机）&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="ok">✓ 120 秒空闲自退</span><br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└─ chrome（车）＋临时 profile&nbsp;&nbsp;<span class="ok">✓ 120 秒空闲全退，目录自动删</span>
+  </div>
+  <p class="note">一句话：车和司机都会自己下班，翻译官没有下班机制。</p>
+</div>
+
+<div class="card">
+  <h2>二、真机实测：空闲 200 秒后剩谁</h2>
+  <p class="lead">步骤：调一次 <code>browser_exec</code> 打开页面 → 放着完全不管 → 200 秒后按 <code>/proc</code> 逐个核对身份（不用字符串匹配，直接读命令行 argv）。</p>
+  <div class="metrics">
+    <div class="metric"><span class="k">chrome 进程</span><span class="v bad">13 → 0</span></div>
+    <div class="metric"><span class="k">agent-browser 守护</span><span class="v bad">已退出</span></div>
+    <div class="metric"><span class="k">临时 profile 目录</span><span class="v bad">已删除</span></div>
+    <div class="metric"><span class="k">harness 守护进程</span><span class="v ok">仍在，294 秒</span></div>
+  </div>
+  <p class="note">同事文档里「120 秒空闲 → 整块浏览器回收、标签消失、临时 profile 删除」这一条，实测完全属实。它作用的对象是 chrome 与 agent-browser 那一层，不含 harness 守护。</p>
+</div>
+
+<div class="card">
+  <h2>三、源码证据（三层各自核过）</h2>
+  <table>
+    <tr><th>证据</th><th>查法</th><th>结果</th></tr>
+    <tr>
+      <td>harness 有没有空闲自退</td>
+      <td class="num">本机 0.1.10<br>PyPI 最新 0.1.13<br>两版全包搜 idle</td>
+      <td>都没有。0.1.13 里 idle 只剩两个含义：等网页网络空闲、录像 rollover；没有任何「守护进程空闲 N 秒后退出」的开关或环境变量</td>
+    </tr>
+    <tr>
+      <td>Hermes 自己会不会收 harness 守护</td>
+      <td class="num">grep stop_harness_daemons<br>+ 比 origin/main</td>
+      <td>唯一调用点是退出路径 <code>cleanup_all_browsers()</code>，而且只停「本进程自己驱动过」的名字。最新的 origin/main 也一样</td>
+    </tr>
+    <tr>
+      <td>内置 orphan killer 能不能扫到它</td>
+      <td class="num">源码常量 + 路径比对</td>
+      <td>间隔 <code>300s</code>、宽限 <code>3600s</code>，只扫 <code>agent-browser-*</code> 的 socket 目录；harness 的 <code>bu-default.sock</code> 在 <code>/root/.config/browser-harness/runtime/</code>，不在扫描范围</td>
+    </tr>
+    <tr>
+      <td>本机配置里的阈值</td>
+      <td class="num">实查 config.yaml</td>
+      <td><code>browser.inactivity_timeout = 120</code>，<code>cloud_provider = local</code>（同事引用的 120 秒就是它）</td>
+    </tr>
+    <tr>
+      <td>升级能不能解决</td>
+      <td class="num">git fetch 比 HEAD..origin/main</td>
+      <td>不能。本机是 10-08 的提交，origin/main 之后对浏览器代码只有代码风格清理和一处 CDP 抓包修复，没有空闲回收相关改动</td>
+    </tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>四、同事文档逐条核对</h2>
+  <div class="two">
+    <div>
+      <p><b class="ok">说对的三条</b></p>
+      <ul>
+        <li>120 秒空闲回收整块浏览器、标签消失、临时 profile 删除 —— 实测确认</li>
+        <li>orphan killer 每 5 分钟一轮、宽限 1 小时 —— 源码常量确认（300s / 3600s）</li>
+        <li>退出时 atexit 再收一次 —— 源码确认，并且当晚实测到：网关 01:08:20 重启，harness 守护随即消失</li>
+      </ul>
+    </div>
+    <div>
+      <p><b class="bad">漏的一条（关键）</b></p>
+      <ul>
+        <li>harness 守护进程这一层没有任何自动回收：不随 120 秒超时走，也不被 orphan killer 覆盖，只在「驱动它的 Hermes 进程退出」时才被顺手停掉。网关常年不重启时，它就无限期常驻</li>
+      </ul>
+      <p class="note">同事那边大概率同样存在，只是没往这一层看。</p>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>五、收割器实际战果（近 7 天 syslog）</h2>
+  <div class="metrics">
+    <div class="metric"><span class="k">累计收割空闲守护</span><span class="v">47 次</span></div>
+    <div class="metric"><span class="k">被收时已存活</span><span class="v">600–1459s</span></div>
+    <div class="metric"><span class="k">单个守护内存</span><span class="v">22–42MB</span></div>
+  </div>
+  <table>
+    <tr><th>日期</th><th class="num">收割次数</th><th>日期</th><th class="num">收割次数</th></tr>
+    <tr><td>10-04</td><td class="num">5</td><td>10-08</td><td class="num">7</td></tr>
+    <tr><td>10-05</td><td class="num">2</td><td>10-09</td><td class="num">5</td></tr>
+    <tr><td>10-06</td><td class="num">15</td><td>10-10</td><td class="num">3</td></tr>
+    <tr><td>10-07</td><td class="num">10</td><td>最近一次</td><td class="num">10-10 10:15</td></tr>
+  </table>
+  <p class="note">被收的守护大多已空闲 10–24 分钟才被收（判定条件是「存活 ≥600 秒 + 守护进程 CPU 连续两轮零增量」），说明它们确实会长期常驻，而不是自己会退。命名会话（bu-ui-obj、bu-dsrelogin 等）每个都会留下一个，累积效应明显。</p>
+</div>
+
+<div class="card">
+  <h2>六、建议</h2>
+  <ul>
+    <li><b>保留 cron</b>：纯 shell 脚本、零 token 成本、每 15 分钟一轮，只在「真没人用」时才动手；误杀代价是下次调用自动重拉（秒级）。</li>
+    <li><b>可选收窄</b>：chrome 与 agent-browser 那半截已经内置自清，脚本可以只保留「收 harness 守护 + 清死会话的端点空壳」，减少误杀面。</li>
+    <li><b>不建议删</b>：删掉后每开一个新名字的浏览器会话都会留下一个常驻守护，网关越久不重启攒得越多。</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h2>附：验证方法（可复现）</h2>
+  <ul>
+    <li>进程身份核对：遍历 <code>/proc/*/cmdline</code>，按 argv 精确匹配，<code>browser_harness.daemon</code> 守护 / <code>agent-browser-*</code> / <code>chrome</code> 三类分开统计（不用 pgrep 字符串匹配，会自己匹配到自己）。</li>
+    <li>空闲计时：<code>browser_exec</code> 打开页面后不再操作，<code>sleep 200</code> 再统计一次。</li>
+    <li>收割记录：<code>journalctl -t browser-reaper</code>（脚本用 logger 写 syslog，cron 输出文件因无 stdout 一直显示 silent，看不出动作）。</li>
+    <li>源码比对：<code>git fetch</code> 后 <code>git diff --stat HEAD origin/main -- 'tools/browser*'</code>；harness 源码从 PyPI 下 sdist 解包搜 <code>idle</code>。</li>
+  </ul>
+</div>
+
+<footer>
+  报告生成：2026-10-11 · Hermes Agent default profile<br>
+  数据来源：本机实测进程快照 / config.yaml 实查 / journalctl 收割日志 / PyPI 与 GitHub 源码比对
+</footer>
+
+</div>
+</body>
+</html>

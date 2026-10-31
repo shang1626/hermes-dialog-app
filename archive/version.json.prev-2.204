@@ -1,0 +1,9 @@
+{
+  "versionCode": 215,
+  "versionName": "2.204",
+  "url": "https://gx.99801886.xyz/update/hermes-2.204-4289b8a1.apk",
+  "apk": "hermes-2.204-4289b8a1.apk",
+  "md5": "4289b8a1ae57fae36f223f3f021aab98",
+  "size": 2154266,
+  "notes": "v2.204：定时任务改名后的配套更新。服务端任务「峰谷密钥自动切换」已改名为「上游优先级自动切换」（逻辑也改了：优先用 ClinePass，它用不了就切两把 opencode-go，赶上工作日高峰 9-12 点、14-18 点则改用 ds.99801889.xyz；切走后每 5 小时重试一次 ClinePass）。App 卡片本来就显示服务端名，本版把 App 侧的任务备注同步到新名字；顺带把「FreeLLMAPI密钥用途守卫」的备注补上了 ClinePass 的作用域。只改翻译表，不改任何功能。"
+}

@@ -1,0 +1,8 @@
+[Unit]
+Description=Hermes app update file server
+[Service]
+ExecStart=/usr/bin/python3 -m http.server 8644 --bind 0.0.0.0 --directory /root/hermes-app/dist
+Restart=always
+RestartSec=3
+[Install]
+WantedBy=multi-user.target

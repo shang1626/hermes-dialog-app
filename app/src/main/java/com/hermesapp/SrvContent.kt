@@ -122,6 +122,54 @@ internal fun sanitizeLoadedMessages(list: List<Msg>, windowMs: Long = REWRITTEN_
     return if (fixed > 0 || dropped > 0) out else list
 }
 
+/** 服务端在流被切断后注入的合成消息（role=user，正文是 `[System: …]` 英文说明）。 */
+internal const val CUT_MARK = "\n\n（上一段被网络中断，已自动续跑）\n\n"
+
+internal fun isCutNote(text: String): Boolean {
+    val t = text.trim()
+    // 真注记是整段英文说明（几百字）；太短的（用户真打了个 [System: 开头）一律不算。
+    if (t.length < 24 || t.length > 2000) return false
+    return t.startsWith("[System:") || t.startsWith("[SYSTEM:")
+}
+
+/**
+ * 把「同一轮被网络切断的回复」并回一条气泡，同时丢掉那条 `[System: …]` 合成注记。
+ *
+ * 现场（2026-11-01 长任务）：一轮跑到一半上游断流，服务端 append 一条
+ * `[System: The previous response was cut off by a network error mid-stream …]`（role=user），
+ * 再续跑第二段。App 照字面渲染 → 用户看到「过程(100步) 前半段」+ 一条英文『报错』+ 后半段，
+ * 也就是「消息被分成两段，中间还有一段报错」。这条注记既不是用户说的话、也不该当合并锚点。
+ */
+internal fun coalesceCutReplies(list: List<Msg>): List<Msg> {
+    if (list.isEmpty() || list.none { isCutNote(it.text) }) return list
+    val out = ArrayList<Msg>(list.size)
+    var cut = false
+    for (m in list) {
+        if (isCutNote(m.text)) { cut = true; continue }
+        if (cut) {
+            cut = false
+            val last = out.lastOrNull()
+            if (m.role == "assistant" && last != null && last.role == "assistant") {
+                val trace = when {
+                    last.trace.isEmpty() -> m.trace
+                    m.trace.isEmpty() -> last.trace
+                    else -> last.trace + "\n" + m.trace
+                }
+                out[out.size - 1] = last.copy(
+                    text = (last.text + CUT_MARK + m.text).trim(),
+                    ts = if (m.ts > 0) m.ts else last.ts,
+                    trace = trace,
+                    usage = m.usage ?: last.usage,
+                    runId = last.runId.ifEmpty { m.runId },
+                )
+                continue
+            }
+        }
+        out.add(m)
+    }
+    return out
+}
+
 /** 单段正文渲染前的上限裁切：超长只显示前面一段 + 注明，绝不让一整屏渲染卡死主线程。 */
 internal fun capPara(s: String): String {
     if (s.length <= MAX_PARA_CHARS) return s

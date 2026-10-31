@@ -1,3 +1,11 @@
+## 2.238 — versionCode 249
+
+- 修「消息被分成两段，中间还有一段报错」。真凶不是合并逻辑，是**上游把回复切断了**：长任务跑到 00:25 上游断流，服务端往会话里 append 一条 `role=user` 的合成注记 `[System: The previous response was cut off by a network error mid-stream …]` 再续跑第二段。App 照字面渲染 → 你看到「前半段」+ 一条英文『报错』气泡 + 「后半段」。
+- 修法：新增 `isCutNote` / `coalesceCutReplies`（服务端投影 `coalesceCutRows` 同一口径）——这类注记一律不进气泡、不当用户锚点，紧邻的两段助手按时间并回一条，中间留一行灰字「（上一段被网络中断，已自动续跑）」。三个入口都接了：服务端历史 `historyRows`、增量 `parseRows`、落盘 `ensureLoaded`（老会话装新包重进即自愈）。判据收紧到 24~2000 字且以 `[System:` 开头，用户自己打方括号不受影响。
+- 顺带查出「发图后模型读不到」的根因：**上游 2MB 请求体上限**（tokengo 的 axum 默认 `DefaultBodyLimit`，实测 2.0MB 过、3.0MB 回 413 `Failed to buffer the request body: length limit exceeded`）。你那张 1080×10609、2.2MB 的长截图转 base64 约 3MB → 整轮丢图 + 断流。
+- 服务端侧（网关补丁，不随 App 发版）已加「附件适配」：超长截图按段切片、大图等比缩小，原件保留不动，切片顺序写进本轮正文说明；本条 2.2MB 长截图实测切成 6 段、合计 799KB，模型 0 次工具调用直接读出末尾结论。
+- 新增 6 条单测（注记识别/两段合并/无前段丢弃/不误粘用户消息/正常历史原样不动/服务端投影同口径），全仓 241 条全绿。
+
 ## 2.237 — versionCode 248
 
 - 2.236 的补充：坏形状可能**已经躺在落盘里**（`ensureLoaded` 在内存为空时直接赋值落盘列表、不走合并），所以光改恢复路径不够——新增 `healSplitTurnBubbles`，读盘时先自愈一遍（把开头那条「没有正文的助手气泡」挪回本轮尾部、轨迹按 ts 拼接、计时取更早），已污染的会话装上新包再进就恢复成一条「过程」。新增 2 条单测（坏形状归位 + 正常历史原样不动），ChatMergeTest 16 条全绿。

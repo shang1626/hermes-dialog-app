@@ -59,6 +59,29 @@ internal fun historyRows(a: HermesApi, sid: String): List<HistRow> {
         // 绝不能 optString：数组会被序列化成含 base64 的 JSON 文本（20 万字气泡，卡死首屏）。
         out.add(HistRow(role, contentText(o), o.optString("id", i.toString())))
     }
+    return coalesceCutRows(out)
+}
+
+/**
+ * 服务端把「断流后自动续跑」写成一条 role=user 的 `[System: …]` 注记：它不是用户说的话，
+ * 不能当用户气泡、也不能当合并锚点；紧邻的两段助手按顺序并回一条（中间留一行说明）。
+ */
+internal fun coalesceCutRows(rows: List<HistRow>): List<HistRow> {
+    if (rows.isEmpty() || rows.none { isCutNote(it.text) }) return rows
+    val out = ArrayList<HistRow>(rows.size)
+    var cut = false
+    for (m in rows) {
+        if (isCutNote(m.text)) { cut = true; continue }
+        if (cut) {
+            cut = false
+            val last = out.lastOrNull()
+            if (m.role == "assistant" && last != null && last.role == "assistant") {
+                out[out.size - 1] = last.copy(text = (last.text + CUT_MARK + m.text).trim())
+                continue
+            }
+        }
+        out.add(m)
+    }
     return out
 }
 

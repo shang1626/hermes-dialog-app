@@ -4,6 +4,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -127,5 +128,85 @@ class SrvContentTest {
         assertFalse(looksLikeContentArray("[1,2,3]"))
         assertFalse(looksLikeContentArray("[{\"a\":1}]"))
         assertFalse(looksLikeContentArray(""))
+    }
+
+    // ---- 断流续跑注记（2026-11-01：用户报「消息被分成两段，中间还有一段报错」）----
+
+    private val cutNote = "[System: The previous response was cut off by a network error mid-stream " +
+        "— a transport interruption, NOT a change in your capabilities. Your tools are still fully " +
+        "available; call them as normal. Continue the task from where you left off.]"
+
+    @Test
+    fun cut_note_is_recognized_and_plain_text_is_not() {
+        assertTrue(isCutNote(cutNote))
+        assertFalse(isCutNote("普通正文"))
+        assertFalse(isCutNote("[System:"))
+        // 用户自己打的方括号注释（正文远长于注记上限）不能被误判
+        assertFalse(isCutNote("[System: " + "x".repeat(4000) + "]"))
+    }
+
+    @Test
+    fun cut_note_between_two_assistant_segments_becomes_one_bubble() {
+        val msgs = listOf(
+            Msg("user", "继续完善帝王脚本", ts = 1_000),
+            Msg("assistant", "第一段：改完 4 处", ts = 1_100),
+            Msg("user", cutNote, ts = 1_200),          // 服务端合成的注记
+            Msg("assistant", "第二段：刷蜂效率", ts = 1_300),
+        )
+        val out = coalesceCutReplies(msgs)
+        assertEquals(2, out.size)
+        assertEquals("user", out[0].role)
+        assertEquals("assistant", out[1].role)
+        assertTrue(out[1].text.contains("第一段：改完 4 处"))
+        assertTrue(out[1].text.contains("第二段：刷蜂效率"))
+        assertTrue(out[1].text.contains("已自动续跑"))
+        // 时间取后一段：界面显示的是这条最终答复落定的时间
+        assertEquals(1_300L, out[1].ts)
+        assertFalse(out.any { isCutNote(it.text) })
+    }
+
+    @Test
+    fun cut_note_without_a_previous_segment_is_dropped() {
+        val msgs = listOf(
+            Msg("user", "在吗", ts = 1_000),
+            Msg("user", cutNote, ts = 1_100),
+            Msg("assistant", "在", ts = 1_200),
+        )
+        val out = coalesceCutReplies(msgs)
+        assertEquals(2, out.size)
+        assertEquals("在", out[1].text)
+        assertFalse(out.any { isCutNote(it.text) })
+    }
+
+    @Test
+    fun cut_note_does_not_glue_a_user_message_to_the_previous_answer() {
+        val msgs = listOf(
+            Msg("assistant", "上一轮答案", ts = 1_000),
+            Msg("user", cutNote, ts = 1_100),
+            Msg("user", "新的问题", ts = 1_200),
+        )
+        val out = coalesceCutReplies(msgs)
+        assertEquals(2, out.size)
+        assertEquals("上一轮答案", out[0].text)
+        assertEquals("新的问题", out[1].text)
+    }
+
+    @Test
+    fun coalesce_leaves_normal_history_untouched() {
+        val msgs = listOf(Msg("user", "q", ts = 1), Msg("assistant", "a", ts = 2), Msg("user", "q2", ts = 3))
+        assertSame(msgs, coalesceCutReplies(msgs))
+    }
+
+    @Test
+    fun cut_rows_merge_on_the_server_side_projection_too() {
+        val rows = listOf(
+            HistRow("user", "q", "1"),
+            HistRow("assistant", "前半段", "2"),
+            HistRow("user", cutNote, "3"),
+            HistRow("assistant", "后半段", "4"),
+        )
+        val out = coalesceCutRows(rows)
+        assertEquals(2, out.size)
+        assertTrue(out[1].text.contains("前半段") && out[1].text.contains("后半段"))
     }
 }

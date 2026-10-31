@@ -749,10 +749,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.loading = true
         val t0 = System.currentTimeMillis()
         identityScope.launch(Dispatchers.IO) {
-            // 读盘即自愈：「过程被劈成上下两截」的本地污染（[空气泡·后半段] | 用户 | [空气泡·前半段]）
-            // 在这一步归位并合并，别等下一次服务端合并才修（见 healSplitTurnBubbles）。
-            val msgs = healSplitTurnBubbles(
-                sanitizeLoadedMessages(runCatching { store.loadMessages(id) }.getOrDefault(emptyList())))
+            // 读盘即自愈，两层：
+            //  ① 投影行还原 + 去重（sanitizeLoadedMessages）；
+            //  ② 「过程被劈成上下两截」的本地污染（[空气泡·后半段] | 用户 | [空气泡·前半段]）
+            //     归位并合并（healSplitTurnBubbles）；
+            //  ③ 断流续跑的 [System: …] 注记不进气泡，两段助手并回一条（coalesceCutReplies）。
+            val msgs = coalesceCutReplies(healSplitTurnBubbles(
+                sanitizeLoadedMessages(runCatching { store.loadMessages(id) }.getOrDefault(emptyList()))))
             val cost = System.currentTimeMillis() - t0
             withContext(Dispatchers.Main.immediate) {
                 if (r.dead) { r.loading = false; return@withContext }
@@ -2013,7 +2016,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             ts = parseTs(o.optString("timestamp", "")),
                             runId = o.optString("run_id", "")))
                     }
-                    return out
+                    // [System: …] 断流注记不进气泡，紧邻的助手两段并成一条（见 coalesceCutReplies）。
+                    return coalesceCutReplies(out).toMutableList()
                 }
                 // 增量窗口（2026-10-13 省电改动 + 用户铁律「本地绝不能比服务端少」）：
                 // 窗口 = 常规 40 行 + 本地落后服务端的行数 —— 落后多少就把多少补进窗口里，
