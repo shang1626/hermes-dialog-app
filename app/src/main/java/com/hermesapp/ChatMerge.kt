@@ -80,6 +80,18 @@ internal fun answerSignature(rows: List<HistRow>, anchor: Int): String? {
     return "${rows.size}|${ans.id}|${ans.text.length}"
 }
 /**
+ * 落盘正文读回来时的自愈：把「没有正文的助手气泡」从开头挪回本轮的尾部，并合并同一轮的
+ * 多个占位气泡（轨迹按 ts 拼接、计时取更早的）。
+ *
+ * 为什么需要单独一遍：`ensureLoaded` 在内存为空时是**直接赋值**落盘列表（不走合并），
+ * 已经被历史版本写坏的「[空气泡·后半段] | 用户消息 | [空气泡·前半段]」就会原样显示。
+ * 合并算法本身已经能修这种形状，这里只是让它也在「读盘即用」的路径上跑一次。
+ * 幂等：修复后的列表再跑一遍结果不变。
+ */
+internal fun healSplitTurnBubbles(msgs: List<Msg>): List<Msg> =
+    if (msgs.size < 2) msgs else mergeByUserAnchor(msgs, emptyList())
+
+/**
  * 服务端会话记录与本地消息的合并——按「用户消息内容」对齐，不按数组下标。
  *
  * 为什么不能按下标：/api/sessions/{id}/messages 会滤掉空内容的助手行（本地保留，

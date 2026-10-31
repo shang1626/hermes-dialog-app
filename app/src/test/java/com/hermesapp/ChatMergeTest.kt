@@ -165,4 +165,27 @@ class ChatMergeTest {
         assertEquals(listOf("assistant", "user", "assistant"), merged.map { it.role })
         assertEquals("上一轮的收尾说明", merged.first().text)
     }
+
+    @Test
+    fun heal_loaded_messages_repairs_poisoned_order() {
+        // 落盘里已经是坏形状（内存为空时 ensureLoaded 直接赋值，不会走合并）
+        val later = blank("后半段", ts = 2_000L)
+        val user = Msg("user", "q", ts = 1_000L)
+        val earlier = blank("前半段", ts = 1_000L)
+        val healed = healSplitTurnBubbles(listOf(later, user, earlier))
+        assertEquals(listOf("user", "assistant"), healed.map { it.role })
+        assertEquals("前半段\n后半段", healed.last().trace)
+        assertEquals(2, healed.size)
+        // 再跑一遍不变（幂等，落盘/读盘反复安全）
+        assertEquals(healed, healSplitTurnBubbles(healed))
+    }
+
+    @Test
+    fun heal_leaves_normal_history_untouched() {
+        val msgs = listOf(
+            Msg("user", "一问", ts = 1_000L), a("一答", ts = 2_000L),
+            Msg("user", "二问", ts = 3_000L), a("二答", ts = 4_000L),
+        )
+        assertEquals(msgs, healSplitTurnBubbles(msgs))
+    }
 }

@@ -749,7 +749,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         r.loading = true
         val t0 = System.currentTimeMillis()
         identityScope.launch(Dispatchers.IO) {
-            val msgs = sanitizeLoadedMessages(runCatching { store.loadMessages(id) }.getOrDefault(emptyList()))
+            // 读盘即自愈：「过程被劈成上下两截」的本地污染（[空气泡·后半段] | 用户 | [空气泡·前半段]）
+            // 在这一步归位并合并，别等下一次服务端合并才修（见 healSplitTurnBubbles）。
+            val msgs = healSplitTurnBubbles(
+                sanitizeLoadedMessages(runCatching { store.loadMessages(id) }.getOrDefault(emptyList())))
             val cost = System.currentTimeMillis() - t0
             withContext(Dispatchers.Main.immediate) {
                 if (r.dead) { r.loading = false; return@withContext }
