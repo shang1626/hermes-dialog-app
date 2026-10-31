@@ -120,4 +120,49 @@ class ChatMergeTest {
     fun quote_snippet_collapses_newlines() {
         assertEquals("我：a b c", quoteSnippet(u("a\nb\nc")))
     }
+
+    // ---- 过程被劈成上下两截（2026-10-31 实测：同一轮 23 步 + 96 步，中间夹着用户消息）----
+
+    private fun blank(trace: String, ts: Long, startedAt: Long = ts) =
+        Msg("assistant", "", pending = true, ts = ts, startedAt = startedAt, trace = trace)
+
+    @Test
+    fun merge_moves_orphan_blank_assistant_after_the_user_message() {
+        // 恢复/接管抢在落盘读盘之前新起的占位气泡（后半段轨迹）被当成了「开头」，
+        // 落盘那条（前半段轨迹）留在用户消息之后 —— 合并后必须归位成 用户 → 助手。
+        val later = blank("· ✓ terminal 后半段", ts = 2_000L, startedAt = 2_000L)
+        val user = Msg("user", "继续完善帝王/枭雄一站式脚本", ts = 1_000L)
+        val earlier = blank("· ✓ terminal 前半段", ts = 1_000L, startedAt = 1_000L)
+        val merged = mergeByUserAnchor(listOf(later, user, earlier), emptyList())
+        assertEquals(listOf("user", "assistant"), merged.map { it.role })
+        val asst = merged.last()
+        assertEquals("· ✓ terminal 前半段\n· ✓ terminal 后半段", asst.trace)
+        // 计时锚点取更早那次，不能从后半段重新计时（否则「耗时」显示被腰斩）
+        assertEquals(1_000L, asst.startedAt)
+        assertEquals(1_000L, asst.ts)
+        assertTrue(asst.pending)
+    }
+
+    @Test
+    fun merge_orphan_heal_is_idempotent() {
+        val later = blank("后半段", ts = 2_000L)
+        val user = Msg("user", "q", ts = 1_000L)
+        val earlier = blank("前半段", ts = 1_000L)
+        val once = mergeByUserAnchor(listOf(later, user, earlier), emptyList())
+        val twice = mergeByUserAnchor(once, emptyList())
+        assertEquals(once.size, twice.size)
+        assertEquals(2, twice.size)
+        assertEquals(1, twice.count { it.role == "assistant" })
+    }
+
+    @Test
+    fun merge_keeps_head_assistant_with_text() {
+        // 有正文的助手行属于上一轮的正常开头，不能被这条修复挪走
+        val head = a("上一轮的收尾说明", ts = 500L)
+        val user = Msg("user", "q", ts = 1_000L)
+        val ans = a("本轮答案", ts = 2_000L)
+        val merged = mergeByUserAnchor(listOf(head, user, ans), emptyList())
+        assertEquals(listOf("assistant", "user", "assistant"), merged.map { it.role })
+        assertEquals("上一轮的收尾说明", merged.first().text)
+    }
 }

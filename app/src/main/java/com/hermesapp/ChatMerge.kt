@@ -263,7 +263,15 @@ internal fun mergeByUserAnchor(local: List<Msg>, srv: List<Msg>): List<Msg> {
     }
 
     val out = mutableListOf<Msg>()
-    out.addAll(if (lHead.isNotEmpty()) lHead else sHead)
+    // 「没有正文的助手气泡」= 某一轮还没说完的占位气泡，它不属于「第一条用户消息之前」的开头。
+    // 旧实现把它当开头原样粘在最前面：一旦恢复/接管路径在落盘正文还没读进内存时就新起了一个
+    // 占位气泡（ensureLoaded 是异步的），合并结果就成了
+    // 「[空气泡·后半段轨迹] | 用户消息 | [空气泡·前半段轨迹]」——用户看到的就是过程被劈成
+    // 上下两截（2026-10-31 实测同一轮 23 步 + 96 步）。这里先把这类孤儿气泡抽出来，
+    // 收尾时并回同一轮的尾气泡（轨迹按时间拼接、计时取更早的那个）。
+    fun isBlankAssistant(m: Msg) = m.role == "assistant" && m.text.isBlank() && m.approval == null && m.clarify == null
+    val (lHeadKeep, lHeadStray) = lHead.partition { !isBlankAssistant(it) }
+    out.addAll(if (lHeadKeep.isNotEmpty()) lHeadKeep else sHead)
     // 服务端独有的用户块（被压缩改写 / 别的端发的轮次）按其原顺序插回对应位置：
     // 用「下一个本地已匹配块的 srv 索引」当边界，把边界之前未匹配的服务端块补进去。
     var sIdx = 0
@@ -283,6 +291,28 @@ internal fun mergeByUserAnchor(local: List<Msg>, srv: List<Msg>): List<Msg> {
     while (sIdx < sUsers.size) {
         if (!srvMatched[sIdx]) { out.add(sUsers[sIdx]); out.addAll(sTails[sIdx]) }
         sIdx++
+    }
+    // 开头抽出来的孤儿空气泡：并回同一轮（本块）末尾那个占位气泡；没有就并成一条挂到末尾。
+    // 轨迹按 ts 先后拼接，计时取更早的 startedAt —— 否则「耗时 58 分」会从后半段重新计时。
+    if (lHeadStray.isNotEmpty()) {
+        fun mergeBlank(into: Msg, stray: Msg): Msg {
+            val traces = listOf(into to into.ts, stray to stray.ts)
+                .sortedBy { if (it.second > 0) it.second else Long.MAX_VALUE }
+                .map { it.first.trace }.filter { it.isNotBlank() }
+            return into.copy(
+                trace = traces.joinToString("\n"),
+                startedAt = listOf(into.startedAt, stray.startedAt).filter { it > 0 }.minOrNull() ?: 0L,
+                ts = listOf(into.ts, stray.ts).filter { it > 0 }.minOrNull() ?: into.ts,
+                pending = into.pending || stray.pending,
+                runId = into.runId.ifEmpty { stray.runId },
+                images = if (into.images.isNotEmpty()) into.images else stray.images,
+                subagents = if (into.subagents.isNotEmpty()) into.subagents else stray.subagents,
+            )
+        }
+        val lastBlank = out.indexOfLast { isBlankAssistant(it) }
+        var carried = lHeadStray.first()
+        for (stray in lHeadStray.drop(1)) carried = mergeBlank(carried, stray)
+        if (lastBlank >= 0) out[lastBlank] = mergeBlank(out[lastBlank], carried) else out.add(carried)
     }
     return out
 }

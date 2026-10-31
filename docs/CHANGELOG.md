@@ -1,3 +1,10 @@
+## 2.236 — versionCode 247
+
+- 修「长任务的『过程』被劈成上下两截、时间还倒退」（用户实测：同一轮上面一个「过程(23步) 23:51」气泡、下面一个「过程(96步) 23:23 耗时58.4分」，中间夹着用户消息）。
+- 根因是两个缺陷叠加：① `resumeActiveRun` / `attachRemoteRun` 在 `ensureLoaded`（异步 IO 读盘）还没返回时就读 `r.messages` 判断「复用气泡还是新起」——读到空列表，于是给同一轮又起了一个占位气泡；② `mergeByUserAnchor` 把「没有正文的助手气泡」当成「第一条用户消息之前的开头」原样粘在最前面，那条新气泡就被排到了用户消息上面。结果轨迹被拆成两段（96 步在下、23 步在上）。
+- 修法：新增 `ensureLoadedAwait`（等落盘正文真的进内存，5 秒兜底），恢复/接管四条分支（运行中/已收尾/不存在/探不出来）与 `attachRemoteRun` 全部改用它；`mergeByUserAnchor` 把这类「孤儿空气泡」从开头抽出来并回同一轮的尾气泡——轨迹按 ts 拼接、`startedAt` 取更早的一个（否则耗时从后半段重新计时），并对已污染的本地数据自愈。
+- 新增 3 条单测（归一位置 + 轨迹拼接/计时取早 + idempotent + 有正文的开头行不许被挪走）；ChatMergeTest 14 条全绿。变异验收：把 `lHeadStray` 那段关掉，`merge_moves_orphan_blank_assistant_after_the_user_message` 当场转红。
+
 ## 2.235 — versionCode 246
 
 - 插件页区分「自研 / 第三方」：服务端 /api/plugins 新增 `author` 与 `origin` 字段（origin 取值 bundled 内置 / self 自研 / catalog 第三方目录安装，按 plugin.yaml 的 author 判定，自研白名单 jiacvn、Hermes Agent 等）。App 行内把来源做成描边小胶囊：自研主色、第三方灰色、内置灰色，非可切换项另标「只读」。

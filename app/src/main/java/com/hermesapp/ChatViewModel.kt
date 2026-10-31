@@ -774,6 +774,29 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * `ensureLoaded` 的「等它真的读进内存」版本 —— 恢复/接管路径必须先看到落盘气泡再决定
+     * 「复用还是新起」。
+     *
+     * 为什么需要：`ensureLoaded` 是异步的（IO 里读盘），调用后立刻读 `r.messages.value`
+     * 拿到的是空列表 → `hasLocalTurnBubble` 判成 false → 给同一轮新起一个空气泡；随后落盘
+     * 正文读回来合并，那条新气泡被当成「第一条用户消息之前的开头」排到最上面，于是同一轮的
+     * 过程被劈成上下两截（2026-10-31 实测：上面 23 步、下面 96 步，中间夹着用户消息）。
+     * 超时（5 秒）仍按未加载处理，宁可新起气泡也不能让恢复流程卡死。
+     */
+    private suspend fun ensureLoadedAwait(id: String, timeoutMs: Long = 5_000L) {
+        val r = rt(id)
+        if (r.loaded || r.dead) return
+        ensureLoaded(id)
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            val done = withContext(Dispatchers.Main.immediate) { r.loaded || r.dead }
+            if (done) return
+            delay(20L)
+        }
+        AppLog.log("resume", "等落盘正文超时 sid=" + id.take(8) + " 按未加载处理")
+    }
+
+    /**
      * 恢复落盘的待发队列（R05）。
      *
      * 只在「该会话当前没有队列」时恢复，并且**逐条按回执状态复核**：只有回执还停在
@@ -1542,7 +1565,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         AppLog.log("resume", "恢复探测 sid=" + sid.take(8) + " 状态=" + last.status)
                         if (last.status in RUNNING_STATES) {
                             val r = rt(sid)
-                            ensureLoaded(sid)
+                            ensureLoadedAwait(sid)
                             r.runId = rid
                             r.finished = false
                             restoreTurnStart(r, last.payload, "恢复探测")
@@ -1581,7 +1604,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             streamRun(a, sid)
                         } else {
                             // run 已结束：清掉落盘读回的过期待办卡片，再拉记录。
-                            ensureLoaded(sid)
+                            ensureLoadedAwait(sid)
                             clearStaleCards(rt(sid))
                             prefs.removeActiveRun(sid)
                             if (sid == _currentId.value) refreshFromServer()
@@ -1589,7 +1612,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     // 服务端明确说没这个 run：标记失效，清掉并拉一次记录。
                     HermesApi.RunStatus.Missing -> {
-                        ensureLoaded(sid)
+                        ensureLoadedAwait(sid)
                         clearStaleCards(rt(sid))
                         prefs.removeActiveRun(sid)
                         if (sid == _currentId.value) refreshFromServer()
@@ -1599,7 +1622,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     // 只留个标记干等的话，回前台这条路径以前根本不存在，任务就永远不报了。
                     HermesApi.RunStatus.Unknown -> {
                         val r = rt(sid)
-                        ensureLoaded(sid)
+                        ensureLoadedAwait(sid)
                         r.runId = rid
                         r.finished = false
                         r.resumed = true
@@ -1700,10 +1723,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * （lastSeq 有值、末尾就是助手行）就复用它标成进行中，否则新起一个，避免同一轮
      * 正文被追到旧回复上、或显示两遍。
      */
-    private fun attachRemoteRun(sid: String, rid: String, payload: org.json.JSONObject?) {
+    private suspend fun attachRemoteRun(sid: String, rid: String, payload: org.json.JSONObject?) {
         val r = rt(sid)
         if (r.busy.value) return
-        ensureLoaded(sid)
+        // 等落盘正文读完再判「复用气泡还是新起」：ensureLoaded 是异步的，直接读 messages
+        // 会读到空列表 → 同一轮多出一个占位气泡、过程被劈成两截（见 ensureLoadedAwait）。
+        ensureLoadedAwait(sid)
         r.runId = rid
         r.finished = false
         r.resumed = true
