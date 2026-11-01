@@ -103,6 +103,9 @@ class JobFormatTest {
         assertTrue(jobZhNote("Hindsight回填保活").contains("每 10 分钟"))
         assertTrue(jobZhNote("Hindsight回填验收").contains("每 20 分钟"))
         assertTrue(jobZhNote("归纳时间窗管制").contains("高峰"))
+        assertTrue(jobZhNote("归纳时间窗管制").contains("只在出错时提醒"))
+        assertFalse(jobZhNote("归纳时间窗管制").contains("每 10 分钟"))
+        assertFalse(jobZhNote("归纳时间窗管制").contains("已停"))
         assertTrue(jobZhNote("归纳完成通知").contains("3 次"))
     }
 
