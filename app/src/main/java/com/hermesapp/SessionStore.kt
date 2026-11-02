@@ -480,7 +480,7 @@ class SessionStore(private val dir: File, private val profile: String) {
                     }
                     ApprovalCard(ao.optString("requestId", ""), ao.optString("command", ""),
                         ao.optString("description", ""), ch, ao.optString("resolved", ""),
-                        ao.optBoolean("expired", false))
+                        ao.optBoolean("expired", false), ao.optInt("generation", -1))
                 }
                 val clarify = o.optJSONObject("clarify")?.let { co ->
                     val ch = mutableListOf<String>()
@@ -489,7 +489,7 @@ class SessionStore(private val dir: File, private val profile: String) {
                     }
                     ClarifyCard(co.optString("clarifyId", ""), co.optString("question", ""), ch,
                         co.optBoolean("multiSelect", false), co.optString("resolved", ""),
-                        co.optBoolean("expired", false))
+                        co.optBoolean("expired", false), co.optInt("generation", -1))
                 }
                 // token 用量 / 耗时：不落盘的话重开 App、切会话回来这三项就没了。
                 val usage = o.optJSONObject("usage")?.let { uo ->
@@ -631,7 +631,7 @@ class SessionStore(private val dir: File, private val profile: String) {
                     val cj = JSONObject()
                         .put("requestId", c.requestId).put("command", c.command)
                         .put("description", c.description).put("resolved", c.resolved)
-                        .put("expired", c.expired)
+                        .put("expired", c.expired).put("generation", c.generation)
                     val ca = JSONArray(); for (s in c.choices) ca.put(s); cj.put("choices", ca)
                     o.put("approval", cj)
                 }
@@ -639,7 +639,7 @@ class SessionStore(private val dir: File, private val profile: String) {
                     val cj = JSONObject()
                         .put("clarifyId", c.clarifyId).put("question", c.question)
                         .put("multiSelect", c.multiSelect).put("resolved", c.resolved)
-                        .put("expired", c.expired)
+                        .put("expired", c.expired).put("generation", c.generation)
                     val ca = JSONArray(); for (s in c.choices) ca.put(s); cj.put("choices", ca)
                     o.put("clarify", cj)
                 }

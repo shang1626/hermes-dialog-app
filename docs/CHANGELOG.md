@@ -1,3 +1,15 @@
+## 2.241 — versionCode 252
+
+- 修「敏感权限审批有系统提示消息，但点进 App 看不到审批操作」（用户实测：01:30 与 03:22/03:28 三次，日志里只有一行 `[approval] 收到审批请求 ... id=`，通知弹了、卡片没挂）。
+- 根因：服务端 run 事件流已切到 canonical session-authority 通道，`approval.request` 载荷字段从 `request_id` 改成了 `prompt_id`，并新增 `execution_generation`。App 只认 `request_id` → `placeApproval` 顶部取到空串直接 `return`，卡片永远挂不上；而通知在挂卡之前就发了，于是「有提示、没卡片」。同一处还波及两条路：
+  ① **回执体形状**：canonical 的 `POST /v1/runs/{id}/approval` 用集合相等校验，要求 body 恰好是 `{request_id, execution_generation, choice}`，多一个 `all` 或少 generation 都判 `invalid_params`(400)。旧代码发的是 `{choice, request_id, all}`，就算卡片挂出来点了也会失败。
+  ② **重开 App 补挂卡片**：canonical 的 run 投影把待办放在 `pending_controls` 数组（每项 `{kind, prompt_id, execution_generation, command, description, choices}`），老代码只读 `status=waiting_for_approval` + `approval` 对象，于是重启后补不上。
+- 修法：新增 `ApprovalWire`（纯逻辑，可单测）统一做字段归一化——`promptId` 先 `request_id` 后 `prompt_id`，`clarifyId` 同理，`generation` 缺省 -1；回执体按「有没有 generation」分流：canonical 只发三个键（`all` 在本地靠 `autoApproveRun` 武装实现，不再透传），老通道保持原样。`respondApproval`/`respondClarify` 再按 400 自适应换另一种形状重试一次——服务端两套通道都做集合校验，猜错只能靠回执自适应。
+- 卡片带 `generation` 并落盘（`SessionStore`），重开 App、跨进程恢复后回执仍带对代次；否则服务端判 `stale_generation`。
+- `restorePendingCard` 先认 `pending_controls` 数组，`*.settled` 事件（服务端说这条待办已结束）把卡片标失效收起，不再留点了没反应的死卡片。
+- 挂卡失败不再静默：`审批卡片未挂载：id空=… 选项空=… 键=…`，下次字段再变一眼可见。
+- 新增 8 条单测（两种通道的 id 归一化 / generation 缺省 / canonical 回执体恰好三个键且不透传 all / 老通道保留 all / 澄清回执同口径 / id 优先级），全仓 255 条全绿；变异验收：去掉 `prompt_id` 回落后 `ApprovalWireTest` 当场转红。
+
 ## 2.240 — versionCode 251
 
 - 治本（修复三）：**退出界面不再掐掉正在跑的那一轮**。原来 Activity 销毁 → `onCleared` → `detachIdentity` 会 `identityJob.cancel()` + `r.call.cancel()` + `streamGen++` + `runtimes.clear()`，而流回调、攒帧放帧、退避重连、翻历史、落盘全挂在这个作用域上——VM 一没，这一轮就彻底「没人接」：服务端照跑照写库，App 里零事件、零收尾、不落盘、不通知。这就是 2.239 里那条 868 字回复消失的直接成因。

@@ -3447,7 +3447,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 澄清请求：挂到该会话当前助手气泡上，等用户选选项回执。 */
     private fun attachClarify(r: SessionRuntime, ev: com.hermesapp.net.SseEvent) {
-        AppLog.log("clarify", "收到澄清请求 sid=" + r.id.take(8) + " id=" + ev.data.optString("clarify_id", "").take(12))
+        AppLog.log("clarify", "收到澄清请求 sid=" + r.id.take(8) + " id=" + ApprovalWire.clarifyId(ev.data).take(12) +
+            " gen=" + ApprovalWire.generation(ev.data))
         notifyNeedAction(r.id, "需要你选一下", ev.data.optString("question", ""))
         placeClarify(r, ev.data)
     }
@@ -3458,7 +3459,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * false），都没有才新建。同一 clarify_id 已挂且未作废的不重复挂。
      */
     private fun placeClarify(r: SessionRuntime, data: org.json.JSONObject) {
-        val cid = data.optString("clarify_id", "")
+        val cid = ApprovalWire.clarifyId(data)
+        val gen = ApprovalWire.generation(data)
         val q = data.optString("question", "")
         if (cid.isEmpty() || q.isEmpty()) return
         val chs = mutableListOf<String>()
@@ -3467,7 +3469,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
         val cur = r.messages.value
         if (cur.any { it.clarify?.clarifyId == cid && it.clarify?.resolved?.isEmpty() == true }) return
-        val card = ClarifyCard(cid, q, chs, data.optBoolean("multi_select", false))
+        val card = ClarifyCard(cid, q, chs, data.optBoolean("multi_select", false), generation = gen)
         val list = cur.toMutableList()
         var i = list.indexOfLast { it.role == "assistant" && it.pending }
         if (i < 0) i = list.indexOfLast { it.role == "assistant" }
@@ -3492,7 +3494,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (!receiptInFlight.add(msgId)) return
         r.retryNote.value = "正在送达回执…"
         identityScope.launch(Dispatchers.IO) {
-            val code = a.respondClarify(rid, card.clarifyId, choice)
+            val code = a.respondClarify(rid, card.clarifyId, choice, generation = card.generation)
             withContext(Dispatchers.Main) {
                 receiptInFlight.remove(msgId)
                 when {
@@ -3521,7 +3523,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 审批请求：挂到该会话当前助手气泡上，等用户点按钮回执。 */
     private fun attachApproval(r: SessionRuntime, ev: com.hermesapp.net.SseEvent) {
-        AppLog.log("approval", "收到审批请求 sid=" + r.id.take(8) + " id=" + ev.data.optString("request_id", "").take(12))
+        AppLog.log("approval", "收到审批请求 sid=" + r.id.take(8) + " id=" + ApprovalWire.promptId(ev.data).take(12) +
+            " gen=" + ApprovalWire.generation(ev.data))
         // 通知正文也用中文：服务端 description 是英文 pattern key（如 recursive delete），
         // 只在展示层翻（见 ApprovalZh.kt），不改回执、不改落盘。
         notifyNeedAction(r.id, "需要你确认",
@@ -3531,14 +3534,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 把审批卡片挂到该会话。位置与去重规则同 [placeClarify]。 */
     private fun placeApproval(r: SessionRuntime, data: org.json.JSONObject) {
-        val rid = data.optString("request_id", "")
+        // 字段归一化：canonical 通道（session-authority）下发的是 prompt_id +
+        // execution_generation，老通道是 request_id。只认 request_id 的话这里
+        // 取到空串就 return —— 通知弹了、卡片没挂，正是用户报的现象。
+        val rid = ApprovalWire.promptId(data)
+        val gen = ApprovalWire.generation(data)
         val cmd = data.optString("command", "")
         val desc = data.optString("description", "")
         val chs = mutableListOf<String>()
         data.optJSONArray("choices")?.let { a ->
             for (i in 0 until a.length()) chs.add(a.optString(i))
         }
-        if (rid.isEmpty() || chs.isEmpty()) return
+        if (rid.isEmpty() || chs.isEmpty()) {
+            AppLog.log("approval", "审批卡片未挂载：id空=" + rid.isEmpty() + " 选项空=" + chs.isEmpty() +
+                " 键=" + data.keys().asSequence().joinToString(","))
+            return
+        }
         val cur = r.messages.value
         if (cur.any { it.approval?.requestId == rid && it.approval?.resolved?.isEmpty() == true }) return
         // 「本次任务全部批准」开着且就是本轮：不弹卡片等人点，直接回执「允许一次」，
@@ -3549,12 +3560,37 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // 换轮了（或本轮已收尾）：本次任务的口径到此为止，关掉，恢复逐个询问。
                 disarmAutoApprove(r.id)
             } else if (cur.none { it.approval?.requestId == rid }) {
-                hangApprovalCard(r, ApprovalCard(rid, cmd, desc, chs, resolved = APPROVAL_AUTO))
+                hangApprovalCard(r, ApprovalCard(rid, cmd, desc, chs, resolved = APPROVAL_AUTO, generation = gen))
                 autoApproveReply(r, rid)
                 return
             }
         }
-        hangApprovalCard(r, ApprovalCard(rid, cmd, desc, chs))
+        hangApprovalCard(r, ApprovalCard(rid, cmd, desc, chs, generation = gen))
+    }
+
+    /** 服务端 `*.settled`：把对应待办卡片标失效（留痕，不删）。 */
+    private fun settleCard(r: SessionRuntime, promptId: String, isApproval: Boolean) {
+        if (promptId.isEmpty()) return
+        val cur = r.messages.value.toMutableList()
+        var changed = false
+        for (k in cur.indices) {
+            val m = cur[k]
+            if (isApproval) {
+                val ap = m.approval ?: continue
+                if (ap.requestId == promptId && ap.resolved.isEmpty() && !ap.expired) {
+                    cur[k] = m.copy(approval = ap.copy(expired = true)); changed = true
+                }
+            } else {
+                val cl = m.clarify ?: continue
+                if (cl.clarifyId == promptId && cl.resolved.isEmpty() && !cl.expired) {
+                    cur[k] = m.copy(clarify = cl.copy(expired = true)); changed = true
+                }
+            }
+        }
+        if (changed) {
+            setMsgs(r, cur)
+            AppLog.log("approval", "待办已由服务端收尾，卡片收起 id=" + promptId.take(12) + " 审批=" + isApproval)
+        }
     }
 
     /** 卡片落位：挂到当前助手气泡上，没有就新起一条（位置与去重规则同 [placeClarify]）。 */
@@ -3584,7 +3620,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val msgId = r.messages.value.lastOrNull { it.approval?.requestId == requestId }?.id ?: return
         AppLog.log("approval", "自动批准 sid=" + r.id.take(8) + " id=" + requestId.take(12))
         identityScope.launch(Dispatchers.IO) {
-            val code = a.respondApproval(rid, requestId, "once")
+            val gen = r.messages.value.lastOrNull { it.approval?.requestId == requestId }?.approval?.generation ?: -1
+            val code = a.respondApproval(rid, requestId, "once", generation = gen)
             if (code in 200..299) return@launch
             withContext(Dispatchers.Main) {
                 val cur = r.messages.value.toMutableList()
@@ -3609,6 +3646,23 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun restorePendingCard(r: SessionRuntime, payload: org.json.JSONObject?) {
         val p = payload ?: return
+        // canonical 通道（session-authority）的 run 投影把待办放在 `pending_controls` 数组里，
+        // 每项是 {kind, prompt_id, execution_generation, command, description, choices}；
+        // 老通道才是 `status=waiting_for_approval` + `approval` 对象。先认新形状，
+        // 否则「重开 App 补挂卡片」在 canonical 下永远补不上。
+        val pcs = p.optJSONArray("pending_controls")
+        if (pcs != null && pcs.length() > 0) {
+            var placed = 0
+            for (i in 0 until pcs.length()) {
+                val o = pcs.optJSONObject(i) ?: continue
+                when (o.optString("kind")) {
+                    "approval" -> if (ApprovalWire.promptId(o).isNotEmpty()) { placeApproval(r, o); placed++ }
+                    "clarify" -> if (ApprovalWire.clarifyId(o).isNotEmpty()) { placeClarify(r, o); placed++ }
+                }
+            }
+            AppLog.log("approval", "按 pending_controls 补挂卡片 sid=" + r.id.take(8) + " 条数=" + placed)
+            return
+        }
         when (p.optString("status", "")) {
             "waiting_for_clarify" -> placeClarify(r, p.optJSONObject("clarify") ?: return)
             "waiting_for_approval" -> placeApproval(r, p.optJSONObject("approval") ?: return)
@@ -3787,7 +3841,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (!receiptInFlight.add(msgId)) return
         r.retryNote.value = "正在送达回执…"
         identityScope.launch(Dispatchers.IO) {
-            val code = a.respondApproval(rid, card.requestId, "once", resolveAll = true)
+            val code = a.respondApproval(rid, card.requestId, "once", resolveAll = true, generation = card.generation)
             withContext(Dispatchers.Main) {
                 receiptInFlight.remove(msgId)
                 when {
@@ -3829,7 +3883,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (!receiptInFlight.add(msgId)) return
         r.retryNote.value = "正在送达回执…"
         identityScope.launch(Dispatchers.IO) {
-            val code = a.respondApproval(rid, card.requestId, choice)
+            val code = a.respondApproval(rid, card.requestId, choice, generation = card.generation)
             withContext(Dispatchers.Main) {
                 receiptInFlight.remove(msgId)
                 when {
@@ -4248,6 +4302,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     "approval.request" -> attachApproval(r, ev)
                     "clarify.request" -> attachClarify(r, ev)
+                    // 服务端说这条待办已结束（别处答了/超时/轮次收尾）：把卡片收起，
+                    // 否则会留一张点了也没用的死卡片。
+                    "approval.settled" -> settleCard(r, ev.data.optString("prompt_id", ""), true)
+                    "clarify.settled" -> settleCard(r, ev.data.optString("prompt_id", ""), false)
                     "subagent.start" -> upsertSubagent(r, ev, running = true)
                     "subagent.complete" -> upsertSubagent(r, ev, running = false)
                     "run.completed" -> {

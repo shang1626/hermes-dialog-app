@@ -2,6 +2,7 @@ package com.hermesapp.net
 
 import android.content.Context
 import com.hermesapp.AppLog
+import com.hermesapp.ApprovalWire
 import com.hermesapp.Keys
 import com.hermesapp.UpdateInfo
 import okhttp3.Call
@@ -312,19 +313,31 @@ class HermesApi(
      * （与 steer 同一类缺陷）。
      */
     /** 澄清回执：同 [respondApproval]，返回 HTTP 码（-1 = 网络/异常），404/409 = 已失效。 */
-    fun respondClarify(runId: String, clarifyId: String, response: String): Int = runCatching {
-        val body = JSONObject().put("clarify_id", clarifyId).put("response", response)
-        val t0 = System.currentTimeMillis()
-        client.newCall(
-            base("/v1/runs/" + runId + "/clarify").post(body.toString().toRequestBody(jsonType)).build()
-        ).execute().use { resp ->
-            val text = if (resp.isSuccessful) "" else resp.body?.string().orEmpty()
+    fun respondClarify(runId: String, clarifyId: String, response: String, generation: Int = -1): Int =
+        runCatching {
+            val path = "/v1/runs/" + runId + "/clarify"
+            var gen = generation
+            var shape = "canonical"
+            var t0 = System.currentTimeMillis()
+            fun post(b: JSONObject): Pair<Int, String> =
+                client.newCall(base(path).post(b.toString().toRequestBody(jsonType)).build()).execute().use { r ->
+                    Pair(r.code, if (r.isSuccessful) "" else r.body?.string().orEmpty())
+                }
+            var (code, text) = post(ApprovalWire.clarifyBody(clarifyId, response, gen))
+            // 同 respondApproval：两套通道的回执体形状不同，400 就换一种再来一次。
+            if (code == 400 && !text.contains("clarify_not_pending")) {
+                gen = if (gen >= 0) -1 else generation.coerceAtLeast(0)
+                shape = if (gen >= 0) "canonical" else "legacy"
+                val t1 = System.currentTimeMillis()
+                val r2 = post(ApprovalWire.clarifyBody(clarifyId, response, gen))
+                code = r2.first; text = r2.second; t0 = t1
+            }
             AppLog.log("receipt", "澄清回执 run=" + runId.take(12) + " choice=" + response.take(40) +
-                " -> " + resp.code + " " + (System.currentTimeMillis() - t0) + "ms" +
+                " gen=" + generation + " 形状=" + shape +
+                " -> " + code + " " + (System.currentTimeMillis() - t0) + "ms" +
                 (if (text.isEmpty()) "" else " body=" + text.take(160)))
-            resp.code
-        }
-    }.getOrDefault(-1)
+            code
+        }.getOrDefault(-1)
 
     /** 按需下载网关托管的媒体文件（大附件走这条路，不塞进消息体）。 */
     fun downloadMedia(token: String): ByteArray {
@@ -522,23 +535,41 @@ class HermesApi(
      * 才是「可重试」。旧实现只回布尔，两种情况混成一个「回执没送到」，卡片就永远杵在那
      * （2026-10-11 实测：用户点确认/拒绝反复 409，提示条既不消也点不动）。
      */
-    fun respondApproval(runId: String, requestId: String, choice: String, resolveAll: Boolean = false): Int =
-        runCatching {
-            val body = JSONObject().put("choice", choice)
-            if (requestId.isNotEmpty()) body.put("request_id", requestId)
-            if (resolveAll) body.put("all", true)
-            val t0 = System.currentTimeMillis()
-            client.newCall(
-                base("/v1/runs/" + runId + "/approval").post(body.toString().toRequestBody(jsonType)).build()
-            ).execute().use { resp ->
-                val text = if (resp.isSuccessful) "" else resp.body?.string().orEmpty()
-                AppLog.log("receipt", "审批回执 run=" + runId.take(12) + " choice=" + choice +
-                    (if (resolveAll) " all=1" else "") +
-                    " -> " + resp.code + " " + (System.currentTimeMillis() - t0) + "ms" +
-                    (if (text.isEmpty()) "" else " body=" + text.take(160)))
-                resp.code
-            }
-        }.getOrDefault(-1)
+    fun respondApproval(
+        runId: String,
+        requestId: String,
+        choice: String,
+        resolveAll: Boolean = false,
+        generation: Int = -1,
+    ): Int = runCatching {
+        val path = "/v1/runs/" + runId + "/approval"
+        var gen = generation
+        var shape = "canonical"
+        var resp = postApproval(path, ApprovalWire.approvalBody(requestId, choice, gen, resolveAll))
+        // 形状被判 invalid_params(400)：换成另一种再试一次。
+        // 服务端有两套通道（canonical 只认 {request_id,execution_generation,choice}，
+        // 老通道只认 {choice,request_id,all}），两边都做集合校验，猜错就是 400，
+        // 所以这里按 400 自适应，而不是把形状硬编码在某一边。
+        if (resp.code == 400 && !resp.text.contains("approval_not_active")) {
+            gen = if (gen >= 0) -1 else generation.coerceAtLeast(0)
+            shape = if (gen >= 0) "canonical" else "legacy"
+            resp = postApproval(path, ApprovalWire.approvalBody(requestId, choice, gen, resolveAll))
+        }
+        AppLog.log("receipt", "审批回执 run=" + runId.take(12) + " choice=" + choice +
+            (if (resolveAll) " all=1" else "") + " gen=" + generation + " 形状=" + shape +
+            " -> " + resp.code + " " + resp.ms + "ms" +
+            (if (resp.text.isEmpty()) "" else " body=" + resp.text.take(160)))
+        resp.code
+    }.getOrDefault(-1)
+
+    private class Resp(val code: Int, val text: String, val ms: Long)
+
+    private fun postApproval(path: String, body: JSONObject): Resp {
+        val t0 = System.currentTimeMillis()
+        return client.newCall(base(path).post(body.toString().toRequestBody(jsonType)).build()).execute().use { r ->
+            Resp(r.code, if (r.isSuccessful) "" else r.body?.string().orEmpty(), System.currentTimeMillis() - t0)
+        }
+    }
 
     // ---------- 定时任务（服务端 /api/jobs） ----------
 

@@ -142,6 +142,11 @@ data class ApprovalCard(
      * 失效卡片不再进「待处理」提示条，只留痕显示「已失效」+ 一个「知道了」。
      */
     val expired: Boolean = false,
+    /**
+     * canonical 通道的执行代号（`execution_generation`）；老通道没有，落成 -1。
+     * 回执要带回去：服务端把「代次不符」判成 stale_generation，答错代次等于没答。
+     */
+    val generation: Int = -1,
 )
 
 /** 澄清卡片：服务端 clarify.request 事件下发（我问你「选 A 还是 B」），点选项回执。 */
@@ -153,6 +158,8 @@ data class ClarifyCard(
     val resolved: String = "",
     /** 同 [ApprovalCard.expired]：本轮结束/服务端已不在等这条选择时置真，不再置顶提示。 */
     val expired: Boolean = false,
+    /** 同 [ApprovalCard.generation]。 */
+    val generation: Int = -1,
 )
 
 /** 一轮对话的 token 用量（run.completed 的 usage 字段）。 */
