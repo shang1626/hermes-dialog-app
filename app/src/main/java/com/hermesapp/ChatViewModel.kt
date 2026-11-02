@@ -111,6 +111,20 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val identity = prefs.identity
     private val identityJob = kotlinx.coroutines.SupervisorJob()
     private val identityScope = kotlinx.coroutines.CoroutineScope(identityJob + Dispatchers.Main.immediate)
+    /**
+     * 「跑这一轮」这条链的作用域：进程级（RuntimeHub.scope），**不随 Activity 销毁而取消**。
+     *
+     * 为什么不挂 identityScope：用户发出长任务就退出 App 时，onCleared → detachIdentity 会取消
+     * identityJob，而流回调、攒帧放帧、退避重连、翻历史、落盘全挂在那上面 —— VM 一没，这一轮
+     * 就「没人接」：服务端照跑、正文照写库，App 里零事件、零收尾、不落盘、不通知（实测一条
+     * 868 字的回复就这样消失，用户重开四次都没补回来）。现在这条链挂进程级作用域，退出界面后
+     * 流照收、正文照落盘、跑完照发通知；重开 App 时新 VM 从 RuntimeHub 直接拿到同一个
+     * SessionRuntime（运行态不清），界面立刻显示到最新一帧。
+     *
+     * 只放「这一轮必须跑完的事」进来：界面刷新、轮询、看门狗、搜索等一律留在 identityScope，
+     * 否则每次 Activity 重建都会泄漏一套常驻循环。
+     */
+    private val runScope get() = RuntimeHub.scope
     @Volatile private var detached = false
     private var store = SessionStore(app, identity, prefs.legacyServer)
 
@@ -699,7 +713,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun scheduleSave(r: SessionRuntime) {
         if (r.dead) return          // 已删除的会话：别再安排写盘，否则文件会复活
         r.saveJob?.cancel()
-        r.saveJob = identityScope.launch(Dispatchers.IO) {
+        r.saveJob = runScope.launch(Dispatchers.IO) {
             delay(400)
             saveRuntime(r)
         }
@@ -1070,7 +1084,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val r = runtimes[id]
             if (r != null && !r.dead) {
                 r.saveJob?.cancel()
-                r.saveJob = identityScope.launch(Dispatchers.IO) { saveRuntime(r) }
+                r.saveJob = runScope.launch(Dispatchers.IO) { saveRuntime(r) }
             }
         }
         saveIndexAsync()
@@ -1081,6 +1095,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * debounceMs = 0 用于「必须尽快落盘」的场合（新建会话、归档、删除）。
      */
     private fun saveIndexAsync(debounceMs: Long = 300L, allowEmpty: Boolean = false) {
+        // 已销毁的实例一律不再写索引：它的 _sessions 是退出那一刻的快照，晚到的写会把
+        // 新实例刚建的会话从索引里抹掉（会话「凭空消失」的一种）。detach 时会同步写一次。
+        if (detached) {
+            AppLog.log("store", "旧实例已退出，跳过索引落盘 条数=" + _sessions.value.size)
+            return
+        }
         // 索引还没读完之前一律不落盘（见 indexReady 注释）：此刻内存里的列表是空的，
         // 写下去就是把磁盘上那份索引抹成空数组 —— 2026-10-14 事故的根因路径。
         if (!indexReady) {
@@ -2017,7 +2037,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 挂进程级作用域而不是 identityScope：回前台同步与「收尾补拉」都可能在
         // Activity 已被重建/销毁之后触发，挂 identityScope 会随旧实例一起被取消，
         // 表现就是「该同步的时候没同步」。
-        identityScope.launch(Dispatchers.IO) {
+        runScope.launch(Dispatchers.IO) {
             lastPullSid = id
             lastPullAt = System.currentTimeMillis()
             try {
@@ -3302,7 +3322,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
         val ids = mutableListOf<String>()
         var uploadsDone = reuseArtifacts.isNotEmpty()
-        r.sendJob = identityScope.launch(Dispatchers.IO) {
+        r.sendJob = runScope.launch(Dispatchers.IO) {
             try {
                 // 起流前先对号：用户已点停止、或又发了新的一轮，本轮直接作废（不发、不写状态）。
                 if (!ownsTurn(gen, r.sendGen, r.finished, r.stopRequested)) return@launch
@@ -3338,9 +3358,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val run = a.startRun(text, sid, emptyList(), idemKey, inlineFiles)
                 val myRun = run.optString("run_id", run.optString("id", ""))
                 if (detached) {
-                    // The POST may complete after leaving this identity. Keep recovery, never stop it.
-                    if (myRun.isNotEmpty()) prefs.putActiveRun(sid, myRun)
-                    return@launch
+                    // 界面已经销毁，但这一轮是用户点发送时就在跑的：正文必须跑完、落盘、通知
+                    // （修复三）。这里只补一行日志，接着往下接流——绝不 stopRun。
+                    AppLog.log("life", "退出界面后才建好 run，仍接着接流 run=" + myRun.take(12))
                 }
                 AppLog.log("send", "已建 run=" + myRun.take(12) + " 重放=" + run.optBoolean("replayed", false) + " 内联附件=" + inlineFiles.size)
                 // 归属校验必须在写任何共享状态之前：startRun 是同步 HTTP、取消协程拦不住它，
@@ -3978,7 +3998,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 必须显式切到 IO：identityScope 是 Dispatchers.Main.immediate，
         // 而 sessionDetail() 是阻塞式 HTTP。挂主线程的话，打开有子任务的会话时
         // 第一次拉进度就把 UI 卡住（这正是「有子任务的会话打开卡顿」的根因）。
-        r.subSweep = identityScope.launch(Dispatchers.IO) {
+        r.subSweep = runScope.launch(Dispatchers.IO) {
             val a = api ?: return@launch
             val deadline = System.currentTimeMillis() + 6 * 60 * 60 * 1000L
             while (isActive && System.currentTimeMillis() < deadline) {
@@ -4103,7 +4123,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 否则 IO 线程（maybeContinue 退避链）与 OkHttp 回调线程会并发改它，
         // 这是历史上「重复播报 / 进度错乱」的共同根因。非主线程调用一律投回主线程。
         if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
-            identityScope.launch { streamRun(a, sid) }
+            runScope.launch { streamRun(a, sid) }
             return
         }
         val r = rt(sid)
@@ -4121,11 +4141,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         AppLog.log("stream", "起流 run=" + rid.take(12) + " lastSeq=" + r.lastSeq + " 第" + r.autoContinue + "次续接 gen=" + gen + "（本轮事件计数清零）")
         // 每轮流一个攒帧器：碎字按帧放送。重起流时丢弃上一轮的残余。
         r.coalescer?.discard()
-        r.coalescer = StreamDeltaCoalescer(identityScope, onFlush = { s -> appendDelta(r, s) })
+        r.coalescer = StreamDeltaCoalescer(runScope, onFlush = { s -> appendDelta(r, s) })
         r.call = a.streamEvents(
             runId = rid,
             lastSeq = r.lastSeq,
-            onEvent = { ev -> identityScope.launch {
+            onEvent = { ev -> runScope.launch {
                 if (!r.acceptsStreamCallback(gen, sendGen)) return@launch   // 已被新流取代，作废
                 if (ev.id != null) r.lastSeq = ev.id
                 r.lastEventAt = System.currentTimeMillis()
@@ -4147,7 +4167,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     "replay.truncated" -> {
                         appendDelta(r, TRUNCATED_NOTICE)
                         val s = sid
-                        identityScope.launch(Dispatchers.IO) {
+                        runScope.launch(Dispatchers.IO) {
                             delay(600)
                             if (s == _currentId.value) refreshFromServer()
                         }
@@ -4268,14 +4288,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
             } },
-            onClosed = { identityScope.launch {
+            onClosed = { runScope.launch {
                 if (!r.acceptsStreamCallback(gen, sendGen)) return@launch   // 已被新流取代，作废
                 r.coalescer?.flushNow()
                 AppLog.log("stream", "流关闭 run=" + rid.take(12) + " busy=" + r.busy.value + " finished=" + r.finished + " lastSeq=" + r.lastSeq +
                     " 本轮共收事件=" + r.evCount + " 其中工具=" + r.toolCount)
                 if (r.busy.value && !r.finished) maybeContinue(sid)
             } },
-            onError = { e -> identityScope.launch {
+            onError = { e -> runScope.launch {
                 if (!r.acceptsStreamCallback(gen, sendGen)) return@launch   // 已被新流取代，作废
                 AppLog.err("stream", "流出错 run=" + rid.take(12) + " busy=" + r.busy.value + " finished=" + r.finished +
                     " 本轮共收事件=" + r.evCount + " 其中工具=" + r.toolCount, e)
@@ -4300,7 +4320,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             } },
             // 心跳等任何一行都刷新活跃时间：长工具执行期间只有心跳、没有真实事件，
             // 不刷就会让「回到前台」的 25 秒看门狗把健康流误判成假死（用户报的「一直在重连」）。
-            onActivity = { identityScope.launch { if (r.acceptsStreamCallback(gen, sendGen)) r.lastEventAt = System.currentTimeMillis() } }
+            onActivity = { runScope.launch { if (r.acceptsStreamCallback(gen, sendGen)) r.lastEventAt = System.currentTimeMillis() } }
         )
     }
 
@@ -4339,7 +4359,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // A 探测回来的 Known("completed")/Missing 会按当前会话收尾，把 B 的 busy、
         // runId 与 active 全清掉（探针实测 busy=false、runId=run-B、active={}、drains=2）。
         val gen = r.sendGen
-        identityScope.launch(Dispatchers.IO) {
+        runScope.launch(Dispatchers.IO) {
             delay(waitMs)
             // 退出前必须留一行：这条退避链可能已被别的路径（切回前台的体检、
             // 翻历史取回、手动停止）抢先收尾。静默 return 会让日志里只剩
@@ -4477,7 +4497,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 " · 服务端最后事件=" + (if (age < 0) "未知" else (age / 1000L).toString() + "秒前") + " run=" + rid.take(12))
         }
 
-        r.recoveryJob = identityScope.launch(Dispatchers.IO) {
+        r.recoveryJob = runScope.launch(Dispatchers.IO) {
             var elapsed = 0L
             var misses = 0
             var firstProbe = true
@@ -4595,7 +4615,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         r.retryNote.value = ReconnectPolicy.noteReconnecting("，正在从服务端取回结果…")
-        r.recoveryJob = identityScope.launch(Dispatchers.IO) {
+        r.recoveryJob = runScope.launch(Dispatchers.IO) {
             var delayMs = 5_000L
             var elapsed = 0L
             var lastSig: String? = null
@@ -4664,7 +4684,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         //（用户报「偶尔任务完成后不出现这些信息」）。补一次 run 状态查询把 usage 与 runId
         // 挂上；纯尽力而为，取不到就算了（不影响已取回的正文）。
         if (rid.isEmpty()) return
-        identityScope.launch(Dispatchers.IO) {
+        runScope.launch(Dispatchers.IO) {
             val a = api ?: return@launch
             try {
                 val st = a.probeRun(rid)
@@ -5234,23 +5254,45 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * ViewModel 销毁：取消挂在进程级 scope 上的轮询 ticker。
+     * 退出当前身份。
      *
-     * 原来没有 onCleared，每次 Activity 重建都会在 identityScope 上新起一条永不取消的
-     * ticker（字段在新实例里是 null，幂等守卫拦不住），越积越多。这里显式收掉。
+     * `keepTail = true` 用于 **Activity 被销毁/重建**（onCleared）：界面这一侧全部收掉
+     * （轮询、看门狗、播放器），但**还在跑的那一轮必须留着**——它的流与收尾链挂在进程级
+     * 作用域（见 [runScope]）上，运行态留在 RuntimeHub 里不清。这样退出 App 后：
+     * 流照收、正文照落盘、跑完照发通知；重开 App 时新 VM 拿到的是同一个 SessionRuntime，
+     * 界面直接连上同一帧，不需要靠「待补正文」标记去服务端补拉。
+     *
+     * `keepTail = false` 用于登出/切换身份：必须全停——包括掐流、作废回调、清空运行态，
+     * 否则上一条身份的流会把正文写进下一条身份的会话（数据错乱，最高优先级红线）。
      */
-    /** Retire only local observers; server runs and paused queues remain recoverable. */
-    fun detachIdentity() {
+    fun detachIdentity(keepTail: Boolean = false) {
         if (detached) return
         detached = true
+        // UI 侧：轮询、看门狗、心跳、搜索全部随界面一起收掉（否则每次重建泄漏一套常驻循环）。
         identityJob.cancel()
         VoicePlayer.stop()
         VoiceReplayPlayer.stop()
         StreamVoicePlayer.stop()
         MediaFetch.handler = null
         VoiceReplayPlayer.fetcher = null
-        for (r in runtimes.values) {
-            r.coalescer?.flushNow()
+        var liveTail = 0
+        for ((sid, r) in runtimes.entries.toList()) {
+            r.coalescer?.flushNow()          // 攒帧缓冲里还没显示的增量先并进消息模型
+            val live = TailPolicy.keepOnDetach(keepTail, r.dead, r.runId, r.finished)
+            if (live) {
+                // 这一轮还在跑：只把当前进度落一份（进程被系统杀掉时靠它续接），
+                // 不掐流、不推断言号、不清运行态、不发「任务完成」的假收尾。
+                if (r.loaded) {
+                    store.saveMessages(r.id, r.messages.value)
+                    store.saveQueue(r.id, r.queue.toList(), r.queuePaused.value)
+                    prefs.putActiveRun(sid, r.runId)
+                    prefs.putLastSeq(sid, r.lastSeq)
+                }
+                liveTail++
+                AppLog.log("life", "退出界面但本轮还在跑，保留运行态 sid=" + sid.take(8) +
+                    " run=" + r.runId.take(12) + " 已收事件=" + r.evCount + " lastSeq=" + r.lastSeq)
+                continue
+            }
             r.streamGen++
             r.call?.cancel()
             r.call = null
@@ -5265,14 +5307,41 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     prefs.putLastSeq(r.id, r.lastSeq)
                 }
             }
+            runtimes.remove(sid)             // 没有活的轮次：不留在进程内存里
         }
-        if (indexReady) store.saveIndex(_sessions.value)
-        runtimes.clear()
-        runCatching { Notifier.clearBusinessNotifications(getApplication()) }
+        // 会话索引只由「活着的那个 VM」写：这里同步写一次就好，之后 detached 的实例不再写，
+        // 否则旧实例会拿一份旧列表把新 VM 刚建的会话从索引里抹掉。
+        if (indexReady) runCatching { store.saveIndex(_sessions.value) }
+        if (liveTail == 0) {
+            runCatching { Notifier.clearBusinessNotifications(getApplication()) }
+        } else {
+            AppLog.log("life", "本轮留在后台跑：保留运行态 " + liveTail + " 个，界面侧已收")
+            startDetachedTailWatch()
+        }
+    }
+
+    /**
+     * 退出界面后本轮仍在跑时的**有界**守护：直到这一轮收尾或 60 分钟超时。
+     *
+     * 界面侧的 2 秒心跳（startRunFlagsTicker）里带着断流自愈看门狗，它随 VM 一起收了；
+     * 后台这一轮若断流，就再没人把流接回来。这里只补这一件事：每 10 秒看一眼内存，
+     * 还有活的轮次就调一次 superviseStreams()，全部收工即退出（不常驻、不发多余请求）。
+     */
+    private fun startDetachedTailWatch() {
+        runScope.launch {
+            val t0 = System.currentTimeMillis()
+            while (System.currentTimeMillis() - t0 < 60 * 60_000L) {
+                delay(10_000L)
+                if (!TailPolicy.hasLiveTail(runtimes.values)) break
+                runCatching { superviseStreams() }
+            }
+            AppLog.log("life", "退出界面后的守护结束（本轮已收尾或超时）")
+        }
     }
 
     override fun onCleared() {
-        detachIdentity()
+        // Activity 被销毁 ≠ 这一轮该停：还在跑的轮次要跑完（落盘 + 通知）。
+        detachIdentity(keepTail = true)
         runFlagsTicker?.cancel()
         runFlagsTicker = null
         cpuTicker?.cancel()

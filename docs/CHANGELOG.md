@@ -1,3 +1,14 @@
+## 2.240 — versionCode 251
+
+- 治本（修复三）：**退出界面不再掐掉正在跑的那一轮**。原来 Activity 销毁 → `onCleared` → `detachIdentity` 会 `identityJob.cancel()` + `r.call.cancel()` + `streamGen++` + `runtimes.clear()`，而流回调、攒帧放帧、退避重连、翻历史、落盘全挂在这个作用域上——VM 一没，这一轮就彻底「没人接」：服务端照跑照写库，App 里零事件、零收尾、不落盘、不通知。这就是 2.239 里那条 868 字回复消失的直接成因。
+- 做法：新增 `runScope = RuntimeHub.scope`（进程级），只把「这一轮必须跑完的事」搬过去——`streamRun` 的四个回调、攒帧器、`scheduleSave`/`saveCurrentAsync`、`sendJob`、退避重连、翻历史、子任务进度、收尾补拉。界面侧（轮询、看门狗、搜索、心跳）仍留在 `identityScope`，随 Activity 收掉，不会每次重建泄漏一套常驻循环。
+- `detachIdentity(keepTail)` 分两种语义：`onCleared` 走 `keepTail=true`——还有活的轮次就**不掐流、不推断言号、不清运行态**，只把当前进度落一份；登出/切换身份走 `keepTail=false`——照旧全停（旧身份的流绝不许写进新身份的会话，数据红线）。
+- 判据抽成纯函数 `TailPolicy`（`keepOnDetach` / `hasLiveTail`），配 6 条单测，含变异验收（去掉 `keepTail` 条件后测试立红）。
+- 退出界面后补一条**有界**守护：每 10 秒看一眼内存，还有活的轮次就 `superviseStreams()`（界面那个 2 秒心跳里的看门狗已随 VM 收掉），全部收工或 60 分钟即退出。
+- 重开 App 时新 VM 从 RuntimeHub 拿到的是**同一个** SessionRuntime（不再 `clear()`），界面直接连到最新一帧，`resumeActiveRun` 见 busy 也不重复接流——不再依赖 2.239 的补拉兜底。
+- 顺带加固：`saveIndexAsync` 对已销毁的实例直接跳过——旧实例拿退出那一刻的 `_sessions` 快照写盘，会把新实例刚建的会话从索引里抹掉。
+- 全仓 247 条单测全绿。
+
 ## 2.239 — versionCode 250
 
 - 修「有一句回复消失了，App 里就是没有」（用户实测：22:14 问「蜂王浆是不是要打蜂王」，22:22 服务端就跑完并落库 868 字，App 里始终是空的，重开四次也没补回来）。
