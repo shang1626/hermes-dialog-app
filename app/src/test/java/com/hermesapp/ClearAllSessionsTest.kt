@@ -79,6 +79,8 @@ class ClearAllSessionsTest {
         assertTrue(isConversationContentPrefKey("run:abc-123"))
         assertTrue(isConversationContentPrefKey("seq:abc-123"))
         assertTrue(isConversationContentPrefKey("ptitle:abc-123"))
+        // 兜底闹钟留的「待补正文」标记：属于运行时状态，清空全部对话时一并清
+        assertTrue(isConversationContentPrefKey("psync:abc-123"))
         // 通知栏直接回复的暂存：一段用户打的字 + 它属于哪个会话
         assertTrue(isConversationContentPrefKey("pending_reply"))
         assertTrue(isConversationContentPrefKey("pending_reply_profile"))

@@ -129,6 +129,11 @@ class KeepAliveReceiver : BroadcastReceiver() {
             AppLog.log("keepalive", "补提醒 sid=" + sid.take(8) + " run=" + rid.take(12) +
                 " 探测状态=" + status + " 文本=" + text.take(20))
             Notifier.notifyDone(ctx, title, text, sid)
+            // 通知只是「告诉用户」，正文还得补进会话里：闹钟在后台没法把这一轮的回复写进
+            // 本地消息（它没有会话上下文），所以留一个「待补正文」标记，App 下次启动/回前台
+            // 一定会为这个会话拉一次服务端记录，拉成功才清（见 ChatViewModel.alignAfterBootstrap）。
+            // 不清标记就清活跃 run：两者职责不同——run: 是「还有一轮要接流」，psync: 是「正文还欠着」。
+            if (status != "missing") p.putPendingSync(sid, rid)
             p.removeActiveRun(sid)
         }
     }

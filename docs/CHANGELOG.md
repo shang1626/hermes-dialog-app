@@ -1,3 +1,12 @@
+## 2.239 — versionCode 250
+
+- 修「有一句回复消失了，App 里就是没有」（用户实测：22:14 问「蜂王浆是不是要打蜂王」，22:22 服务端就跑完并落库 868 字，App 里始终是空的，重开四次也没补回来）。
+- 两个缺陷叠加：① 发出长任务后退出 App，VM 被销毁时 `detachIdentity` 会掐掉这一轮的流（这是设计），但**没人再接**——兜底闹钟 22:28 探到 completed 只弹了通知并清掉活跃 run 标记，正文一个字没补；② 重开时 `refreshFromServer()` 在 `_currentId` 还没被 `bootstrapSessions` 恢复出来时静默 return（`if (id.isEmpty()) return`），之后没有任何入口补拉，于是那一轮正文永远缺着。
+- 修法一（对齐）：`refreshFromServer()` 在 `_currentId` 为空时回落 `prefs.sessionId`；`bootstrapSessions` 跑完后新增 `alignAfterBootstrap()` 再对齐一次（同一会话 10 秒内不重复拉，避免冷启动白打 1~2MB）。
+- 修法二（兜底不丢正文）：闹钟探到终态时除通知外留一个 `psync:<sid>` 标记，语义是「这轮正文还欠着」；启动对齐与回前台都会 `consumePendingSync()` 逐个补拉，**拉成功合并之后**才清标记（busy/空列表/异常都保留标记）。会话已删则就地清。
+- 空 id 不再静默（`同步跳过：当前会话 id 为空`），以后这类「该拉没拉」在日志里能直接看见。
+- 新增 1 条单测（`psync:` 键纳入清空全部对话的扫描范围），全仓 241 条全绿。
+
 ## 2.238 — versionCode 249
 
 - 修「消息被分成两段，中间还有一段报错」。真凶不是合并逻辑，是**上游把回复切断了**：长任务跑到 00:25 上游断流，服务端往会话里 append 一条 `role=user` 的合成注记 `[System: The previous response was cut off by a network error mid-stream …]` 再续跑第二段。App 照字面渲染 → 你看到「前半段」+ 一条英文『报错』气泡 + 「后半段」。

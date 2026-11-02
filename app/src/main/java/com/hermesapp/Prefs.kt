@@ -202,6 +202,33 @@ class Prefs private constructor(private val ctx: Context, private val boundIdent
     }
 
     /**
+     * 待补正文的会话：兜底闹钟（15 分钟一次）在后台探到某一轮已结束，那时它只来得及发一条
+     * 通知、没有办法把正文写进本地会话（2026-11-02 蜂王浆那条回复就是这么消失的）。
+     * 这里记一笔，下次打开 App 必须为这些会话拉一次服务端正文；拉成功才由
+     * refreshFromServerFor 清掉。语义是「这笔正文一定补回来」，不是「尽力而为」。
+     * 键形如 "psync:<sessionId>"。
+     */
+    fun pendingSyncSessions(): Set<String> {
+        val out = LinkedHashSet<String>()
+        for ((k, v) in sp.all) {
+            if (k.startsWith("psync:") && v is String && v.isNotEmpty()) {
+                out.add(k.removePrefix("psync:"))
+            }
+        }
+        return out
+    }
+
+    fun putPendingSync(sessionId: String, runId: String = "") {
+        if (sessionId.isEmpty()) return
+        sp.edit().putString("psync:" + sessionId, runId.ifEmpty { "1" }).apply()
+    }
+
+    fun removePendingSync(sessionId: String) {
+        if (sessionId.isEmpty()) return
+        sp.edit().remove("psync:" + sessionId).apply()
+    }
+
+    /**
      * 一键清空全部对话时，把「属于对话内容/运行时状态」的 prefs 键扫干净：
      * 草稿 draft_input: 、活跃 run: 、续接序号 seq: 、待补推标题 ptitle: ，以及
      * 通知栏直接回复的暂存 pending_reply（里面是用户打的一段话，还指着某个会话 id）。
@@ -318,4 +345,5 @@ class Prefs private constructor(private val ctx: Context, private val boundIdent
 internal fun isConversationContentPrefKey(k: String): Boolean =
     k.startsWith("draft_input:") || k.startsWith("run:") ||
         k.startsWith("seq:") || k.startsWith("ptitle:") ||
+        k.startsWith("psync:") ||
         k == "pending_reply" || k == "pending_reply_profile"

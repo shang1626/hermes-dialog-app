@@ -1479,6 +1479,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         identityScope.launch(Dispatchers.IO) {
             bootstrapSessions(p.sessionId)
             cleanupShellSessionsOnce()
+            // 索引恢复完再对齐一次正文：上面那次 syncFromServer/refreshFromServer 是同步发出的，
+            // 冷启动时会撞上「当前会话 id 还没恢复」而空转（见 alignAfterBootstrap 注释）。
+            alignAfterBootstrap()
         }
         syncFromServer()
         // 把设置里存的语速灌进播放器（播放器是单例，重启 App 后要重新初始化）
@@ -1815,6 +1818,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         syncFromServer(30_000L)
         // 回前台把当前会话与服务端对齐一次（正文，不只是标题）。
         syncOnForeground()
+        // 后台期间兜底闹钟可能已判定某轮结束并留了「待补正文」标记（它自己没法写正文），
+        // 这里补拉——不能指望 VM 重建（进程活着时 alignAfterBootstrap 不会再跑）。
+        consumePendingSync(_currentId.value)
     }
 
     // ---- 诊断上报（App → 服务端；**仅手动**，2026-10-08 用户要求移除所有自动上传）----------
@@ -1960,6 +1966,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 上次回前台同步的时间：节流用。 */
     private var lastFgSyncAt = 0L
 
+    /** 最近一次真正发出的正文拉取（会话 id + 时刻）：避免冷启动把同一会话连拉两遍。 */
+    @Volatile private var lastPullSid = ""
+    @Volatile private var lastPullAt = 0L
+
     /** 拉一次服务端能力：是否支持原生图片（决定图片是原生附图还是先转文字）。 */
     fun fetchCapabilities() {
         val a = api ?: return
@@ -1974,12 +1984,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 重开 App 时从服务端拉当前会话消息：后台跑完的任务产出据此补回。 */
-    fun refreshFromServer() = refreshFromServerFor(_currentId.value)
+    fun refreshFromServer() = refreshFromServerFor(
+        // ⚠️ 冷启动那一刻 _currentId 还没被 bootstrapSessions 恢复出来（它跑在 IO 协程里）。
+        // 原来这里直接传 _currentId，空串 → refreshFromServerFor 顶部静默 return，
+        // 于是「后台跑完那一轮的正文」整份没人拉（2026-11-02 蜂王浆那条回复就是这么丢的）。
+        // prefs.sessionId 是上次停留的会话，索引恢复一定会命中它，拿它兜底。
+        _currentId.value.ifEmpty { prefs.sessionId ?: "" })
 
     /** 指定会话的服务端消息拉取与合并（翻历史兜底也复用）。 */
     private fun refreshFromServerFor(id: String) {
         val a = api ?: return
-        if (id.isEmpty()) return
+        if (id.isEmpty()) {
+            // 不再静默：这条一旦静默，日志里就看不出「该拉的时候没拉」。
+            AppLog.log("sync", "同步跳过：当前会话 id 为空（索引尚未恢复）")
+            return
+        }
         val r = rt(id)
         // 已删除的会话：拉回来的内容一个字都不能写，否则会把删掉的消息文件写复活。
         if (r.dead) return
@@ -1999,6 +2018,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // Activity 已被重建/销毁之后触发，挂 identityScope 会随旧实例一起被取消，
         // 表现就是「该同步的时候没同步」。
         identityScope.launch(Dispatchers.IO) {
+            lastPullSid = id
+            lastPullAt = System.currentTimeMillis()
             try {
                 fun parseRows(a0: org.json.JSONArray?): MutableList<Msg> {
                     val out = mutableListOf<Msg>()
@@ -2092,10 +2113,65 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 AppLog.log("sync", "合并服务端记录 sid=" + id.take(8) +
                     " 本地=" + local.size + " 服务端=" + list.size + " 合并后=" + merged.size)
+                // 这一笔「欠着的正文」已经落进本地：兜底闹钟留的 psync 标记到此才算清。
+                // 只在真拉到服务端记录并合并成功之后清（上面 busy / 空列表 / 异常都提前返回）。
+                if (prefs.pendingSyncSessions().contains(id)) {
+                    prefs.removePendingSync(id)
+                    AppLog.log("sync", "待补正文已补齐，清标记 sid=" + id.take(8))
+                }
             } catch (e: Exception) {
                 AppLog.err("sync", "拉服务端消息失败 sid=" + id.take(8), e)
                 // 服务端无此会话或网络异常：保留本地内容
             }
+        }
+    }
+
+    /**
+     * 启动对齐：索引恢复（bootstrapSessions）跑完之后补一次正文对齐。
+     *
+     * 为什么必须有：onProfileChanged 里那次 refreshFromServer() 是**同步**发出的，而会话列表
+     * 恢复在 IO 协程里，两者抢跑——恢复慢一点（长索引/慢盘/刚开机），那次刷新就撞上空 id 空转。
+     * 之后没有任何入口再补，于是「后台跑完的回复」在本地永远缺着，直到用户切一次会话
+     * （2026-11-02 22:29 四次重开都没补回来就是这个原因）。
+     *
+     * 顺带消费兜底闹钟留下的 psync 标记：那些会话明确欠着一轮正文，必须拉一次。
+     */
+    private fun alignAfterBootstrap() {
+        val cur = _currentId.value.ifEmpty { prefs.sessionId ?: "" }
+        if (cur.isNotEmpty()) {
+            // onProfileChanged 里那次 refreshFromServer() 现在会拿 prefs.sessionId 兜底，
+            // 冷启动时通常已经拉过一次了；刚拉过就别再打一次（一个会话 1~2MB）。
+            val fresh = lastPullSid == cur && System.currentTimeMillis() - lastPullAt < 10_000L
+            if (fresh) {
+                AppLog.log("sync", "启动对齐跳过（刚拉过）sid=" + cur.take(8))
+            } else {
+                AppLog.log("sync", "启动对齐 sid=" + cur.take(8))
+                refreshFromServerFor(cur)
+            }
+        }
+        consumePendingSync(cur)
+    }
+
+    /**
+     * 把兜底闹钟欠下的正文补回来（psync 标记）：当前会话上面已经拉过，其余会话各拉一次。
+     * 回前台也调一遍——进程没死、VM 也就没重建时，alignAfterBootstrap 不会再跑。
+     */
+    private fun consumePendingSync(current: String) {
+        val pending = prefs.pendingSyncSessions()
+        if (pending.isEmpty()) return
+        AppLog.log("sync", "待补正文会话 " + pending.size + " 个：" +
+            pending.joinToString(",") { it.take(8) })
+        for (sid in pending) {
+            if (sid == current) continue      // 当前会话已拉（拉成功会自己清标记）
+            // 会话已被删掉：标记没意义了，就地清掉，别留着每轮开机扫它。
+            if (_sessions.value.none { it.id == sid }) {
+                prefs.removePendingSync(sid)
+                AppLog.log("sync", "待补正文标记对应会话已不存在，清标记 sid=" + sid.take(8))
+                continue
+            }
+            val r = rt(sid)
+            if (r.busy.value) { r.needSync = true; continue }   // 忙 = 推迟，不是丢弃
+            refreshFromServerFor(sid)         // 成功合并时清标记，见 refreshFromServerFor
         }
     }
 
