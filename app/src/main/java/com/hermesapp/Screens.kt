@@ -1183,30 +1183,64 @@ fun Bubble(
                                     shape = RoundedCornerShape(Rad.pill),
                                 ) { Text("知道了", color = c.dim, fontSize = T.sub) }
                             }
-                            else -> Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                for (ch in ap.choices) {
-                                    OutlinedButton(
-                                        onClick = { onApproval(m.id, ch) },
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                        shape = RoundedCornerShape(Rad.pill),
-                                    ) { Text(choiceLabel(ch), color = c.accent, fontSize = T.sub) }
+                            // 按钮排版（2026-11-03 重做）：旧版把 once/session/always/deny +
+                            // 全部批准 + 忽略 六个胶囊全塞进一个 Row，手机上一行放不下就自动折行、
+                            // 每个按钮内部再折字，挤成「允许一次拒绝本次会话允许 始终允 许」那种鬼样子。
+                            // 现在按「决策强度」分行、每行两列等宽：主决策在上（允许一次 / 拒绝），
+                            // 放宽权限在中（本次会话允许 / 始终允许），辅助出口在下（本轮全部批准 / 忽略）。
+                            // 服务端下发未知 choice 时不丢弃，单独一行平铺。
+                            else -> {
+                                val primary = ap.choices.filter { it in APPROVAL_PRIMARY }
+                                val relax = ap.choices.filter { it in APPROVAL_RELAX }
+                                val others = ap.choices.filter { it !in APPROVAL_PRIMARY && it !in APPROVAL_RELAX }
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    if (primary.isNotEmpty()) {
+                                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            for (ch in primary) {
+                                                ApprovalButton(
+                                                    label = choiceLabel(ch),
+                                                    color = if (ch == "deny") c.dim else c.accent,
+                                                    borderColor = if (ch == "deny") c.border else c.accent.copy(alpha = 0.75f),
+                                                    modifier = Modifier.weight(1f),
+                                                ) { onApproval(m.id, ch) }
+                                            }
+                                        }
+                                    }
+                                    if (relax.isNotEmpty()) {
+                                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            for (ch in relax) {
+                                                ApprovalButton(
+                                                    label = choiceLabel(ch),
+                                                    color = c.dim, borderColor = c.border,
+                                                    modifier = Modifier.weight(1f),
+                                                ) { onApproval(m.id, ch) }
+                                            }
+                                        }
+                                    }
+                                    if (others.isNotEmpty()) {
+                                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            for (ch in others) {
+                                                ApprovalButton(
+                                                    label = choiceLabel(ch),
+                                                    color = c.dim, borderColor = c.border,
+                                                    modifier = Modifier.weight(1f),
+                                                ) { onApproval(m.id, ch) }
+                                            }
+                                        }
+                                    }
+                                    // 辅助出口：「全部批准」= 本条 + 本轮后续都不再问（只到本轮结束，起因见下）；
+                                    // 「忽略」是常备本地出口，旧版没有它时「确认不了也拒绝不了，提示一直挂着」。
+                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        ApprovalButton(
+                                            label = "本轮全部批准", color = c.dim, borderColor = c.border,
+                                            modifier = Modifier.weight(1f),
+                                        ) { onApproveAll(m.id) }
+                                        ApprovalButton(
+                                            label = "忽略", color = c.faint, borderColor = c.border,
+                                            modifier = Modifier.weight(1f),
+                                        ) { onIgnoreCard(m.id, true) }
+                                    }
                                 }
-                                // 「全部批准」：本条 + 本轮后续的敏感操作都不再问（只到本轮结束）。
-                                // 起因：一个任务里连着来好几条审批，一条一条点太烦（用户 2026-10-12）。
-                                OutlinedButton(
-                                    onClick = { onApproveAll(m.id) },
-                                    border = BorderStroke(1.dp, c.accent.copy(alpha = 0.75f)),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                    shape = RoundedCornerShape(Rad.pill),
-                                ) { Text("全部批准", color = c.accent, fontSize = T.sub) }
-                                // 常备的「忽略」出口（行内可见，不靠长按）：用户可能不想回、或已错过时机，
-                                // 旧版没有这个出口时就是「确认不了也拒绝不了，提示一直挂着」。
-                                OutlinedButton(
-                                    onClick = { onIgnoreCard(m.id, true) },
-                                    border = BorderStroke(1.dp, c.border),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                    shape = RoundedCornerShape(Rad.pill),
-                                ) { Text("忽略", color = c.dim, fontSize = T.sub) }
                             }
                         }
                         if (ap.resolved.isEmpty() && !ap.expired) {
@@ -2984,6 +3018,38 @@ fun SettingsScreen(
                 TextButton(onClick = { vm.dismissUpdate() }) { Text("取消") }
             }
         )
+    }
+}
+
+/** 审批按钮分组：主决策（允许一次 / 拒绝）。按「决策强度」分行，见审批卡片的排版说明。 */
+val APPROVAL_PRIMARY = setOf("once", "deny")
+
+/** 审批按钮分组：放宽权限（本次会话允许 / 始终允许）。 */
+val APPROVAL_RELAX = setOf("session", "always")
+
+/**
+ * 审批卡片里的一个按钮：等宽、定高、单行不折字。
+ *
+ * 为什么不用裸 OutlinedButton：它的默认最小宽度（MinWidth 58dp）与内边距会让
+ * 两列等宽时文字被挤着折行，长中文标签（「本次会话允许」）就成了竖排。这里显式
+ * 关掉 minWidth、收紧左右内边距、maxLines=1 且不省略（等宽列已按最长标签留够）。
+ */
+@Composable
+fun ApprovalButton(
+    label: String,
+    color: androidx.compose.ui.graphics.Color,
+    borderColor: androidx.compose.ui.graphics.Color,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = modifier.heightIn(min = 34.dp),
+        border = BorderStroke(1.dp, borderColor),
+        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+        shape = RoundedCornerShape(Rad.pill),
+    ) {
+        Text(label, color = color, fontSize = T.sub, maxLines = 1, softWrap = false)
     }
 }
 
