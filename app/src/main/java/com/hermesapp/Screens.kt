@@ -63,6 +63,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
@@ -2273,44 +2274,71 @@ private fun CronReportRow(
     }
 }
 
-/** 定时任务产出全文（收件箱条目）。 */
+/** 定时任务产出全文（收件箱条目）。
+ *
+ * ⚠️ 不用 `AlertDialog`：它的平台默认窗口宽度会在两侧留很宽的空白，加上 24dp 内容内边距，
+ * 正文实际只占中间窄窄一条（用户报「弹窗太小、四边空白太多」）。
+ * 改成裸 `Dialog(usePlatformDefaultWidth = false)` + 自绘 `Surface`：
+ * 宽度铺满（只留 8dp 边距），内边距 12dp，正文高度按屏高算，短报告仍只占需要的高度。
+ */
 @Composable
 fun CronReportDialog(vm: ChatViewModel, r: CronReport) {
     val c = LocalAppColors.current
-    AlertDialog(
+    Dialog(
         onDismissRequest = { vm.closeCronReport() },
-        title = {
-            Text(
-                (if (r.failed) "定时任务失败 · " else "定时任务产出 · ") + jobDisplayName(r.jobName, r.jobId),
-                color = if (r.failed) c.bad else c.text, fontSize = T.body, fontWeight = T.bold,
-                maxLines = 2, overflow = TextOverflow.Ellipsis,
-            )
-        },
-        text = {
-            Column(
-                Modifier.fillMaxWidth().heightIn(max = 430.dp)
-                    .verticalScroll(rememberScrollState())
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        BoxWithConstraints(
+            Modifier.fillMaxSize().padding(horizontal = G.x2, vertical = G.x4)
+        ) {
+            // 扣掉标题（最多两行）+ 时间行 + 间距 + 按钮行 + 本体内边距后的可用高度。
+            val bodyMax = (maxHeight - 150.dp).coerceAtLeast(160.dp)
+            Surface(
+                color = c.panel,
+                shape = RoundedCornerShape(Rad.card),
+                border = BorderStroke(1.dp, c.borderSoft),
+                modifier = Modifier.fillMaxWidth().wrapContentHeight().align(Alignment.Center),
             ) {
-                Text(TimeFmt.isoToBj(r.at) + "  ·  " + r.jobId, color = c.dim, fontSize = T.cap)
-                Spacer(Modifier.height(G.x2))
-                if (r.body.isBlank()) {
-                    Text("（这条没有正文）", color = c.dim, fontSize = T.sub)
-                } else {
-                    RichText(r.body, color = c.text, fontSize = T.sub)
+                Column(Modifier.fillMaxWidth().padding(G.x3)) {
+                    Text(
+                        (if (r.failed) "定时任务失败 · " else "定时任务产出 · ") + jobDisplayName(r.jobName, r.jobId),
+                        color = if (r.failed) c.bad else c.text, fontSize = T.body, fontWeight = T.bold,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(G.x1))
+                    Text(TimeFmt.isoToBj(r.at) + "  ·  " + r.jobId, color = c.dim, fontSize = T.cap)
+                    Spacer(Modifier.height(G.x2))
+                    Column(
+                        Modifier.fillMaxWidth().heightIn(max = bodyMax)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        if (r.body.isBlank()) {
+                            Text("（这条没有正文）", color = c.dim, fontSize = T.sub)
+                        } else {
+                            RichText(r.body, color = c.text, fontSize = T.sub)
+                        }
+                    }
+                    Spacer(Modifier.height(G.x1))
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        TextButton(
+                            onClick = { vm.deleteInbox(listOf(r.id)) },
+                            contentPadding = PaddingValues(horizontal = G.x3, vertical = G.x1),
+                            modifier = Modifier.heightIn(min = 34.dp),
+                        ) { Text("删除", color = c.bad, fontSize = T.body) }
+                        TextButton(
+                            onClick = { vm.closeCronReport() },
+                            contentPadding = PaddingValues(horizontal = G.x3, vertical = G.x1),
+                            modifier = Modifier.heightIn(min = 34.dp),
+                        ) { Text("关闭", color = c.accent, fontSize = T.body) }
+                    }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = { vm.closeCronReport() }) {
-                Text("关闭", color = c.accent, fontSize = T.body)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = { vm.deleteInbox(listOf(r.id)) }) {
-                Text("删除", color = c.bad, fontSize = T.body)
-            }
-        },
-    )
+        }
+    }
 }
 
 /** 执行记录状态翻译（latest_execution.status），与 ViewModel 内那份保持一致。 */
